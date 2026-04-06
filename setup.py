@@ -44,7 +44,6 @@ setup(
     install_requires=[
         "requests>=2.31.0",
         "beautifulsoup4>=4.12.3",
-        "lxml>=5.2.0",
         "rich>=13.7.0",
         "pyyaml>=6.0",
     ],

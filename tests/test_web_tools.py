@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
-from types import SimpleNamespace
+import warnings
 
 from qitos.kit.tool.web import HTMLExtractText, HTTPGet, HTTPPost, HTTPRequest
 
@@ -84,3 +84,15 @@ def test_html_extract_text_title_and_content():
     assert out["title"] == "Demo Page"
     assert "Hello" in out["content"]
     assert "https://x.com" in out["content"]
+
+
+def test_html_extract_text_emits_no_deprecation_warning():
+    tool = HTMLExtractText()
+    html = "<html><head><title>Demo</title></head><body><p>Hello</p></body></html>"
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        out = tool.run(html=html, max_chars=1000)
+
+    assert out["status"] == "success"
+    assert not [w for w in caught if issubclass(w.category, DeprecationWarning)]

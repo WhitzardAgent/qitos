@@ -73,6 +73,12 @@ pip install -e .
 pip install -e ".[models,yaml,benchmarks]"
 ```
 
+在仓库根目录验证官方支持的测试集：
+
+```bash
+python -m pytest -q
+```
+
 ## 快速开始
 
 运行最小端到端链路：

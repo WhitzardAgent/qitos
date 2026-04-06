@@ -73,6 +73,12 @@ pip install -e .
 pip install -e ".[models,yaml,benchmarks]"
 ```
 
+Validate the supported framework suite from the repo root:
+
+```bash
+python -m pytest -q
+```
+
 ## Quick Start
 
 Run a minimal end-to-end flow:

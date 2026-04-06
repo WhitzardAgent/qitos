@@ -287,7 +287,9 @@ class HTMLExtractText(BaseTool):
 
     def _to_text(self, html: str, keep_links: bool = False) -> tuple[str, Optional[str]]:
         if BeautifulSoup is not None:
-            soup = BeautifulSoup(html, "lxml")
+            # Prefer the stdlib parser to avoid third-party parser deprecation noise
+            # in the supported extraction path while preserving extraction behavior.
+            soup = BeautifulSoup(html, "html.parser")
             for tag in soup(["script", "style", "noscript", "svg", "canvas"]):
                 tag.decompose()
             title = None
