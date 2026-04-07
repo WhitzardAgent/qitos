@@ -14,13 +14,21 @@
 
 ## 函数工具（推荐）
 
-用 `@tool` 给函数挂上 name/description/required_ops 等元信息，但不改变函数本身的调用语义。
+用 `@tool` 给函数挂上工具名，但不改变函数本身的调用语义。在 QiTOS 中，
+**真正暴露给模型的工具描述，来自这个可调用对象自身的 docstring**，所以
+docstring 必须按统一、面向 Agent 的方式来写。
 
 ```python
 from qitos import ToolRegistry, tool
 
-@tool(name="add", description="Add two integers.")
+@tool(name="add")
 def add(a: int, b: int) -> int:
+    """
+    Return the sum of two integers.
+
+    :param a: First integer.
+    :param b: Second integer.
+    """
     return a + b
 
 registry = ToolRegistry().register(add)
@@ -33,16 +41,51 @@ registry = ToolRegistry().register(add)
 ```python
 from qitos import ToolRegistry, tool
 
-class MathTools:
-    def __init__(self, bias: int = 0):
-        self.bias = bias
+class FileTools:
+    def __init__(self, workspace_root: str = "."):
+        self.workspace_root = workspace_root
 
-    @tool(name="add_bias", description="Add two ints plus a configured bias.")
-    def add_bias(self, a: int, b: int) -> int:
-        return a + b + self.bias
+    @tool(name="create")
+    def create(self, path: str, file_text: str = "") -> dict:
+        """
+        Create a new file with the given content.
 
-registry = ToolRegistry().include(MathTools(bias=3))
+        :param path: 相对 workspace 根目录的路径（例如 `notes/todo.md`）。
+        :param file_text: 要写入文件的内容。
+
+        Automatically creates parent directories if they don't exist.
+        """
+        ...
+
+registry = ToolRegistry().include(FileTools())
 ```
+
+## Tool Docstring 规范
+
+QiTOS 会直接把可调用对象的 docstring 当作工具描述暴露给模型。因此，无论是
+框架内置工具还是你自己写的工具，都建议严格遵循下面的格式：
+
+1. 第一行：一句话说明工具做什么。
+2. 每个参数都写一行 `:param ...:`。
+3. 结尾补一句简短说明，描述副作用、边界或使用建议。
+
+推荐模板：
+
+```python
+@tool(name="create")
+def create(path: str, file_text: str = "") -> dict:
+    """
+    Create a new file with the given content.
+
+    :param path: Path relative to the workspace root (e.g., `new_file.py`).
+    :param file_text: Content to write to the new file.
+
+    Automatically creates parent directories if they don't exist.
+    """
+```
+
+对于 `BaseTool` 子类，QiTOS 会优先读取 `run(...)` 的 docstring；如果
+`run(...)` 没写，才会回退到类 docstring。
 
 ## ToolSet（bundle + 生命周期）
 
@@ -122,23 +165,6 @@ flowchart TB
 
 ```python
 from qitos.kit.tool import EditorToolSet, RunCommand, HTTPGet, ThinkingToolSet
-```
-
-## 预定义规划模块（`qitos.kit.planning`）
-
-- LLM 编排模块：
-  - `ToolAwareMessageBuilder`、`LLMDecisionBlock`
-- 计划工具：
-  - `PlanCursor`、`parse_numbered_plan`
-- 搜索策略：
-  - `GreedySearch`、`DynamicTreeSearch`
-- 状态辅助函数：
-  - `append_log`、`format_action`、`set_final`、`set_if_empty`
-
-导入示例：
-
-```python
-from qitos.kit.planning import DynamicTreeSearch, PlanCursor, LLMDecisionBlock
 ```
 
 ## Source Index

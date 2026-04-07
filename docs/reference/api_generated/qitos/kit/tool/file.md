@@ -15,15 +15,15 @@
 
 <a id="class-listfiles"></a>
 ???+ note "Class: `ListFiles(self, root_dir: 'str' = '.')`"
-    Base abstraction for callable tools.
+    List files and directories under a workspace-relative path.
 
 <a id="class-readfile"></a>
 ???+ note "Class: `ReadFile(self, root_dir: 'str' = '.')`"
-    Base abstraction for callable tools.
+    Read the full UTF-8 text content of a workspace file.
 
 <a id="class-writefile"></a>
 ???+ note "Class: `WriteFile(self, root_dir: 'str' = '.')`"
-    Base abstraction for callable tools.
+    Write UTF-8 text to a workspace file, creating parent directories when needed.
 
 ## Functions
 

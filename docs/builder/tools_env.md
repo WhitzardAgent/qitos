@@ -22,6 +22,34 @@ Build portable agents where action intent is stable but execution backend can ch
 2. Fail early on missing required ops.
 3. Never hide backend assumptions inside parser or prompts.
 4. Keep side effects localized to env ops layer.
+5. Write tool docstrings in the canonical QiTOS style because those docstrings
+   become the model-visible tool descriptions.
+
+## Tool Authoring Style
+
+All public tools in `qitos.kit.tool` follow one documentation contract:
+
+- first line: what the tool does
+- `:param ...:` lines: what each argument means
+- final note: constraints, side effects, or useful behavior hints
+
+Example:
+
+```python
+@tool(name="create")
+def create(path: str, file_text: str = "") -> dict:
+    """
+    Create a new file with the given content.
+
+    :param path: Path relative to the workspace root (e.g., `new_file.py`).
+    :param file_text: Content to write to the new file.
+
+    Automatically creates parent directories if they don't exist.
+    """
+```
+
+QiTOS reads this callable docstring directly when assembling tool descriptions
+for the model.
 
 ## Predefined kits you can use directly
 
@@ -35,11 +63,9 @@ Tool kits (`qitos.kit.tool`):
 - `ThinkingToolSet`
 
 Planning kits (`qitos.kit.planning`):
-
-- `ToolAwareMessageBuilder`, `LLMDecisionBlock`
-- `PlanCursor`, `parse_numbered_plan`
-- `GreedySearch`, `DynamicTreeSearch`
-- `append_log`, `format_action`, `set_final`, `set_if_empty`
+- `NumberedPlanBuilder`
+- `DynamicTreeSearch`
+- `format_action`
 
 See full details in:
 

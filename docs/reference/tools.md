@@ -16,13 +16,21 @@ You can register:
 
 ## Function tool (recommended)
 
-Use `@tool` to attach name/description/ops requirements without changing function semantics.
+Use `@tool` to attach the tool name without changing function semantics. In QiTOS,
+the **callable docstring** is the canonical source of the tool description shown
+to the model, so it should be written in a structured, agent-facing way.
 
 ```python
 from qitos import ToolRegistry, tool
 
-@tool(name="add", description="Add two integers.")
+@tool(name="add")
 def add(a: int, b: int) -> int:
+    """
+    Return the sum of two integers.
+
+    :param a: First integer.
+    :param b: Second integer.
+    """
     return a + b
 
 registry = ToolRegistry().register(add)
@@ -35,16 +43,51 @@ If you need configuration (workspace root, credentials, caches), wrap methods on
 ```python
 from qitos import ToolRegistry, tool
 
-class MathTools:
-    def __init__(self, bias: int = 0):
-        self.bias = bias
+class FileTools:
+    def __init__(self, workspace_root: str = "."):
+        self.workspace_root = workspace_root
 
-    @tool(name="add_bias", description="Add two ints plus a configured bias.")
-    def add_bias(self, a: int, b: int) -> int:
-        return a + b + self.bias
+    @tool(name="create")
+    def create(self, path: str, file_text: str = "") -> dict:
+        """
+        Create a new file with the given content.
 
-registry = ToolRegistry().include(MathTools(bias=3))
+        :param path: Path relative to the workspace root (e.g., `notes/todo.md`).
+        :param file_text: Content to write to the new file.
+
+        Automatically creates parent directories if they don't exist.
+        """
+        ...
+
+registry = ToolRegistry().include(FileTools())
 ```
+
+## Tool Docstring Contract
+
+QiTOS uses the callable docstring as the tool description that is exposed to the
+agent. For shipped tools and user-defined tools, follow this exact style:
+
+1. First line: one-sentence action summary.
+2. One `:param ...:` line per argument the model should understand.
+3. Short behavioral note at the end when needed.
+
+Recommended template:
+
+```python
+@tool(name="create")
+def create(path: str, file_text: str = "") -> dict:
+    """
+    Create a new file with the given content.
+
+    :param path: Path relative to the workspace root (e.g., `new_file.py`).
+    :param file_text: Content to write to the new file.
+
+    Automatically creates parent directories if they don't exist.
+    """
+```
+
+For `BaseTool` subclasses, QiTOS reads the `run(...)` docstring first and falls
+back to the class docstring only if the method docstring is missing.
 
 ## Tool sets (bundle + lifecycle)
 
@@ -124,23 +167,6 @@ Import pattern:
 
 ```python
 from qitos.kit.tool import EditorToolSet, RunCommand, HTTPGet, ThinkingToolSet
-```
-
-## Predefined Planning Primitives (`qitos.kit.planning`)
-
-- LLM orchestration:
-  - `ToolAwareMessageBuilder`, `LLMDecisionBlock`
-- Plan utilities:
-  - `PlanCursor`, `parse_numbered_plan`
-- Search strategies:
-  - `GreedySearch`, `DynamicTreeSearch`
-- State helpers:
-  - `append_log`, `format_action`, `set_final`, `set_if_empty`
-
-Import pattern:
-
-```python
-from qitos.kit.planning import DynamicTreeSearch, PlanCursor, LLMDecisionBlock
 ```
 
 ## Source Index

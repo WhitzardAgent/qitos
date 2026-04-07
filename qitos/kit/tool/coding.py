@@ -4,23 +4,11 @@ from __future__ import annotations
 
 from typing import Any, List
 
-from qitos.core.tool import get_tool_meta
 from qitos.kit.tool.codebase import CodebaseToolSet
 from qitos.kit.tool.editor import EditorToolSet
 from qitos.kit.tool.file import ListFiles, ReadFile, WriteFile
 from qitos.kit.tool.notebook import NotebookToolSet
 from qitos.kit.tool.shell import RunCommand
-
-
-def _collect_object_tools(obj: Any) -> List[Any]:
-    items: List[Any] = []
-    for attr_name in dir(obj):
-        if attr_name.startswith("_"):
-            continue
-        attr = getattr(obj, attr_name)
-        if callable(attr) and get_tool_meta(attr) is not None:
-            items.append(attr)
-    return items
 
 
 class CodingToolSet:
@@ -46,7 +34,7 @@ class CodingToolSet:
 
     def tools(self) -> list[Any]:
         tools: List[Any] = []
-        tools.extend(_collect_object_tools(self._editor))
+        tools.extend(self._editor.tools())
         tools.extend(self._codebase.tools())
         if self._notebook is not None:
             tools.extend(self._notebook.tools())

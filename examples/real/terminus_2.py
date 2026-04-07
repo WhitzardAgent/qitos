@@ -20,11 +20,11 @@ from qitos.kit import (
 from qitos.models import OpenAICompatibleModel
 
 TASK = "Inspect this workspace with terminal commands, determine whether todo.txt exists, and summarize what notes.txt contains."
-WORKSPACE = Path("./playground/terminus_2")
+WORKSPACE = Path("../../playground/terminus_2")
 SESSION_NAME = "qitos_terminus_2"
 PARSER_FORMAT = os.getenv("QITOS_TERMINUS_FORMAT", "json").strip().lower()
-MODEL_NAME = os.getenv("QITOS_MODEL", "Qwen/Qwen3-8B")
-MODEL_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.siliconflow.cn/v1/")
+MODEL_NAME = os.getenv("QITOS_MODEL", "MiniMax-M2.5")
+MODEL_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
 MAX_STEPS = 20
 MAX_TERMINAL_BYTES = 10000
 

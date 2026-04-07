@@ -13,7 +13,7 @@
 
 <a id="class-epubtoolset"></a>
 ???+ note "Class: `EpubToolSet(self, workspace_root: 'str' = '.')`"
-    Toolset for EPUB chapter listing, reading, and search.
+    Bundle tools for listing, reading, and searching EPUB chapters.
 
 ## Functions
 

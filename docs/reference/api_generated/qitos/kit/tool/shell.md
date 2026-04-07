@@ -13,7 +13,7 @@
 
 <a id="class-runcommand"></a>
 ???+ note "Class: `RunCommand(self, timeout: 'int' = 30, cwd: 'str' = '.', env: 'Optional[Dict[str, str]]' = None)`"
-    Base abstraction for callable tools.
+    Run one shell command inside the configured workspace directory.
 
 ## Functions
 

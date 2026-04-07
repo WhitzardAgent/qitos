@@ -373,7 +373,7 @@ class ClaudeStyleHook(RenderStreamHook):
             return
 
     def _print_banner(self) -> None:
-        self.console.print(Rule("[bold bright_cyan]QitOS · 气[/bold bright_cyan]", style="bright_cyan"))
+        self.console.print(Rule("[bold bright_cyan]QitOS: A Relaxable Agentic Framework for Reseachers [/bold bright_cyan]", style="bright_cyan"))
         self.console.print("[bright_cyan]   ██████╗ ██╗████████╗ ██████╗ ███████╗[/bright_cyan]")
         self.console.print("[cyan]  ██╔═══██╗██║╚══██╔══╝██╔═══██╗██╔════╝[/cyan]")
         self.console.print("[blue]  ██║   ██║██║   ██║   ██║   ██║███████╗[/blue]")

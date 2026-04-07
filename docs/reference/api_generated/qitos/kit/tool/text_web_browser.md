@@ -19,31 +19,31 @@
 
 <a id="class-archivesearch"></a>
 ???+ note "Class: `ArchiveSearch(self)`"
-    Base abstraction for callable tools.
+    Search archived web snapshots through the active text-browser environment.
 
 <a id="class-findinpage"></a>
 ???+ note "Class: `FindInPage(self)`"
-    Base abstraction for callable tools.
+    Find the first occurrence of a keyword in the current page and move to it.
 
 <a id="class-findnext"></a>
 ???+ note "Class: `FindNext(self)`"
-    Base abstraction for callable tools.
+    Jump to the next occurrence of the most recent in-page search keyword.
 
 <a id="class-pagedown"></a>
 ???+ note "Class: `PageDown(self)`"
-    Base abstraction for callable tools.
+    Advance the browser's current text window downward by a number of lines.
 
 <a id="class-pageup"></a>
 ???+ note "Class: `PageUp(self)`"
-    Base abstraction for callable tools.
+    Move the browser's current text window upward by a number of lines.
 
 <a id="class-visiturl"></a>
 ???+ note "Class: `VisitURL(self)`"
-    Base abstraction for callable tools.
+    Open a URL and load readable text into the browser state.
 
 <a id="class-websearch"></a>
 ???+ note "Class: `WebSearch(self)`"
-    Base abstraction for callable tools.
+    Search the web through the active text-browser environment.
 
 ## Functions
 

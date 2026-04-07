@@ -9,6 +9,7 @@ from qitos.kit.tool.coding import CodingToolSet
 from qitos.kit.tool.editor import EditorToolSet
 from qitos.kit.tool.file import ListFiles, ReadFile, WriteFile
 from qitos.kit.tool.notebook import NotebookToolSet
+from qitos.kit.tool.report_toolset import ReportToolSet
 from qitos.kit.tool.shell import RunCommand
 from qitos.kit.tool.taskboard import TaskToolSet
 from qitos.kit.tool.web import HTTPGet, HTTPPost, HTTPRequest, HTMLExtractText, WebFetch
@@ -46,7 +47,7 @@ def math_tools() -> ToolRegistry:
 def editor_tools(workspace_root: str) -> ToolRegistry:
     """Build a registry containing only the editor toolset."""
     registry = ToolRegistry()
-    registry.include(EditorToolSet(workspace_root=workspace_root))
+    registry.register_toolset(EditorToolSet(workspace_root=workspace_root), namespace="")
     return registry
 
 
@@ -99,6 +100,13 @@ def task_tools(workspace_root: str, board_relpath: str = ".qitos/task_board.json
     return registry
 
 
+def report_tools(workspace_root: str) -> ToolRegistry:
+    """Build a registry containing the assessment reporting toolset."""
+    registry = ToolRegistry()
+    registry.register_toolset(ReportToolSet(workspace_root=workspace_root), namespace="")
+    return registry
+
+
 __all__ = [
     "math_tools",
     "editor_tools",
@@ -107,4 +115,5 @@ __all__ = [
     "web_tools",
     "coding_tools",
     "task_tools",
+    "report_tools",
 ]

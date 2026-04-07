@@ -13,7 +13,7 @@
 
 <a id="class-toolset"></a>
 ???+ note "Class: `ToolSet(self, *args, **kwargs)`"
-    Base class for protocol classes.
+    Protocol for grouped tools that may need setup and teardown hooks.
 
 ## Functions
 

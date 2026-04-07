@@ -29,6 +29,32 @@ Tool 声明所需 ops group，Env 提供对应 capability。
 3. 命令执行不稳定
 - 收紧 timeout，限制命令模板输入。
 
+## 工具文档风格
+
+`qitos.kit.tool` 中所有公开工具都遵循同一种 docstring 规范，因为这些
+docstring 会直接成为模型可见的工具描述：
+
+- 第一行：一句话说明工具做什么
+- `:param ...:`：逐个解释参数含义
+- 结尾一小段：补充约束、副作用或使用建议
+
+示例：
+
+```python
+@tool(name="create")
+def create(path: str, file_text: str = "") -> dict:
+    """
+    Create a new file with the given content.
+
+    :param path: Path relative to the workspace root (e.g., `new_file.py`).
+    :param file_text: Content to write to the new file.
+
+    Automatically creates parent directories if they don't exist.
+    """
+```
+
+QiTOS 在组装工具描述时会直接读取这个可调用对象的 docstring。
+
 ## 可直接使用的预定义组件
 
 工具组件（`qitos.kit.tool`）：
@@ -41,11 +67,9 @@ Tool 声明所需 ops group，Env 提供对应 capability。
 - `ThinkingToolSet`
 
 规划组件（`qitos.kit.planning`）：
-
-- `ToolAwareMessageBuilder`、`LLMDecisionBlock`
-- `PlanCursor`、`parse_numbered_plan`
-- `GreedySearch`、`DynamicTreeSearch`
-- `append_log`、`format_action`、`set_final`、`set_if_empty`
+- `NumberedPlanBuilder`
+- `DynamicTreeSearch`
+- `format_action`
 
 完整说明见：
 

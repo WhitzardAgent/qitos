@@ -2,7 +2,8 @@ from typing import Any
 
 from qitos import Action, AgentModule, Decision, Engine, StateSchema, ToolRegistry, tool
 from qitos.engine import RuntimeBudget
-from qitos.kit.tool import EditorToolSet
+from qitos.kit import tool as tool_pkg
+from qitos.kit.tool import CodebaseToolSet, CodingToolSet, EditorToolSet, EpubToolSet, NotebookToolSet, ReportToolSet, TaskToolSet, ThinkingToolSet
 
 
 class _ToolState(StateSchema):
@@ -54,3 +55,34 @@ def test_tool_registry_include_and_toolset_lifecycle(tmp_path):
     editor = ToolRegistry()
     editor.include(EditorToolSet(workspace_root=str(tmp_path)))
     assert "view" in editor.list_tools()
+    assert "str_replace" in editor.list_tools()
+
+
+def test_curated_toolsets_register_cleanly(tmp_path):
+    toolsets = [
+        EditorToolSet(workspace_root=str(tmp_path)),
+        CodebaseToolSet(workspace_root=str(tmp_path)),
+        NotebookToolSet(workspace_root=str(tmp_path)),
+        ReportToolSet(workspace_root=str(tmp_path)),
+        TaskToolSet(workspace_root=str(tmp_path)),
+        EpubToolSet(workspace_root=str(tmp_path)),
+        ThinkingToolSet(),
+        CodingToolSet(workspace_root=str(tmp_path)),
+    ]
+    for toolset in toolsets:
+        registry = ToolRegistry()
+        registry.register_toolset(toolset, namespace="")
+        assert registry.list_tools(), f"{toolset.__class__.__name__} registered no tools"
+
+
+def test_tool_package_does_not_export_uncurated_cyber_toolsets():
+    exported = set(getattr(tool_pkg, "__all__", []))
+    assert "ReportToolSet" in exported
+    assert "ReconToolSet" not in exported
+    assert "NetworkToolSet" not in exported
+    assert "VulnScanToolSet" not in exported
+    assert "WebTestToolSet" not in exported
+    assert "ExploitToolSet" not in exported
+    assert "PasswordToolSet" not in exported
+    assert "ExploitToolSet" not in exported
+    assert "PasswordToolSet" not in exported

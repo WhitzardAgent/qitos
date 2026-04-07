@@ -1,9 +1,4 @@
-"""
-Editor tools.
-
-Provides file editing operations: view, create, str_replace, insert, search, list_tree, replace_lines.
-Uses direct os operations without environment wrapping.
-"""
+"""Workspace-local editor tools for reading and modifying files safely."""
 
 import os
 import re
@@ -24,20 +19,31 @@ from qitos.core.tool import tool
 
 
 class EditorToolSet:
-    """
-    File editor toolset providing comprehensive file manipulation capabilities.
-
-    Supports viewing, creating, editing, searching, and listing files.
-    All paths are resolved relative to workspace_root with security checks.
-    """
+    """Bundle high-signal file editing tools for coding and document agents."""
     
     def __init__(self, workspace_root: str = "."):
-        """
-        Initialize editor toolset
-        
-        :param workspace_root: Root directory for all file operations, defaults to current directory
-        """
+        """Create an editor toolset rooted at one workspace directory."""
         self._workspace_root = os.path.abspath(workspace_root)
+
+    def setup(self, context: Dict[str, Any]) -> None:
+        """Prepare editor resources before runtime starts."""
+        _ = context
+
+    def teardown(self, context: Dict[str, Any]) -> None:
+        """Release editor resources after runtime ends."""
+        _ = context
+
+    def tools(self) -> List[Any]:
+        """Return the public editor tools in their canonical registration order."""
+        return [
+            self.view,
+            self.create,
+            self.str_replace,
+            self.insert,
+            self.search,
+            self.list_tree,
+            self.replace_lines,
+        ]
     
     def _resolve_path(self, path: str) -> str:
         """
@@ -130,12 +136,13 @@ class EditorToolSet:
     @tool(name='view')
     def view(self, path: str, view_range: Optional[List[int]] = None) -> Dict[str, Any]:
         """
-        View file or directory content.
-        
-        :param path: Path relative to the workspace root (e.g., 'src/main.py').
-        :param view_range: Optional line range [start, end] to show (1-indexed). Use this to avoid token overflow in large files.
-        
-        Returns structured output with markdown code blocks for easy reading.
+        View a file or directory under the workspace root.
+
+        :param path: Path relative to the workspace root (e.g., `src/main.py` or `src/`).
+        :param view_range: Optional inclusive line range `[start, end]` to show for files.
+
+        For files, returns line-numbered content in a fenced code block. For
+        directories, returns a readable listing of immediate child entries.
         """
         try:
             resolved_path = self._resolve_path(path)
@@ -205,10 +212,10 @@ class EditorToolSet:
     def create(self, path: str, file_text: str = "") -> Dict[str, Any]:
         """
         Create a new file with the given content.
-        
-        :param path: Path relative to the workspace root (e.g., 'new_file.py').
+
+        :param path: Path relative to the workspace root (e.g., `new_file.py`).
         :param file_text: Content to write to the new file.
-        
+
         Automatically creates parent directories if they don't exist.
         """
         try:
@@ -230,16 +237,18 @@ class EditorToolSet:
         except Exception as e:
             return {"status": "error", "message": f"Error creating file: {str(e)}"}
     
+    @tool(name='str_replace')
     def str_replace(self, path: str, old_str: str, new_str: str = "") -> Dict[str, Any]:
         """
-        Replace old_str with new_str in a file. old_str must be unique.
-        
-        :param path: Path relative to the workspace root (e.g., 'src/main.py').
+        Replace one unique string fragment in a file.
+
+        :param path: Path relative to the workspace root (e.g., `src/main.py`).
         :param old_str: The exact string to replace. Must be unique in the file.
         :param new_str: The new string to replace old_str with.
-        
-        Best Practice: Include 1-2 lines of surrounding context in old_str to ensure uniqueness.
-        Shows unified diff after successful replacement.
+
+        Include 1 to 2 lines of surrounding context in `old_str` whenever
+        possible so the match is unique and stable. Returns a unified diff after
+        a successful edit.
         """
         try:
             resolved_path = self._resolve_path(path)
@@ -301,13 +310,13 @@ class EditorToolSet:
     @tool(name='insert')
     def insert(self, path: str, insert_line: int, new_str: str) -> Dict[str, Any]:
         """
-        Insert new_str after the specified line number.
-        
-        :param path: Path relative to the workspace root (e.g., 'src/main.py').
+        Insert new text after a given line number.
+
+        :param path: Path relative to the workspace root (e.g., `src/main.py`).
         :param insert_line: Line number AFTER which to insert new_str (1-indexed).
         :param new_str: String to insert.
-        
-        Shows unified diff after successful insertion.
+
+        Returns a unified diff after a successful insertion.
         """
         try:
             resolved_path = self._resolve_path(path)
@@ -362,12 +371,13 @@ class EditorToolSet:
     @tool(name='search')
     def search(self, path: str, keyword: str) -> Dict[str, Any]:
         """
-        Search for a keyword in files within a directory using grep-like functionality.
-        
-        :param path: Directory path relative to the workspace root (e.g., 'src').
+        Search for a keyword inside files within a directory tree.
+
+        :param path: Directory path relative to the workspace root (e.g., `src`).
         :param keyword: Keyword to search for.
-        
-        Shows first 10 matches with line numbers. Refine keyword if results are too many.
+
+        Returns matching file paths and line numbers. Only the first tranche of
+        matches is shown, so refine the keyword if results are too broad.
         """
         try:
             resolved_path = self._resolve_path(path)
@@ -429,11 +439,11 @@ class EditorToolSet:
     def list_tree(self, path: str = ".", depth: int = 3) -> Dict[str, Any]:
         """
         List directory structure in a tree format.
-        
-        :param path: Directory path relative to the workspace root (e.g., 'src'). Defaults to current directory.
+
+        :param path: Directory path relative to the workspace root (e.g., `src`). Defaults to the workspace root.
         :param depth: Maximum depth to traverse. Defaults to 3.
-        
-        Returns a tree-like representation of the directory structure.
+
+        Returns a compact tree-style representation of the directory structure.
         """
         try:
             resolved_path = self._resolve_path(path)
@@ -499,16 +509,17 @@ class EditorToolSet:
     @tool(name='replace_lines')
     def replace_lines(self, path: str, start_line: int, end_line: int, replacement: str = "") -> Dict[str, Any]:
         """
-        Replace a range of lines with new content.
-        
-        Useful when str_replace fails due to whitespace differences.
-        Line numbers are 1-indexed (inclusive range).
-        
-        :param path: Path relative to the workspace root (e.g., 'src/main.py').
+        Replace an inclusive line range with new content.
+
+        Useful when `str_replace` fails because of whitespace differences or when
+        the edit is easier to express as a line span.
+
+        :param path: Path relative to the workspace root (e.g., `src/main.py`).
         :param start_line: Starting line number (1-indexed, must be > 0).
         :param end_line: Ending line number (inclusive, must be >= start_line).
         :param replacement: Text to replace the specified lines with.
-        :return: Confirmation with unified diff showing changes.
+
+        Returns a unified diff showing the applied change.
         """
         try:
             if start_line <= 0:

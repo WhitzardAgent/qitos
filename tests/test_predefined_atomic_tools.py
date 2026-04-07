@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from qitos.core.tool_registry import ToolRegistry
 from qitos.kit.tool import (
     CodebaseToolSet,
     CodingToolSet,
     NotebookToolSet,
+    ReportToolSet,
     TaskToolSet,
     WebFetch,
     WriteFile,
@@ -14,6 +16,7 @@ from qitos.kit.tool import (
     coding_tools,
     codebase_tools,
     notebook_tools,
+    report_tools,
     task_tools,
     web_tools,
 )
@@ -101,6 +104,7 @@ def test_predefined_registry_builders_expose_atomic_tools(tmp_path):
     web_registry = web_tools()
     coding_registry = coding_tools(str(tmp_path))
     task_registry = task_tools(str(tmp_path))
+    report_registry = report_tools(str(tmp_path))
 
     assert "codebase.glob_files" in code_registry.list_tools()
     assert "codebase.grep_files" in code_registry.list_tools()
@@ -115,6 +119,8 @@ def test_predefined_registry_builders_expose_atomic_tools(tmp_path):
     assert "run_command" in coding_registry.list_tools()
     assert "task_create" in task_registry.list_tools()
     assert "task_update" in task_registry.list_tools()
+    assert "finding_add" in report_registry.list_tools()
+    assert "generate_report" in report_registry.list_tools()
 
     reg = ToolRegistry()
     reg.register_toolset(CodebaseToolSet(workspace_root=str(tmp_path)))
@@ -175,3 +181,23 @@ def test_task_toolset_persists_board_updates(tmp_path):
     listing = toolset.task_list.run(include_completed=False)
     assert listing["status"] == "success"
     assert listing["count"] == 1
+
+
+def test_report_toolset_registers_and_writes_outputs(tmp_path):
+    toolset = ReportToolSet(workspace_root=str(tmp_path))
+
+    added = toolset.finding_add(
+        title="Missing security header",
+        severity="medium",
+        description="The application does not send Content-Security-Policy.",
+        remediation="Add a restrictive CSP header.",
+    )
+    assert added["status"] == "success"
+
+    summary = toolset.summary_generate(target="example.internal")
+    assert summary["status"] == "success"
+    assert "example.internal" in summary["stdout"]
+
+    report = toolset.generate_report(format="markdown")
+    assert report["status"] == "success"
+    assert Path(report["data"]["output_file"]).exists()

@@ -13,7 +13,7 @@
 
 <a id="class-editortoolset"></a>
 ???+ note "Class: `EditorToolSet(self, workspace_root: str = '.')`"
-    File editor toolset providing comprehensive file manipulation capabilities.
+    Bundle high-signal file editing tools for coding and document agents.
 
 ## Functions
 

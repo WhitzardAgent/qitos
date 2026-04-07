@@ -13,6 +13,7 @@
 - [Class: `EnvSpec`](#class-envspec)
 - [Class: `EnvStepResult`](#class-envstepresult)
 - [Class: `FileSystemCapability`](#class-filesystemcapability)
+- [Class: `TerminalCapability`](#class-terminalcapability)
 
 ## Classes
 
@@ -39,6 +40,10 @@
 <a id="class-filesystemcapability"></a>
 ???+ note "Class: `FileSystemCapability(self, /, *args, **kwargs)`"
     Filesystem capability contract used by env implementations.
+
+<a id="class-terminalcapability"></a>
+???+ note "Class: `TerminalCapability(self, /, *args, **kwargs)`"
+    Interactive terminal capability contract used by env implementations.
 
 ## Functions
 
