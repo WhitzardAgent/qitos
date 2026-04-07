@@ -1,0 +1,87 @@
+---
+title: "QitOS Documentation"
+description: "A research-first agent framework for building reproducible LLM agents with a clean AgentModule + Engine kernel."
+---
+
+QitOS gives you a stable `AgentModule + Engine` kernel for building reproducible LLM agents. Whether you're prototyping ReAct loops, running GAIA benchmarks, or shipping a production coding agent — QitOS keeps your runs traceable, your patterns composable, and your results reproducible.
+
+<CardGroup cols={2}>
+  <Card title="Quick Start" icon="rocket" href="/quickstart">
+    Run your first agent in under 2 minutes
+  </Card>
+  <Card title="Build Your First Agent" icon="code" href="/guides/build-your-first-agent">
+    Step-by-step walkthrough to build a working agent
+  </Card>
+  <Card title="Tutorial Track" icon="graduation-cap" href="/tutorials">
+    Learn QitOS through four course-style agent builds
+  </Card>
+  <Card title="Core Concepts" icon="book" href="/concepts/agent-module">
+    Understand AgentModule, Engine, State, and Tools
+  </Card>
+  <Card title="API Reference" icon="rectangle-terminal" href="/reference/api">
+    Full reference for the public QitOS API
+  </Card>
+</CardGroup>
+
+## Get up and running
+
+<Steps>
+  <Step title="Install QitOS">
+    ```bash
+    pip install qitos
+    ```
+  </Step>
+  <Step title="Set your API key">
+    ```bash
+    export OPENAI_API_KEY="sk-..."
+    ```
+  </Step>
+  <Step title="Run the minimal example">
+    ```bash
+    python examples/quickstart/minimal_agent.py
+    ```
+  </Step>
+  <Step title="Inspect your run with qita">
+    ```bash
+    qita board --logdir runs
+    ```
+    Open [http://127.0.0.1:8765](http://127.0.0.1:8765) to view trace, replay, and export your run.
+  </Step>
+</Steps>
+
+## What QitOS gives you
+
+<CardGroup cols={2}>
+  <Card title="Agent Patterns" icon="diagram-project" href="/guides/agent-patterns">
+    ReAct, PlanAct, Tree-of-Thought, and Reflexion out of the box
+  </Card>
+  <Card title="Course-style tutorials" icon="graduation-cap" href="/tutorials">
+    ReAct, PlanAct, Claude Code-style, and security audit lessons
+  </Card>
+  <Card title="Observability" icon="chart-line" href="/guides/observability">
+    Built-in tracing with qita board, replay, and HTML export
+  </Card>
+  <Card title="Benchmarks" icon="trophy" href="/benchmarks/overview">
+    GAIA, Tau-Bench, and CyBench adapters on the same kernel
+  </Card>
+  <Card title="Kit Toolkit" icon="toolbox" href="/reference/kit">
+    Parsers, memory adapters, toolsets, critics, and planners
+  </Card>
+</CardGroup>
+
+## Featured designs
+
+<CardGroup cols={2}>
+  <Card title="Single kernel" icon="cpu" href="/concepts/engine">
+    One `AgentModule + Engine` runtime across examples, benchmarks, and production-style agents
+  </Card>
+  <Card title="Protocol-aware parsers" icon="brackets-curly" href="/reference/kit">
+    Prompt format and parser choice are paired on purpose, not left as implicit glue
+  </Card>
+  <Card title="Long-running context control" icon="clock-rotate-left" href="/guides/memory-and-history">
+    History policy, summary history, compact history, and memory adapters for sustained runs
+  </Card>
+  <Card title="Traceability with qita" icon="chart-line" href="/guides/observability">
+    Board, replay, and export built on top of structured trace artifacts
+  </Card>
+</CardGroup>

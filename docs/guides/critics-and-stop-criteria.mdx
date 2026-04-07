@@ -1,0 +1,278 @@
+---
+title: "Critics & Stop Criteria"
+description: "Validate steps with critics and control when the Engine halts with stop criteria."
+---
+
+The Engine provides two complementary mechanisms for controlling the run lifecycle:
+
+- **Critics** validate each step after `reduce()` runs. They can allow the run to continue, force a stop, or trigger a retry of the current step.
+- **Stop criteria** are checked after critics pass. They evaluate state and runtime metrics to decide whether to end the loop.
+
+## Critics
+
+A critic receives the current state, the decision taken, and the action results, then returns a structured verdict dict.
+
+### The Critic contract
+
+```python
+from abc import ABC, abstractmethod
+from typing import Any, Dict
+from qitos.engine.critic import Critic
+from qitos.core.decision import Decision
+
+class Critic(ABC):
+    @abstractmethod
+    def evaluate(
+        self,
+        state: Any,
+        decision: Decision[Any],
+        results: list[Any],
+    ) -> Dict[str, Any]:
+        """Return a critic decision dict.
+
+        Supported keys:
+        - action: "continue" | "stop" | "retry"
+        - reason: str
+        - score: float
+        - details: dict
+        """
+```
+
+### Supported critic actions
+
+| `action` value | Engine behavior |
+|---|---|
+| `"continue"` | Step is accepted; the run proceeds normally |
+| `"stop"` | `state.stop_reason` is set to `StopReason.CRITIC_STOP`; the run ends |
+| `"retry"` | The current step is re-executed (observation carried forward, step counter incremented) |
+
+Any `action` value other than `"stop"` or `"retry"` is treated as `"continue"`.
+
+### Adding critics to a run
+
+Pass a list of `Critic` instances to `agent.run()`:
+
+```python
+result = agent.run(
+    task="...",
+    max_steps=10,
+    critics=[MyScoreCritic(), MyGroundingCritic()],
+    return_state=True,
+)
+```
+
+Or pass them when constructing the Engine directly:
+
+```python
+from qitos.engine.engine import Engine
+
+engine = Engine(agent=agent, critics=[MyScoreCritic()])
+result = engine.run("my task")
+```
+
+### Writing a custom critic
+
+```python
+from typing import Any, Dict
+from qitos.engine.critic import Critic
+from qitos.core.decision import Decision
+
+
+class VerificationCritic(Critic):
+    """Stop the run if the verification command returned a non-zero exit code."""
+
+    def evaluate(
+        self,
+        state: Any,
+        decision: Decision[Any],
+        results: list[Any],
+    ) -> Dict[str, Any]:
+        for result in results:
+            if isinstance(result, dict):
+                returncode = int(result.get("returncode", 0))
+                if returncode != 0:
+                    return {
+                        "action": "retry",
+                        "reason": f"command failed with returncode={returncode}",
+                        "score": 0.0,
+                    }
+        return {"action": "continue", "score": 1.0}
+```
+
+The critic outputs are recorded in the trace (`step.critic_outputs`) and visible in the `qita board` Critic section for each step.
+
+---
+
+## Stop criteria
+
+Stop criteria are evaluated after every step's critic pass. Each criterion receives the current state, the step count, and a runtime info dict (with `elapsed_seconds`).
+
+### The StopCriteria contract
+
+```python
+from abc import ABC, abstractmethod
+from typing import Any, Dict, Optional, Tuple
+from qitos.engine.stop_criteria import StopCriteria
+from qitos.core.errors import StopReason
+
+class StopCriteria(ABC):
+    @abstractmethod
+    def should_stop(
+        self,
+        state: Any,
+        step_count: int,
+        runtime_info: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[bool, Optional[StopReason], Optional[str]]:
+        """Return (should_stop, reason, detail)."""
+```
+
+### Built-in criteria
+
+QitOS ships four built-in criteria in `qitos.engine.stop_criteria`:
+
+**`FinalResultCriteria`** (default)
+
+Stops when `state.final_result` is set to a non-empty string. This is the only criterion used when you do not pass `stop_criteria` to the Engine.
+
+```python
+from qitos.engine.stop_criteria import FinalResultCriteria
+```
+
+**`MaxStepsCriteria`**
+
+Stops when the step count reaches `max_steps`. The Engine applies this automatically from the `RuntimeBudget` — you rarely need to instantiate it manually.
+
+```python
+from qitos.engine.stop_criteria import MaxStepsCriteria
+
+criterion = MaxStepsCriteria(max_steps=15)
+```
+
+**`MaxRuntimeCriteria`**
+
+Stops when wall-clock time exceeds a threshold.
+
+```python
+from qitos.engine.stop_criteria import MaxRuntimeCriteria
+
+criterion = MaxRuntimeCriteria(max_runtime_seconds=120.0)
+```
+
+**`StagnationCriteria`**
+
+Stops when state has not changed for `max_stagnant_steps` consecutive steps. Uses a signature function to detect change (defaults to checking `final_result` and `phase`).
+
+```python
+from qitos.engine.stop_criteria import StagnationCriteria
+
+criterion = StagnationCriteria(
+    max_stagnant_steps=3,
+    signature_fn=lambda s: (s.final_result, getattr(s, "cursor", None)),
+)
+```
+
+### Passing criteria to a run
+
+```python
+from qitos.engine.stop_criteria import FinalResultCriteria, MaxRuntimeCriteria, StagnationCriteria
+
+result = agent.run(
+    task="...",
+    max_steps=20,
+    stop_criteria=[
+        FinalResultCriteria(),
+        MaxRuntimeCriteria(max_runtime_seconds=300.0),
+        StagnationCriteria(max_stagnant_steps=4),
+    ],
+    return_state=True,
+)
+```
+
+<Warning>
+When you pass `stop_criteria`, you **replace** the default `FinalResultCriteria`. If you still want the run to stop when `final_result` is set, include `FinalResultCriteria()` in your list.
+</Warning>
+
+### Writing a custom criterion
+
+```python
+from typing import Any, Dict, Optional, Tuple
+from qitos.engine.stop_criteria import StopCriteria
+from qitos.core.errors import StopReason
+
+
+class MinEvidenceCriteria(StopCriteria):
+    """Stop only after at least N evidence items have been collected."""
+
+    def __init__(self, min_evidence: int = 3):
+        self.min_evidence = min_evidence
+
+    def should_stop(
+        self,
+        state: Any,
+        step_count: int,
+        runtime_info: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[bool, Optional[StopReason], Optional[str]]:
+        evidence = getattr(state, "evidence", [])
+        final_result = getattr(state, "final_result", None)
+        if final_result and len(evidence) >= self.min_evidence:
+            return True, StopReason.FINAL, f"evidence={len(evidence)} >= min={self.min_evidence}"
+        return False, None, None
+```
+
+---
+
+## Budget-based stopping with TaskBudget
+
+For structured task definitions, use `TaskBudget` to express all three budget dimensions together:
+
+```python
+from qitos.core.task import Task, TaskBudget
+
+task = Task(
+    id="research-001",
+    objective="Summarize the article at the given URL.",
+    budget=TaskBudget(
+        max_steps=15,
+        max_runtime_seconds=180.0,
+        max_tokens=8192,
+    ),
+)
+
+result = agent.run(task=task, return_state=True)
+```
+
+The Engine applies `TaskBudget` values to its internal `RuntimeBudget` before the run starts, overriding any constructor defaults.
+
+---
+
+## StopReason values
+
+`StopReason` is a string enum in `qitos.core.errors`. The value is written to `state.stop_reason` at the end of every run.
+
+| Value | Meaning |
+|---|---|
+| `success` | Run completed successfully (set by agent or external caller) |
+| `final` | `state.final_result` was set; `FinalResultCriteria` triggered |
+| `budget_steps` | Step count reached `max_steps` |
+| `budget_time` | Wall-clock time exceeded `max_runtime_seconds` |
+| `budget_tokens` | Token usage exceeded `max_tokens` |
+| `critic_stop` | A critic returned `action: "stop"` |
+| `stagnation` | State did not change for `max_stagnant_steps` steps |
+| `agent_condition` | `agent.should_stop()` returned `True` |
+| `env_terminal` | The environment reported a terminal state |
+| `task_validation_failed` | Preflight task validation failed |
+| `env_capability_mismatch` | Environment does not support required operations |
+| `unrecoverable_error` | An exception was raised that the recovery policy could not handle |
+
+Check `result.state.stop_reason` after a run to distinguish a successful completion from a budget exhaustion:
+
+```python
+result = agent.run(task="...", max_steps=10, return_state=True)
+
+if result.state.stop_reason == "final":
+    print("Done:", result.state.final_result)
+elif result.state.stop_reason == "budget_steps":
+    print("Ran out of steps — partial result:", result.state.final_result)
+elif result.state.stop_reason == "critic_stop":
+    print("Critic halted the run")
+```

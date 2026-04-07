@@ -1,0 +1,205 @@
+---
+title: "Tau-Bench"
+description: "Evaluate tool-agent-user interaction on retail and airline customer service tasks with TauBenchAdapter."
+---
+
+Tau-Bench measures how well an agent can act as a customer service representative — reading a policy wiki, using data-access tools, and satisfying a simulated user request without violating business rules.
+
+Tasks are graded by comparing the final database state against a ground-truth action sequence. An agent scores `1.0` only when its tool calls produce exactly the right state transitions **and** its responses contain all required output values.
+
+QitOS ships `TauBenchAdapter` and a self-contained runtime (`TauRuntimeEnv`) so you can run Tau-Bench without installing the upstream `tau_bench` package. All task data, tools, wiki, and rules are vendored under `qitos.benchmark.tau_bench.port`.
+
+## Environments
+
+| Environment | Splits available | Terminate tool |
+|-------------|-----------------|----------------|
+| `retail` | `train`, `dev`, `test` | `transfer_to_human_agents` |
+| `airline` | `test` | `transfer_to_human_agents` |
+
+## Setup
+
+<Steps>
+  <Step title="Install benchmark dependencies">
+    ```bash
+    pip install "qitos[benchmarks]"
+    ```
+  </Step>
+  <Step title="Set your model API key">
+    ```bash
+    export OPENAI_API_KEY="sk-..."
+    ```
+  </Step>
+</Steps>
+
+<Note>
+Tau-Bench task data is vendored inside the QitOS package. You do not need to download any external dataset.
+</Note>
+
+## Loading tasks
+
+```python
+from qitos.benchmark import TauBenchAdapter
+
+adapter = TauBenchAdapter(env_name="retail", task_split="test")
+records = adapter.load_records()
+tasks = adapter.to_tasks(records, split="test", limit=5)
+
+print(tasks[0].id)          # "tau_retail_test_00000"
+print(tasks[0].objective)   # Customer service instruction
+print(tasks[0].inputs["env"])   # "retail"
+print(tasks[0].inputs["reference_outputs"])  # Expected response strings
+```
+
+One-line convenience loader:
+
+```python
+from qitos.benchmark.tau_bench.adapter import load_tau_bench_tasks
+
+tasks = load_tau_bench_tasks(env_name="retail", split="test", limit=10)
+```
+
+## Configuration
+
+`TauBenchAdapter` accepts the following parameters:
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `env_name` | `"retail"` | Environment to load: `"retail"` or `"airline"` |
+| `task_split` | `"test"` | Split to load: `"train"`, `"dev"`, or `"test"` |
+| `default_max_steps` | `30` | Step budget per task |
+| `include_raw_record` | `True` | Attach raw task dict to `task.metadata` |
+
+## Running the evaluation
+
+The bundled `tau_bench_eval.py` runs a ReAct agent that receives the domain wiki and policy rules in its system prompt, and routes every tool call through the `TauRuntimeEnv`.
+
+**Run a single task:**
+
+```bash
+python examples/benchmarks/tau_bench_eval.py \
+  --tau-env retail \
+  --tau-split test \
+  --task-index 0 \
+  --max-steps 30 \
+  --model-name "Qwen/Qwen3-8B" \
+  --api-key "$OPENAI_API_KEY"
+```
+
+**Run the full benchmark with multiple trials:**
+
+```bash
+python examples/benchmarks/tau_bench_eval.py \
+  --run-all \
+  --tau-env retail \
+  --tau-split test \
+  --num-trials 3 \
+  --limit 50 \
+  --concurrency 4 \
+  --output-jsonl results/tau_retail_test.jsonl \
+  --trace-logdir runs \
+  --model-name "Qwen/Qwen3-8B" \
+  --api-key "$OPENAI_API_KEY"
+```
+
+**Resume after interruption:**
+
+```bash
+python examples/benchmarks/tau_bench_eval.py \
+  --run-all \
+  --resume \
+  --output-jsonl results/tau_retail_test.jsonl \
+  --tau-env retail \
+  --api-key "$OPENAI_API_KEY"
+```
+
+<Tip>
+Use `--num-trials 5` and `--shuffle` to compute pass^k metrics. Each trial uses a different random seed derived from `--seed`.
+</Tip>
+
+## How the runtime works
+
+`TauRuntimeEnv` is a minimal drop-in for the upstream Tau environment. It exposes a `reset / step / calculate_reward` interface:
+
+```python
+from qitos.benchmark.tau_bench.runtime import get_tau_runtime_env
+
+env = get_tau_runtime_env(env_name="retail", task_split="test", task_index=0)
+reset_response = env.reset()
+print(reset_response.observation)  # Customer instruction
+
+# Each tool call goes through env.step()
+response = env.step(TauAction(name="get_order", kwargs={"order_id": "O123"}))
+print(response.observation)  # Tool result
+print(response.done)         # True when terminated
+print(response.reward)       # 1.0 or 0.0 (only set when done=True)
+```
+
+Reward is computed by replaying the ground-truth action sequence on a fresh data state and comparing its hash to the agent's final data state. A reward of `1.0` requires both the correct state hash **and** all expected output strings present in agent responses.
+
+## Task structure
+
+```python
+Task(
+    id="tau_retail_test_00000",
+    objective="I need to cancel order O123 and get a refund.",
+    inputs={
+        "benchmark": "tau-bench",
+        "env": "retail",
+        "split": "test",
+        "instruction": "I need to cancel order O123 and get a refund.",
+        "reference_outputs": ["Your order has been cancelled."],
+        "reference_actions": [{"name": "cancel_order", "kwargs": {"order_id": "O123"}}],
+        "user_id": "U42",
+    },
+    env_spec=EnvSpec(
+        type="tau_bench",
+        capabilities=["tau.step", "tau.reward", "tau.tool_call"],
+    ),
+    budget=TaskBudget(max_steps=30),
+)
+```
+
+## Expected output
+
+Each result line in the output JSONL file contains:
+
+```json
+{
+  "task_id": "tau_retail_test_00000",
+  "idx": 0,
+  "trial": 0,
+  "env": "retail",
+  "split": "test",
+  "reward": 1.0,
+  "success": true,
+  "eval_score": 1.0,
+  "stop_reason": "final",
+  "steps": 12,
+  "latency_seconds": 8.4
+}
+```
+
+After a full run, the script prints aggregate metrics aligned with the upstream `tau-bench` evaluation:
+
+```
+[Tau-Bench] Metrics (aligned with tau-bench run.py)
+- avg_reward: 0.74
+- pass^k:
+  - k=1: 0.74
+  - k=3: 0.81
+  - k=5: 0.86
+- reward_success_rate: 0.74
+- mean_steps: 14.2
+- stop_reason_distribution: {"final": 0.9, "max_steps": 0.1}
+```
+
+Inspect individual traces with `qita`:
+
+```bash
+qita board --logdir runs
+qita replay --run runs/qitos_tau_retail_00000_trial0_20250101_120000
+```
+
+<Warning>
+The `airline` environment only supports the `test` split. Requesting `train` or `dev` will raise a `ValueError`.
+</Warning>

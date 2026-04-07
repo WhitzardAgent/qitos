@@ -1,0 +1,202 @@
+---
+title: "Configuration"
+description: "All configuration options available in QitOS: config.yaml, AgentModule.run() arguments, Engine constructor arguments, and environment variables."
+---
+
+QitOS is configured through four overlapping layers, each narrowing in scope:
+
+1. **`config.yaml`** — file-level defaults loaded by agent templates
+2. **`AgentModule.run()` keyword arguments** — per-run overrides
+3. **`Engine` constructor keyword arguments** — fine-grained execution knobs
+4. **Environment variables** — secrets and deployment-level settings
+
+---
+
+## config.yaml
+
+Agent templates read a `config.yaml` from the project directory. Below is the full set of recognized keys with their defaults.
+
+```yaml
+name: qitos_default        # Agent/run name; used as the trace prefix
+max_steps: 12              # Maximum steps per run (overridable at runtime)
+
+model:
+  provider: openai_compatible   # Model backend: "openai_compatible" | "openai" | "azure" | "ollama" | ...
+  base_url: https://api.siliconflow.cn/v1/   # API base URL
+  api_key: ${OPENAI_API_KEY}                 # API key; supports ${ENV_VAR} interpolation
+  model: Qwen/Qwen3-8B                       # Model identifier sent to the API
+  model_name: Qwen/Qwen3-8B                  # Human-readable model name (used in traces)
+  temperature: 0.2                           # Sampling temperature (0.0–1.0)
+  max_tokens: 2048                           # Maximum response tokens
+```
+
+**Key notes**
+
+- `name` becomes the prefix for auto-generated run IDs when `trace_prefix` is not set.
+- `max_steps` is the default budget. You can override it per-run with `AgentModule.run(max_steps=...)`.
+- `api_key` supports `${VAR}` syntax for environment variable substitution at load time.
+
+---
+
+## AgentModule.run() arguments
+
+All of the following can be passed to `agent.run(task, ...)`. They override any defaults from `config.yaml` or the `Engine` constructor.
+
+<AccordionGroup>
+
+<Accordion title="Task and execution">
+
+| Argument | Type | Default | Description |
+|----------|------|---------|-------------|
+| `task` | `str \| Task` | required | Task objective string or structured `Task` object |
+| `max_steps` | `int \| None` | `None` | Override `TaskBudget.max_steps`; also sets `state.max_steps` via `state_kwargs` |
+| `return_state` | `bool` | `False` | Return the full `EngineResult` instead of just `state.final_result` |
+| `workspace` | `str \| None` | `None` | Path to workspace root; automatically constructs a `HostEnv` and sets `env_spec` on the task |
+| `env` | `Any` | `None` | Explicit `Env` instance; takes precedence over `workspace` |
+
+</Accordion>
+
+<Accordion title="Parsing and decisions">
+
+| Argument | Type | Default | Description |
+|----------|------|---------|-------------|
+| `parser` | `Any` | `None` | Parser instance (e.g. `ReActTextParser`, `JsonDecisionParser`) forwarded to the `Engine` |
+| `search` | `Any` | `None` | `Search` strategy instance for `branch` decisions (e.g. `DynamicTreeSearch`) |
+| `critics` | `List[Any] \| None` | `None` | List of `Critic` instances evaluated after each step |
+| `stop_criteria` | `List[Any] \| None` | `None` | Custom stop criteria list; replaces the default `FinalResultCriteria` |
+| `history_policy` | `Any` | `None` | `HistoryPolicy` instance controlling message history window |
+
+</Accordion>
+
+<Accordion title="Tracing and rendering">
+
+| Argument | Type | Default | Description |
+|----------|------|---------|-------------|
+| `trace` | `Any` | `None` | `True` to enable default `TraceWriter`; pass a `TraceWriter` instance for full control; `False`/`None` disables tracing only if `trace_writer` is not already set in `engine_kwargs` |
+| `trace_logdir` | `str` | `"./runs"` | Directory where trace run subdirectories are created |
+| `trace_prefix` | `str \| None` | `None` | Prefix for the auto-generated run ID; defaults to `agent.name` |
+| `render` | `Any` | `None` | `True` to enable the default `ClaudeStyleHook` render hook; pass a hook instance for custom rendering |
+| `theme` | `str` | `"research"` | Theme name passed to the render hook |
+
+</Accordion>
+
+<Accordion title="Hooks and engine passthrough">
+
+| Argument | Type | Default | Description |
+|----------|------|---------|-------------|
+| `hooks` | `List[Any] \| None` | `None` | Additional `EngineHook` instances appended to the Engine's hook list |
+| `render_hooks` | `List[Any] \| None` | `None` | Additional render hook instances merged into `hooks` |
+| `engine_kwargs` | `Dict[str, Any] \| None` | `None` | Any `Engine` constructor keyword argument; lower-priority than the explicit arguments above |
+| `**state_kwargs` | `Any` | | Extra keyword arguments forwarded to `agent.init_state()` |
+
+</Accordion>
+
+</AccordionGroup>
+
+**Minimal example**
+
+```python
+result = agent.run(
+    task="Analyse the repository and list all public API functions.",
+    workspace="/path/to/repo",
+    max_steps=20,
+    trace_logdir="./experiment-runs",
+    trace_prefix="api-analysis",
+)
+```
+
+---
+
+## Engine constructor arguments
+
+When you construct an `Engine` directly (or via `engine_kwargs`), these parameters are available:
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `agent` | `AgentModule` | required | The agent whose hooks the Engine calls |
+| `budget` | `RuntimeBudget \| None` | `RuntimeBudget(max_steps=10)` | Step, time, and token budgets for the run |
+| `validation_gate` | `StateValidationGate \| None` | default gate | Validates state before and after each phase |
+| `recovery_handler` | `RecoveryHandler \| None` | `None` | Callable `(state, phase, exc) -> None` invoked on recoverable errors |
+| `recovery_policy` | `RecoveryPolicy \| None` | `RecoveryPolicy()` | Controls retry behaviour and backoff |
+| `trace_writer` | `TraceWriter \| None` | `None` | Writes trace artifacts; set via `AgentModule.run(trace=True)` |
+| `parser` | `Parser[ActionT] \| None` | `None` | Converts raw LLM output to `Decision` |
+| `stop_criteria` | `List[StopCriteria] \| None` | `[FinalResultCriteria()]` | Ordered stop criteria evaluated after each step |
+| `branch_selector` | `BranchSelector \| None` | `FirstCandidateSelector()` | Selects among `branch` candidates |
+| `search` | `Search \| None` | `None` | Search strategy for expanding and scoring branch candidates |
+| `critics` | `List[Critic] \| None` | `[]` | Critics evaluated after each step |
+| `env` | `Env \| None` | `None` | Environment for observe/step/is_terminal lifecycle |
+| `history_policy` | `HistoryPolicy \| None` | `HistoryPolicy()` | Controls how history messages are assembled for model calls |
+| `hooks` | `List[EngineHook] \| None` | `[]` | Engine lifecycle hooks |
+| `render_hooks` | `List[Any] \| None` | `None` | Render hooks merged into `hooks` |
+
+**`RuntimeBudget` fields**
+
+```python
+@dataclass
+class RuntimeBudget:
+    max_steps: int = 10
+    max_runtime_seconds: Optional[float] = None
+    max_tokens: Optional[int] = None
+```
+
+When a `Task` object is passed to `Engine.run()`, the `Task.budget` values override the Engine's `RuntimeBudget` for that run.
+
+---
+
+## Environment variables
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `OPENAI_API_KEY` | Yes (for OpenAI / compatible APIs) | API key sent in the `Authorization` header. Used by `OpenAIModel`, `OpenAICompatibleModel`, and as the default `api_key` in `config.yaml` |
+| `OPENAI_BASE_URL` | Yes (for compatible APIs) | Base URL of the API endpoint. Required by `OpenAICompatibleModel`; optional for `OpenAIModel` (defaults to `https://api.openai.com/v1`) |
+| `QITOS_API_KEY` | No | Alternative API key variable. Recognized by `ModelFactory.from_env()` as a fallback when `OPENAI_API_KEY` is not set |
+| `QITOS_MODEL` | No | Default model identifier. Read by `ModelFactory.from_env()` to select the model when none is specified in code |
+| `AZURE_OPENAI_API_KEY` | Only for Azure | API key for Azure OpenAI. Used by `AzureOpenAIModel` |
+| `AZURE_OPENAI_ENDPOINT` | Only for Azure | Endpoint URL for Azure OpenAI |
+| `AZURE_OPENAI_DEPLOYMENT` | No | Deployment name for Azure OpenAI |
+| `AZURE_OPENAI_API_VERSION` | No | API version; defaults to `2024-02-15-preview` |
+
+**Example `.env` file**
+
+```bash
+# OpenAI-compatible endpoint (e.g. SiliconFlow, Ollama proxy)
+OPENAI_API_KEY=sk-...
+OPENAI_BASE_URL=https://api.siliconflow.cn/v1/
+```
+
+---
+
+## Trace output directory structure
+
+By default, `AgentModule.run()` writes traces to `./runs/`. Each run creates one subdirectory:
+
+```
+<trace_logdir>/
+└── <trace_prefix>_<YYYYMMDD_HHMMSS_ffffff>/
+    ├── manifest.json    # Run metadata and final summary
+    ├── events.jsonl     # All runtime events (one JSON object per line)
+    └── steps.jsonl      # All step records (one JSON object per line)
+```
+
+**Auto-generated run ID format**
+
+```
+<agent.name>_<YYYYMMDD_HHMMSS_ffffff>
+```
+
+Override the prefix with `trace_prefix`:
+
+```python
+agent.run(task="...", trace_prefix="experiment-01")
+# → runs/experiment-01_20260407_120000_123456/
+```
+
+**Pointing `qita board` at your trace directory**
+
+```bash
+qita board --logdir ./runs
+```
+
+<Note>
+Tracing is enabled by default in `AgentModule.run()`. Set `trace=False` only for quick interactive experiments — disabling tracing means runs cannot be replayed or inspected with `qita`.
+</Note>

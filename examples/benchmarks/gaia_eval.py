@@ -27,10 +27,9 @@ from qitos import (
     ToolRegistry,
 )
 from qitos.benchmark import GaiaAdapter
-from qitos.kit import ReActTextParser, TextWebEnv, format_action, render_prompt
-from qitos.kit.tool import (
+from qitos.kit import CodingToolSet, ReActTextParser, TextWebEnv, format_action, render_prompt
+from qitos.kit.tool.browser import (
     ArchiveSearch,
-    CodingToolSet,
     FindInPage,
     FindNext,
     PageDown,

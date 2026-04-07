@@ -1,0 +1,202 @@
+---
+title: "Agent Module"
+description: "AgentModule is the policy layer that defines your agent's strategy: how it initializes state, builds prompts, decides what to do, and reduces observations into the next state."
+---
+
+`AgentModule` is the contract you implement to define agent behavior. It owns everything about _how_ your agent thinks — state initialization, prompt construction, decision logic, and state reduction — but it never runs the loop itself. That's the [Engine's](/concepts/engine) job.
+
+## Generic type parameters
+
+`AgentModule` is generic over three type variables:
+
+```python
+class AgentModule(ABC, Generic[StateT, ObservationT, ActionT]):
+    ...
+```
+
+| Parameter       | What it represents                                      |
+| --------------- | ------------------------------------------------------- |
+| `StateT`        | Your typed state class (must extend `StateSchema`)      |
+| `ObservationT`  | The observation dict the Engine passes to your hooks    |
+| `ActionT`       | The action type your `decide` hook produces             |
+
+A fully-typed declaration looks like:
+
+```python
+class MyAgent(AgentModule[MyState, dict[str, Any], Action]):
+    ...
+```
+
+## The six hooks
+
+`AgentModule` defines six hooks. Two are **required** (`init_state` and `reduce`). The rest are **optional** and have sensible defaults.
+
+### `init_state` (required)
+
+Called once at the start of every run. Return your typed state object, initialized from the task string.
+
+```python
+def init_state(self, task: str, **kwargs: Any) -> StateT:
+    return MyState(task=task, max_steps=int(kwargs.get("max_steps", 10)))
+```
+
+Any keyword arguments passed to `Engine.run()` flow through here, so you can accept `max_steps` or other initial fields via `kwargs`.
+
+### `reduce` (required)
+
+Called after every action cycle. Transform the previous state plus the new observation and decision into the next state. This is where your agent learns from what just happened.
+
+```python
+def reduce(
+    self,
+    state: StateT,
+    observation: ObservationT,
+    decision: Decision[ActionT],
+) -> StateT:
+    ...
+    return state
+```
+
+<Warning>
+  Always return `state` (or a new state object) from `reduce`. Returning `None` will cause a runtime error.
+</Warning>
+
+### `build_system_prompt` (optional)
+
+Return a dynamic system prompt string, or `None` to skip. Called before every decide step, so your prompt can react to current state.
+
+```python
+def build_system_prompt(self, state: StateT) -> str | None:
+    return render_prompt(SYSTEM_TEMPLATE, {"tools": self.tool_registry.get_tool_descriptions()})
+```
+
+The default implementation returns `None`.
+
+### `prepare` (optional)
+
+Converts current state into the model-ready text that becomes the user turn. Defaults to `str(state)`. Override this to format a structured prompt from your state fields.
+
+```python
+def prepare(self, state: StateT) -> str:
+    return f"Task: {state.task}\nStep: {state.current_step}/{state.max_steps}"
+```
+
+### `decide` (optional)
+
+Override to provide your own decision logic before the Engine hands off to the LLM. Return `None` to let the Engine use its model decision path.
+
+```python
+def decide(self, state: StateT, observation: ObservationT) -> Decision[ActionT] | None:
+    if state.current_step == 0:
+        return Decision.act([Action(name="add", args={"a": 40, "b": 2})])
+    return None  # let the model decide
+```
+
+### `should_stop` (optional)
+
+An additional stop condition checked each step after `reduce`. Return `True` to halt the run. The Engine's built-in stop criteria (budget, `FinalResultCriteria`, etc.) still apply on top of this.
+
+```python
+def should_stop(self, state: StateT) -> bool:
+    return state.final_result is not None
+```
+
+## Minimal example
+
+This is the smallest runnable `AgentModule`. It hardcodes a decision rather than calling an LLM, making it useful for testing and as a template.
+
+```python
+from dataclasses import dataclass
+from typing import Any
+
+from qitos import Action, AgentModule, Decision, StateSchema, ToolRegistry, tool
+
+
+@dataclass
+class CalcState(StateSchema):
+    pass
+
+
+class MinimalAgent(AgentModule[CalcState, dict[str, Any], Action]):
+    def __init__(self):
+        registry = ToolRegistry()
+
+        @tool(name="add")
+        def add(a: int, b: int) -> int:
+            """Add two integers."""
+            return a + b
+
+        registry.register(add)
+        super().__init__(tool_registry=registry)
+
+    def init_state(self, task: str, **kwargs: Any) -> CalcState:
+        return CalcState(task=task, max_steps=int(kwargs.get("max_steps", 2)))
+
+    def decide(self, state: CalcState, observation: dict[str, Any]) -> Decision[Action]:
+        if state.current_step == 0:
+            return Decision.act(
+                [Action(name="add", args={"a": 40, "b": 2})],
+                rationale="compute_answer",
+            )
+        return Decision.final("42")
+
+    def reduce(
+        self,
+        state: CalcState,
+        observation: dict[str, Any],
+        decision: Decision[Action],
+    ) -> CalcState:
+        action_results = observation.get("action_results", []) if isinstance(observation, dict) else []
+        if action_results:
+            state.final_result = str(action_results[0])
+        return state
+```
+
+## Running an agent
+
+Call `agent.run()` to execute a task. This is the primary entry point — it creates an `Engine` internally, runs the loop, and returns the result.
+
+```python
+agent = MinimalAgent()
+
+# Returns final_result string by default
+answer = agent.run("compute 40 + 2", max_steps=2)
+
+# Pass return_state=True to get the full EngineResult
+result = agent.run("compute 40 + 2", max_steps=2, return_state=True)
+print(result.state.final_result)
+print(result.state.stop_reason)
+```
+
+Key parameters for `agent.run()`:
+
+| Parameter       | Type                  | Description                                                |
+| --------------- | --------------------- | ---------------------------------------------------------- |
+| `task`          | `str \| Task`         | Plain text objective or a structured `Task` object         |
+| `max_steps`     | `int \| None`         | Override the step budget for this run                      |
+| `workspace`     | `str \| None`         | Working directory mounted into the host environment        |
+| `return_state`  | `bool`                | Return `EngineResult` instead of `state.final_result`      |
+| `trace`         | `bool \| TraceWriter` | `True` to auto-create a trace writer, `False` to disable   |
+| `trace_logdir`  | `str`                 | Directory for trace output (default: `"./runs"`)           |
+| `parser`        | `Parser`              | Output parser matched to your prompt format                |
+| `critics`       | `list[Critic]`        | Critics evaluated after each step                          |
+| `stop_criteria` | `list[StopCriteria]`  | Additional stop conditions beyond the default              |
+
+<Tip>
+  If you need finer control over the Engine — custom hooks, branch selectors, or a shared Engine instance — use `agent.build_engine(**kwargs)` and call `engine.run(task)` directly.
+</Tip>
+
+## Constructor arguments
+
+`AgentModule.__init__` accepts these keyword arguments, all optional:
+
+```python
+AgentModule(
+    tool_registry=registry,   # ToolRegistry — tools available to the agent
+    llm=model,                # LLM client used by the Engine's model runtime
+    model_parser=parser,      # Parser that converts raw model output to Decision
+    memory=memory,            # Memory implementation for cross-run recall
+    history=history,          # History implementation for in-run message log
+    **config,                 # Any extra keyword args stored in self.config
+)
+```

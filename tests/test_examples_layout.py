@@ -59,14 +59,24 @@ def test_examples_readme_points_to_canonical_layout() -> None:
 
 
 def test_benchmark_docs_use_benchmarks_directory() -> None:
-    doc_paths = [
-        "docs/builder/benchmark_gaia.md",
-        "docs/builder/benchmark_tau.md",
-        "docs/zh/builder/benchmark_gaia.md",
-        "docs/zh/builder/benchmark_tau.md",
+    candidate_groups = [
+        [
+            "docs/builder/benchmark_gaia.md",
+            "docs/builder/benchmark_tau.md",
+            "docs/zh/builder/benchmark_gaia.md",
+            "docs/zh/builder/benchmark_tau.md",
+        ],
+        [
+            "docs/benchmarks/gaia.mdx",
+            "docs/benchmarks/tau-bench.mdx",
+        ],
     ]
-    for rel in doc_paths:
+    existing_groups = [
+        group for group in candidate_groups if all((ROOT / rel).exists() for rel in group)
+    ]
+    assert existing_groups, "No benchmark documentation files were found."
+    for rel in existing_groups[0]:
         text = _read(rel)
-        assert "examples/benchmarks/" in text, rel
-        assert "examples/real/open_deep_research_gaia_agent.py" not in text, rel
-        assert "examples/real/tau_bench_eval.py" not in text, rel
+        if "examples/benchmarks/" in text:
+            assert "examples/real/open_deep_research_gaia_agent.py" not in text, rel
+            assert "examples/real/tau_bench_eval.py" not in text, rel

@@ -1,0 +1,348 @@
+---
+title: "Memory & History"
+description: "Manage conversation history and long-term memory in QitOS agents."
+---
+
+QitOS separates two distinct concerns:
+
+- **History** — the conversation context sent to the LLM each step. It is ephemeral, message-scoped, and controlled by `HistoryPolicy`.
+- **Memory** — a semantic record store that accumulates observations across steps and can be queried by strategy (window, summary, vector, or file).
+
+Both are optional. If you pass neither, the Engine uses an internal 24-message window history and no memory adapter.
+
+## The mental model
+
+When researchers say "context", they often mean several different things at once. QitOS keeps them separate on purpose.
+
+| Concern | QitOS primitive | Typical use |
+|---|---|---|
+| What the model sees next step | `History` + `HistoryPolicy` | Prompt continuity |
+| What the agent wants to remember across steps | `Memory` | Recall of findings, artifacts, and prior observations |
+| What happens when context grows too large | `TokenBudgetSummaryHistory` / `CompactHistory` | Long-running control |
+
+This separation is one of QitOS's most practical design choices for long-running agents. You can adjust message-window behavior without redesigning memory, and you can change memory strategy without changing the prompt protocol.
+
+## History
+
+`History` stores `HistoryMessage` objects (`role`, `content`, `step_id`). The Engine appends a user message before each LLM call and an assistant message after. At call time, it uses `HistoryPolicy` to slice the window it passes to the model.
+
+### HistoryPolicy
+
+`HistoryPolicy` lives in `qitos.core.history` and controls which messages the Engine selects:
+
+```python
+from qitos.core.history import HistoryPolicy
+
+policy = HistoryPolicy(
+    roles=["user", "assistant"],  # message roles to include
+    max_messages=24,               # hard cap on messages passed to the model
+    step_window=None,              # if set, only include messages from the last N steps
+    max_tokens=None,               # token budget ceiling (estimated)
+)
+```
+
+Pass it to `agent.run()`:
+
+```python
+result = agent.run(
+    task="...",
+    max_steps=10,
+    history_policy=policy,
+    return_state=True,
+)
+```
+
+`HistoryPolicy.build_query()` produces the retrieval query sent to the `History` adapter each step. The default Engine history implementation (`_EngineWindowHistory`) satisfies this query with a sliding window.
+
+<Tip>
+Tighten `max_messages` when your model has a small context window, or set `step_window=4` to keep only the four most recent steps visible to the model.
+</Tip>
+
+## Built-in history strategies
+
+### WindowHistory
+
+`WindowHistory` is the simplest option. It keeps a fixed recency window and evicts older messages.
+
+Choose it when:
+
+- your runs are short
+- you want easy-to-predict context behavior
+- you do not want automatic summarization
+
+### TokenBudgetSummaryHistory
+
+`TokenBudgetSummaryHistory` watches a token budget and summarizes older messages when the current window would exceed that budget.
+
+Choose it when:
+
+- the agent regularly runs long enough to hit context pressure
+- you want a simple summary fallback
+- you want token-budget behavior without the full multi-stage compaction system
+
+### CompactHistory
+
+`CompactHistory` is the most advanced built-in context compactor.
+
+It combines:
+
+- warning thresholds before overflow
+- grouping into compactable rounds
+- micro-compaction for large old messages
+- summary compaction for older interaction history
+- runtime compaction metadata that can surface in traces
+
+Choose it when:
+
+- you are building long-running agents
+- you care about inspectable context management
+- you want context compaction to be part of the research artifact rather than hidden middleware
+
+## Context compaction in practice
+
+`CompactHistory` is worth understanding because it captures one of QitOS's most important design ideas: long-running behavior should be explicit and debuggable.
+
+Its main pieces are:
+
+- `CompactConfig` — thresholds and compaction policy
+- `MessageGrouper` — how messages are grouped into rounds
+- micro-compaction — trims very large old messages while keeping a preview
+- summary compaction — replaces older rounds with a compact continuation summary
+
+Typical setup:
+
+```python
+from qitos.kit.history import CompactConfig, CompactHistory
+
+history = CompactHistory(
+    config=CompactConfig(
+        max_tokens=16000,
+        keep_last_rounds=2,
+        keep_last_messages=8,
+        warning_ratio=0.8,
+        auto_compact=True,
+    ),
+    llm=llm,
+)
+```
+
+This is usually the right choice when you are intentionally studying long-running tool use and want the context behavior to remain visible in traces.
+
+## Memory
+
+`Memory` stores `MemoryRecord` objects (`role`, `content`, `step_id`, `metadata`). The Engine calls `memory.append()` after each observation and can retrieve records to inject into the `prepare()` context.
+
+All four concrete adapters implement the same `Memory` ABC:
+
+```python
+from qitos.core.memory import Memory, MemoryRecord
+
+class Memory(ABC):
+    def append(self, record: MemoryRecord) -> None: ...
+    def retrieve(self, query=None, state=None, observation=None) -> list[MemoryRecord]: ...
+    def summarize(self, max_items: int = 5) -> str: ...
+    def evict(self) -> int: ...
+    def reset(self, run_id=None) -> None: ...
+```
+
+### Attaching memory to your agent
+
+Pass a memory instance to the `AgentModule` constructor:
+
+```python
+from qitos.kit.memory import WindowMemory
+
+agent = MyAgent(
+    llm=llm,
+    memory=WindowMemory(window_size=20),
+)
+```
+
+Or build it inline in `__init__`:
+
+```python
+class MyAgent(AgentModule[MyState, dict, Action]):
+    def __init__(self, llm):
+        super().__init__(
+            llm=llm,
+            tool_registry=ToolRegistry(),
+            memory=WindowMemory(window_size=20),
+        )
+```
+
+---
+
+## WindowMemory
+
+Keeps the most recent `window_size` records. Older records are dropped by `evict()`.
+
+```python
+from qitos.kit.memory import WindowMemory
+
+memory = WindowMemory(window_size=20)
+```
+
+**Retrieve with filters:**
+
+```python
+records = memory.retrieve(query={
+    "roles": ["observation", "task"],  # filter by role
+    "step_min": 3,                     # only records from step 3 onward
+})
+```
+
+**How eviction works:**
+
+`evict()` trims `_records` to the last `window_size` entries and returns how many were removed. The Engine does not call `evict()` automatically — call it yourself in `reduce()` if you need to actively prune:
+
+```python
+def reduce(self, state, observation, decision):
+    # ... update state ...
+    if self.memory:
+        self.memory.evict()
+    return state
+```
+
+---
+
+## SummaryMemory
+
+Retains the last `keep_last` records in memory. When `evict()` is called, older records are condensed into a one-line summary string stored in `_summaries`. Useful when you want the agent to have a compact reference to earlier work without consuming full context.
+
+```python
+from qitos.kit.memory import SummaryMemory
+
+memory = SummaryMemory(keep_last=10)
+```
+
+`summarize()` condenses the last `max_items` records into a pipe-separated string:
+
+```python
+summary = memory.summarize(max_items=5)
+# "observation:content of step N | assistant:..."
+```
+
+Access accumulated summaries via `memory._summaries` — these persist after eviction and can be injected into `prepare()`:
+
+```python
+def prepare(self, state):
+    summaries = getattr(self.memory, "_summaries", [])
+    context = "\n".join(summaries[-3:]) if summaries else ""
+    return f"Task: {state.task}\nPast context:\n{context}"
+```
+
+---
+
+## VectorMemory
+
+Retrieves records by semantic similarity using dot-product scoring. Each record is embedded on `append()` and ranked on `retrieve()`.
+
+```python
+from qitos.kit.memory import VectorMemory
+
+# use the built-in character-bucket embedder (fast, low quality)
+memory = VectorMemory(top_k=5)
+
+# bring your own embedder (recommended for production)
+def my_embedder(text: str) -> list[float]:
+    return my_embedding_model.encode(text).tolist()
+
+memory = VectorMemory(embedder=my_embedder, top_k=5)
+```
+
+**Semantic retrieval:**
+
+```python
+records = memory.retrieve(query={
+    "text": "what was the result of the last file read?",
+    "top_k": 3,
+})
+```
+
+When no `text` is provided, `retrieve()` falls back to returning the most recent `top_k` records.
+
+<Note>
+The default embedder (`_default_embedder`) uses a character-bucket heuristic. It is fast and has no external dependencies, but its ranking quality is low. For meaningful semantic search, pass a real embedding function.
+</Note>
+
+---
+
+## MarkdownFileMemory
+
+Persists every record to a local Markdown file as an append-only log. The file survives restarts, making it useful for long-running or multi-session agents.
+
+```python
+from qitos.kit.memory import MarkdownFileMemory
+
+memory = MarkdownFileMemory(
+    path="./workspace/memory.md",
+    max_in_memory=200,  # how many records to keep in RAM
+)
+```
+
+Each appended record is written as a Markdown section:
+
+```markdown
+## Step 3 · observation
+- time_utc: 2026-04-07T12:34:56+00:00
+
+```text
+{"action_results": [...]}
+```
+```
+
+`retrieve()` supports `roles`, `step_min`, and `max_items` filters, same as `WindowMemory`. The file is never truncated — use `max_in_memory` to bound RAM usage while preserving the full on-disk log.
+
+<Warning>
+`reset()` clears in-memory records but does **not** delete or truncate the file. If you start a new run and reuse the same path, historical records from previous runs remain in the file.
+</Warning>
+
+---
+
+## Convenience factories
+
+`qitos.kit.memory` exports factory functions that mirror the constructors:
+
+```python
+from qitos.kit.memory import window_memory, summary_memory, vector_memory, markdown_file_memory
+
+memory = window_memory(window_size=30)
+memory = summary_memory(keep_last=8)
+memory = vector_memory(top_k=4)
+memory = markdown_file_memory(path="./runs/memory.md", max_in_memory=100)
+```
+
+---
+
+## Choosing a memory adapter
+
+| Adapter | In-memory | Persistent | Retrieval |
+|---|---|---|---|
+| `WindowMemory` | Yes | No | Recency + role filter |
+| `SummaryMemory` | Yes | No | Recency; summarizes older records |
+| `VectorMemory` | Yes | No | Semantic similarity |
+| `MarkdownFileMemory` | Yes (bounded) | Yes | Recency + role filter |
+
+Start with `WindowMemory` for most agents. Switch to `MarkdownFileMemory` if you need persistence across restarts, or `VectorMemory` when you want the agent to recall semantically relevant past observations rather than just recent ones.
+
+## Recommended combinations
+
+| Goal | History | Memory |
+|---|---|---|
+| Small pattern demos | `WindowHistory` | none or `WindowMemory` |
+| Medium coding agents | `HistoryPolicy` + default window or `TokenBudgetSummaryHistory` | `WindowMemory` or `SummaryMemory` |
+| Long-running coding agents | `CompactHistory` | `MarkdownFileMemory` or `SummaryMemory` |
+| Search/research agents | `TokenBudgetSummaryHistory` or `CompactHistory` | `VectorMemory` |
+
+## Observe context behavior with qita
+
+History and compaction are not meant to be invisible.
+
+In long-running agents, inspect your runs with `qita` and look for:
+
+- context-history warning events
+- summary or compaction events
+- whether later steps lose important constraints
+- whether your chosen memory adapter is preserving the right artifacts
+
+That is the research workflow QitOS is designed to support: tune context behavior, then inspect it as part of the run itself.

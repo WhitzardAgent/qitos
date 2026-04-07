@@ -14,6 +14,12 @@ QitOS gives you a clean `AgentModule + Engine` kernel, benchmark-ready workflows
 
 [Get Started](https://qitor.github.io/qitos/start-here/) · [10-Minute Tutorial](https://qitor.github.io/qitos/getting-started/build_agent_in_10_minutes/) · [Examples](https://qitor.github.io/qitos/tutorials/examples/) · [Changelog](CHANGELOG.md) · [Chinese README](README.zh.md)
 
+## Live Terminal of QitOS for Code Review
+
+<p align="center">
+  <img src="demo.gif" alt="QitOS long-running agent demo" width="92%">
+</p>
+
 ## Who QitOS Is For
 
 - **Researchers**: prototype ReAct, PlanAct, ToT, Reflexion, and new agent methods with reproducible runs.
@@ -111,6 +117,29 @@ Canonical examples live in:
 - [`examples/patterns/`](examples/patterns/)
 - [`examples/real/`](examples/real/)
 - [`examples/benchmarks/`](examples/benchmarks/)
+
+## Tooling Layout
+
+QiTOS separates tool imports into three layers:
+
+- `qitos.kit`: the simplest curated entrypoint for common toolsets
+- `qitos.kit.toolset`: scenario-oriented presets and registry builders
+- `qitos.kit.tool.<domain>`: advanced atomic capability imports
+
+Default composition is list-first:
+
+```python
+from qitos import ToolRegistry
+from qitos.kit.tool.file import ReadFile
+from qitos.kit.toolset import coding_tools
+
+registry = ToolRegistry().include_toolset(
+    [
+        ReadFile(workspace_root="."),
+        coding_tools(workspace_root="."),
+    ]
+)
+```
 
 ## Documentation Map
 

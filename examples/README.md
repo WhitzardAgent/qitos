@@ -85,8 +85,8 @@ export QITOS_MODEL="Qwen/Qwen3-8B"
 ## Notes
 
 - `examples/real/epub_reader_agent.py` expects a local EPUB at `./playground/epub_reader_agent/book.epub`.
-- `examples/real/code_security_audit_agent.py` shows how to combine `SecurityAuditToolSet + CodingToolSet + TaskToolSet` for repository security review.
+- `examples/real/code_security_audit_agent.py` shows the new composition-first path: pass `toolset=[...]` and let QiTOS flatten `SecurityAuditToolSet + CodingToolSet + TaskToolSet` automatically.
 - `examples/real/react_compact_agent.py` shows the smallest opt-in path for `CompactHistory`: keep the same agent shape and only swap the history preset.
-- `examples/real/claude_code_agent.py` is the fuller Claude Code-style coding example built on the canonical `coding_tools()` preset.
+- `examples/real/claude_code_agent.py` is the fuller Claude Code-style coding example built on the canonical `qitos.kit.toolset.coding_tools()` preset.
 - `examples/real/skillhub_github_agent.py` is an advanced third-party skill example. Read it after the core canonical path.
 - benchmark runners may require dataset download or local benchmark assets before full runs.

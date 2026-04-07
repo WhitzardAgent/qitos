@@ -1,0 +1,184 @@
+---
+title: "Observability"
+description: "Inspect, replay, and export agent runs with the qita web board."
+---
+
+Every `agent.run()` call writes a trace to `./runs/<run_id>/` by default. The `qita` CLI tool reads these traces and exposes them through a local web board with run inspection, step-by-step replay, and standalone HTML export.
+
+## Trace artifacts
+
+Each run directory contains three files:
+
+| File | Contents |
+|---|---|
+| `manifest.json` | Run metadata: `run_id`, `model_id`, `status`, `stop_reason`, `step_count`, `event_count`, `schema_version`, `prompt_hash`, `run_config_hash`, `seed`, `summary` |
+| `events.jsonl` | One JSON object per line; each line is a `RuntimeEvent` with `step_id`, `phase`, `ts`, `ok`, `error`, and `payload` |
+| `steps.jsonl` | One JSON object per line; each line is a `StepRecord` with `step_id`, `decision`, `actions`, `action_results`, `observation`, and `critic_outputs` |
+
+`manifest.json` is written on initialization and finalized when the Engine exits. `events.jsonl` and `steps.jsonl` are append-only and grow one entry at a time during the run.
+
+---
+
+## qita board
+
+`qita board` starts a local HTTP server that discovers all run directories under a log root and renders a card grid.
+
+<Steps>
+
+<Step title="Start the board">
+
+```bash
+qita board --logdir ./runs
+```
+
+The board starts at `http://127.0.0.1:8765` by default. Open it in a browser.
+
+Available flags:
+
+| Flag | Default | Description |
+|---|---|---|
+| `--logdir` | `./runs` | Root directory containing run subdirectories |
+| `--host` | `127.0.0.1` | Bind address |
+| `--port` | `8765` | Bind port |
+
+```bash
+# bind to all interfaces on a different port
+qita board --logdir ./runs --host 0.0.0.0 --port 9000
+```
+
+</Step>
+
+<Step title="Browse runs">
+
+The board auto-refreshes every 2.5 seconds. Each run appears as a card showing:
+
+- Run ID
+- Status badge
+- Step count and event count
+- Stop reason
+- Last updated timestamp
+- Manifest metadata: model ID, schema version, seed, prompt hash
+
+Use the toolbar to search, filter, and sort:
+
+- **Search** — filters run ID, stop reason, and final result text
+- **Status filter** — show only runs with a given status (`completed`, `failed`, etc.)
+- **Sort** — by updated time (desc/asc), event count, or step count
+- **Auto refresh** — toggle the 2.5-second polling on or off
+
+The summary strip above the cards shows: success rate, average steps, average events, and the top-3 failure stop reasons across all visible runs.
+
+</Step>
+
+<Step title="Open a run">
+
+Click **view** on any run card to open the run detail page. The page has two tabs:
+
+**Traj tab**
+
+The trajectory view shows every step as a card with five collapsible sections:
+
+- **State** — scalar fields from the observation output
+- **Thought** — the model's rationale (from `decision.rationale` or parsed `Thought:` line)
+- **Action** — the tool call that was dispatched
+- **Direct Observation** — action results; search hits render as a table, errors are highlighted
+- **Critic** — critic output (`action`, `reason`, `score`) if critics were attached
+- **Trace Events** — raw `RuntimeEvent` list for the step (collapsed by default)
+
+The **Step Navigator** sidebar lets you jump to any step. Use the controls to:
+- Filter by text across all step content
+- Filter by event phase
+- Sort steps ascending or descending
+- Toggle observation and critic sections
+- Fold or expand all sections at once
+- Adjust font size with `A-` / `A` / `A+`
+
+A gantt-like **phase timeline** at the top of the traj view shows phase durations for each step as color-coded segments.
+
+**Manifest tab**
+
+Displays the raw `manifest.json` as formatted JSON.
+
+</Step>
+
+</Steps>
+
+---
+
+## qita replay
+
+`qita replay` opens a single run in playback mode, stepping through events in time order.
+
+```bash
+qita replay --run ./runs/my_agent_20260407_120000_000001
+```
+
+Available flags:
+
+| Flag | Default | Description |
+|---|---|---|
+| `--run` | required | Path to the run directory |
+| `--host` | `127.0.0.1` | Bind address |
+| `--port` | `8765` | Bind port |
+
+The replay page adds a playback bar with configurable speed. Pass `?speed=300` in the URL to set the millisecond interval between frames (minimum 100 ms).
+
+---
+
+## qita export
+
+`qita export` produces a single standalone HTML file that embeds all run data. Share it without running a server.
+
+```bash
+qita export --run ./runs/my_agent_20260407_120000_000001 --html out.html
+```
+
+| Flag | Description |
+|---|---|
+| `--run` | Path to the run directory (required) |
+| `--html` | Output HTML file path (required) |
+
+The exported file is self-contained — all CSS, JavaScript, and run data are inlined. It renders the same trajectory view as the board's run detail page.
+
+You can also export directly from the board UI using the **export html** and **export raw** links on each run card, which download the file or the raw JSON payload respectively.
+
+---
+
+## Configuring trace output
+
+By default, `agent.run()` writes traces to `./runs/` under a run ID constructed from the agent class name and a UTC timestamp. Override the output directory and prefix:
+
+```python
+result = agent.run(
+    task="...",
+    max_steps=10,
+    trace_logdir="./my_experiments",
+    trace_prefix="react_v2",
+    return_state=True,
+)
+```
+
+To disable tracing entirely, pass `trace=False`:
+
+```python
+result = agent.run(task="...", trace=False, return_state=True)
+```
+
+To pass a pre-configured `TraceWriter` (for example, to share a run ID across multiple agents), construct it explicitly:
+
+```python
+from qitos.trace import TraceWriter
+
+writer = TraceWriter(
+    output_dir="./runs",
+    run_id="my_custom_run_id",
+    strict_validate=True,
+    metadata={"model_id": "Qwen3-8B"},
+)
+
+result = agent.run(task="...", trace=writer, return_state=True)
+```
+
+<Note>
+Three files are required per run for `qita` to discover it: `manifest.json`, `events.jsonl`, and `steps.jsonl`. A run directory missing `manifest.json` is silently skipped by `qita board`.
+</Note>

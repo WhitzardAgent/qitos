@@ -7,14 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from qitos import (
-    Action,
-    AgentModule,
-    Decision,
-    HistoryPolicy,
-    StateSchema,
-    ToolRegistry,
-)
+from qitos import Action, AgentModule, Decision, HistoryPolicy, StateSchema
 from qitos.kit import (
     CodingToolSet,
     ReActTextParser,
@@ -41,31 +34,27 @@ class SecurityAuditState(StateSchema):
 
 class CodeSecurityAuditAgent(AgentModule[SecurityAuditState, dict[str, Any], Action]):
     def __init__(self, llm: Any, workspace_root: str):
-        registry = ToolRegistry()
-        registry.register_toolset(
-            SecurityAuditToolSet(
-                workspace_root=workspace_root, include_external=False, max_matches=80
-            ),
-            namespace="",
-        )
-        registry.register_toolset(
-            CodingToolSet(
-                workspace_root=workspace_root,
-                include_notebook=False,
-                enable_lsp=False,
-                enable_tasks=False,
-                enable_web=False,
-                expose_legacy_aliases=True,
-                expose_modern_names=False,
-                profile="codebase",
-            ),
-            namespace="codebase",
-        )
-        registry.register_toolset(
-            TaskToolSet(workspace_root=workspace_root), namespace=""
-        )
         super().__init__(
-            tool_registry=registry, llm=llm, model_parser=ReActTextParser()
+            toolset=[
+                SecurityAuditToolSet(
+                    workspace_root=workspace_root,
+                    include_external=False,
+                    max_matches=80,
+                ),
+                CodingToolSet(
+                    workspace_root=workspace_root,
+                    include_notebook=False,
+                    enable_lsp=False,
+                    enable_tasks=False,
+                    enable_web=False,
+                    expose_legacy_aliases=True,
+                    expose_modern_names=False,
+                    profile="codebase",
+                ),
+                TaskToolSet(workspace_root=workspace_root),
+            ],
+            llm=llm,
+            model_parser=ReActTextParser(),
         )
 
     def init_state(self, task: str, **kwargs: Any) -> SecurityAuditState:

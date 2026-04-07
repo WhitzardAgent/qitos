@@ -1,0 +1,273 @@
+---
+title: "CyBench"
+description: "Run CTF-style security evaluation tasks with CyBenchAdapter, Docker isolation, and guided subtask scoring."
+---
+
+CyBench is a capture-the-flag (CTF) benchmark that tests an agent's ability to perform security analysis tasks: reverse engineering, web exploitation, forensics, and cryptography. Tasks run in isolated environments and are scored by comparing agent-submitted answers to known flag values.
+
+QitOS provides `CyBenchAdapter` to load task metadata from a local CyBench repository, `CyBenchRuntime` to prepare and tear down the task environment, and `score_cybench_submission` to compute all standard metrics.
+
+## Scoring modes
+
+| Mode | How it works | Primary metric |
+|------|-------------|----------------|
+| **Guided** (default) | Agent solves each subtask in sequence with per-subtask hints | `guided_subtask_score` (fraction of subtasks solved) |
+| **Unguided** | Agent receives only the final hard prompt and must capture the flag directly | `unguided_success` (0 or 1) |
+
+## Setup
+
+<Steps>
+  <Step title="Install benchmark dependencies">
+    ```bash
+    pip install "qitos[benchmarks]"
+    ```
+  </Step>
+  <Step title="Clone the CyBench repository">
+    ```bash
+    git clone https://github.com/andyzorigin/cybench.git references/cybench
+    ```
+    The adapter expects a `references/cybench/` directory containing `subtask_list.txt`, `task_list.txt`, and per-task `metadata/metadata.json` files.
+  </Step>
+  <Step title="Install Docker">
+    Most CyBench tasks require Docker to start challenge services. Install [Docker Engine](https://docs.docker.com/engine/install/) and ensure the daemon is running.
+  </Step>
+  <Step title="Set your model API key">
+    ```bash
+    export OPENAI_API_KEY="sk-..."
+    ```
+  </Step>
+</Steps>
+
+## Loading tasks
+
+```python
+from qitos.benchmark import CyBenchAdapter
+
+adapter = CyBenchAdapter(
+    cybench_root="references/cybench",
+    run_with_subtasks=True,   # guided mode
+)
+records = adapter.load_records(limit=5)
+tasks = adapter.to_tasks(records, split="guided")
+
+print(tasks[0].id)           # "cybench_benchmark_project_sekai..."
+print(tasks[0].objective)    # Subtask prompt (guided) or hard_prompt (unguided)
+print(tasks[0].inputs["categories"])   # e.g. ["crypto"]
+print(tasks[0].inputs["difficulty"])   # e.g. "easy"
+print(tasks[0].inputs["subtasks"])     # list of subtask dicts
+```
+
+One-line convenience loader:
+
+```python
+from qitos.benchmark.cybench.adapter import load_cybench_tasks
+
+tasks = load_cybench_tasks(
+    cybench_root="references/cybench",
+    run_with_subtasks=True,
+    limit=10,
+)
+```
+
+## Configuration
+
+`CyBenchAdapter` accepts the following parameters:
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `cybench_root` | `"references/cybench"` | Path to the CyBench repository |
+| `run_with_subtasks` | `True` | `True` for guided mode, `False` for unguided |
+| `default_max_steps` | `20` | Step budget per subtask objective |
+| `include_raw_record` | `True` | Attach raw metadata to `task.metadata` |
+
+## Running the evaluation
+
+The bundled `cybench_eval.py` runs a ReAct agent with file inspection and shell execution tools. In guided mode it runs one agent pass per subtask; in unguided mode it runs a single pass over the hard prompt.
+
+**Run a single task (guided):**
+
+```bash
+python examples/benchmarks/cybench_eval.py \
+  --cybench-root references/cybench \
+  --task-index 0 \
+  --max-steps 12 \
+  --model-name "Qwen/Qwen3-8B" \
+  --api-key "$OPENAI_API_KEY"
+```
+
+**Run a single task (unguided):**
+
+```bash
+python examples/benchmarks/cybench_eval.py \
+  --cybench-root references/cybench \
+  --task-index 0 \
+  --unguided-mode \
+  --max-steps 20 \
+  --api-key "$OPENAI_API_KEY"
+```
+
+**Run the full benchmark:**
+
+```bash
+python examples/benchmarks/cybench_eval.py \
+  --run-all \
+  --cybench-root references/cybench \
+  --limit 50 \
+  --max-workers 4 \
+  --output-jsonl results/cybench.jsonl \
+  --trace-logdir runs \
+  --api-key "$OPENAI_API_KEY"
+```
+
+**Use Docker isolation:**
+
+```bash
+python examples/benchmarks/cybench_eval.py \
+  --run-all \
+  --use-docker-env \
+  --docker-image python:3.11-slim \
+  --docker-network cybench_net \
+  --api-key "$OPENAI_API_KEY"
+```
+
+<Warning>
+Always run CyBench tasks in an isolated environment. Challenge services may expose ports or execute arbitrary code. Use `--use-docker-env` for production evaluations.
+</Warning>
+
+## Agent toolset
+
+The evaluation agent registers a minimal set of tools suited for CTF work:
+
+```python
+from qitos.kit import CodingToolSet
+from qitos.kit.tool.cybench import SubmitAnswer
+
+registry.include(
+    CodingToolSet(
+        workspace_root=workspace_root,
+        shell_timeout=90,
+        include_notebook=False,
+        enable_lsp=False,
+        enable_tasks=False,
+        enable_web=False,
+        expose_modern_names=False,
+    )
+)
+registry.register(SubmitAnswer())
+```
+
+The agent calls `submit_answer(answer=...)` to record a candidate flag. In guided mode, one `SubmitAnswer` call is expected per subtask. In unguided mode, a single call ends the task.
+
+You can extend the toolset with additional browser tools from `qitos.kit.tool.browser` (e.g. `WebSearch`, `ArchiveSearch`) by subclassing `CyBenchReactAgent` and registering them in `__init__`.
+
+## Task environment lifecycle
+
+`CyBenchRuntime` manages task workspace preparation and teardown:
+
+```python
+from qitos.benchmark import CyBenchRuntime
+
+runtime = CyBenchRuntime(
+    task_dir="references/cybench/benchmark/project_sekai/crypto_noisy_crc",
+    workspace="/tmp/cybench_ws",
+    run_start_docker=True,
+    script_timeout=300,
+)
+
+# Copies files, runs requirements.sh and start_docker.sh
+prep = runtime.prepare()
+
+# ... run your agent ...
+
+# Returns expected flag strings for scoring
+references = runtime.expected_answers(run_with_subtasks=True)
+
+# Stops Docker containers, optionally removes workspace
+runtime.cleanup()
+```
+
+## Scoring
+
+Use `score_cybench_submission` to compute all metrics at once:
+
+```python
+from qitos.benchmark import score_cybench_submission
+
+score = score_cybench_submission(
+    predictions=["flag{abc}", "flag{xyz}"],
+    references=["flag{abc}", "flag{xyz}"],
+    run_with_subtasks=True,
+)
+
+print(score["guided_subtask_score"])  # 1.0  (both subtasks solved)
+print(score["guided_final_score"])    # 1.0  (last subtask solved)
+print(score["unguided_success"])      # True
+print(score["exact_matches"])         # [True, True]
+print(score["partial_matches"])       # [True, True]
+```
+
+Partial match checks whether the token inside `{...}` appears anywhere in the prediction. Exact match requires the full normalized string.
+
+## Task structure
+
+```python
+Task(
+    id="cybench_benchmark_project_sekai_crypto_noisy_crc",
+    objective="Find the AES key used to encrypt the flag. Answer format: hex string",
+    inputs={
+        "benchmark": "cybench",
+        "split": "guided",
+        "categories": ["crypto"],
+        "difficulty": "easy",
+        "target_host": "127.0.0.1:5000",
+        "hard_prompt": "Capture the flag.",
+        "subtasks": [
+            {"question": "Find the AES key...", "answer_format": "hex string", "hints": [...]},
+        ],
+        "run_with_subtasks": True,
+    },
+    resources=[TaskResource(kind="dir", path="references/cybench/.../crypto_noisy_crc", required=True)],
+    env_spec=EnvSpec(type="docker", capabilities=["file", "process", "docker"]),
+    budget=TaskBudget(max_steps=20),
+)
+```
+
+## Expected output
+
+Each task result is one JSON line:
+
+```json
+{
+  "task_id": "cybench_benchmark_project_sekai_crypto_noisy_crc",
+  "mode": "guided",
+  "success": true,
+  "guided_subtask_score": 1.0,
+  "guided_final_score": 1.0,
+  "unguided_success": true,
+  "predictions": ["deadbeef1234"],
+  "references": ["deadbeef1234"],
+  "partial_matches": [true],
+  "stop_reason": "final",
+  "steps": 7,
+  "latency_seconds": 22.1
+}
+```
+
+After a full run the script prints aggregate metrics:
+
+```
+[CyBench] Metrics
+- cybench_unguided_success: 0.43
+- cybench_guided_subtask_score: 0.61
+- cybench_guided_final_score: 0.48
+- cybench_partial_match_rate: 0.68
+- mean_steps: 9.3
+- stop_reason_distribution: {"final": 0.85, "max_steps": 0.15}
+```
+
+Inspect individual traces with `qita`:
+
+```bash
+qita board --logdir runs
+qita replay --run runs/qitos_cybench_crypto_noisy_crc_20250101_120000
+```

@@ -1,0 +1,218 @@
+---
+title: "Lesson 4: Code security audit agent"
+description: "Turn the QitOS kernel into a domain-specific audit agent with defensive security tools, ranked findings, and a reproducible review flow."
+---
+
+This lesson teaches specialization.
+
+You will study `examples/real/code_security_audit_agent.py`, which turns the same `AgentModule + Engine` runtime into a defensive repository-audit agent.
+
+## What this lesson teaches in the QitOS mindmap
+
+| Mindmap branch | What changes in this lesson |
+|---|---|
+| Tools | Combine a domain-specific audit toolset with codebase and task tools |
+| Prompt policy | Use a domain workflow prompt instead of a generic coding prompt |
+| State | Track findings, not just edits or todos |
+| Reduce | Pull structured findings out of tool output and keep a ranked rolling memory |
+| Reproducibility | Seed a demo repo and audit it through the same kernel you already learned |
+
+## Why this lesson matters
+
+This is the lesson that shows whether a framework is genuinely extensible.
+
+If QitOS were only good at toy pattern demos, the runtime would start to break down here. Instead, the lesson keeps the same structure:
+
+- initialize state
+- attach toolsets
+- render a system prompt
+- let the model act
+- reduce observations into audit memory
+- inspect the run with qita
+
+Only the domain changes.
+
+<Steps>
+  <Step title="Compose the tool surface by domain">
+    The example uses three tool families:
+
+    ```python
+    super().__init__(
+        toolset=[
+            SecurityAuditToolSet(
+                workspace_root=workspace_root,
+                include_external=False,
+                max_matches=80,
+            ),
+            CodingToolSet(
+                workspace_root=workspace_root,
+                include_notebook=False,
+                enable_lsp=False,
+                enable_tasks=False,
+                enable_web=False,
+                expose_legacy_aliases=True,
+                expose_modern_names=False,
+                profile="codebase",
+            ),
+            TaskToolSet(workspace_root=workspace_root),
+        ],
+        llm=llm,
+        model_parser=ReActTextParser(),
+    )
+    ```
+
+    This is a core QitOS lesson:
+
+    - use a domain toolset for domain reasoning
+    - add a codebase toolset for low-level inspection
+    - add a task board when the workflow benefits from explicit progress tracking
+  </Step>
+
+  <Step title="Encode the audit workflow in the system prompt">
+    The example uses `SECURITY_AUDIT_SYSTEM_PROMPT` and keeps the intended flow visible in `prepare()`:
+
+    ```python
+    lines = [
+        f"Audit task: {state.task}",
+        f"Workspace: {WORKSPACE}",
+        f"Step: {state.current_step}/{state.max_steps}",
+        "Suggested flow: inventory -> entrypoints -> sinks/secrets/config/dependencies -> hotspots -> final ranked findings.",
+    ]
+    ```
+
+    That one line matters a lot. It tells the model what kind of audit it is running:
+
+    - inventory first
+    - then entrypoints and dangerous sinks
+    - then ranked synthesis
+
+    In other words, you are teaching a research protocol, not just asking for "security thoughts."
+  </Step>
+
+  <Step title="Track findings as first-class state">
+    The audit state is intentionally lean:
+
+    ```python
+    @dataclass
+    class SecurityAuditState(StateSchema):
+        scratchpad: list[str] = field(default_factory=list)
+        findings: list[str] = field(default_factory=list)
+    ```
+
+    For a domain agent, this is the right question to ask:
+
+    what do I need the next step to remember?
+
+    Here the answer is:
+
+    - the recent audit trajectory
+    - a compact list of candidate findings
+  </Step>
+
+  <Step title="Reduce structured tool output into audit memory">
+    The example does not store every raw scan result forever. It extracts the high-signal parts:
+
+    ```python
+    if isinstance(first, dict):
+        data = (
+            first.get("data", {})
+            if isinstance(first.get("data", {}), dict)
+            else {}
+        )
+        for item in list(data.get("findings", []) or [])[:3]:
+            title = str(item.get("title", "finding"))
+            location = f"{item.get('file', '?')}:{item.get('line', '?')}"
+            state.findings.append(f"{title} @ {location}")
+        if decision.mode == "final":
+            state.final_result = str(decision.final_answer or "")
+    ```
+
+    This is exactly how a research-quality agent should behave:
+
+    - keep the trace complete for observability
+    - keep the state compact for the next step
+  </Step>
+
+  <Step title="Make the lesson reproducible by seeding the repo">
+    The example seeds a tiny vulnerable demo repository before running:
+
+    ```python
+    def _seed_demo_repo() -> None:
+        WORKSPACE.mkdir(parents=True, exist_ok=True)
+        app = WORKSPACE / "app.py"
+        if not app.exists():
+            app.write_text(
+                "from flask import Flask, request\\n"
+                "import subprocess\\n\\n"
+                "app = Flask(__name__)\\n"
+                "DEBUG = True\\n"
+                "SECRET_KEY = 'prod-secret-value-123456'\\n\\n"
+                "@app.route('/run')\\n"
+                "def run():\\n"
+                "    subprocess.run(request.args.get('cmd'), shell=True)\\n"
+                "    return 'ok'\\n",
+                encoding="utf-8",
+            )
+    ```
+
+    This is a strong research habit: make the tutorial runnable without requiring readers to supply their own vulnerable repo.
+  </Step>
+
+  <Step title="Run the audit and study the trace like a review artifact">
+    Run the example:
+
+    ```bash
+    python examples/real/code_security_audit_agent.py
+    ```
+
+    Then inspect it:
+
+    ```bash
+    qita board --logdir runs
+    ```
+
+    In the trace, inspect:
+
+    - whether the agent inventories before scanning deeply
+    - which findings get promoted into `state.findings`
+    - whether the final answer reads like a ranked audit, not an unordered dump
+  </Step>
+</Steps>
+
+## Full example
+
+The full runnable lesson lives at:
+
+- [`examples/real/code_security_audit_agent.py`](https://github.com/Qitor/qitos/blob/main/examples/real/code_security_audit_agent.py)
+
+## The bigger lesson
+
+If lesson 1 taught you the loop and lesson 3 taught you long-running behavior, lesson 4 teaches the deepest QitOS idea:
+
+the framework is not opinionated about your domain, but it is opinionated about where domain logic belongs.
+
+In QitOS, domain logic belongs in:
+
+- state shape
+- prompt policy
+- tool composition
+- `reduce()` semantics
+
+It does not require a different runtime.
+
+## Where to go after the track
+
+<CardGroup cols={2}>
+  <Card title="Build your own agent" icon="sparkles" href="/guides/build-your-first-agent">
+    Use the mindmap from these four lessons to design your own AgentModule from scratch.
+  </Card>
+  <Card title="Kit reference" icon="toolbox" href="/reference/kit">
+    Look up the concrete parsers, planners, toolsets, and prompts used across the track.
+  </Card>
+  <Card title="Benchmarks overview" icon="trophy" href="/benchmarks/overview">
+    Apply the same kernel to GAIA, Tau-Bench, and CyBench.
+  </Card>
+  <Card title="Observability" icon="chart-line" href="/guides/observability">
+    Deepen your inspection workflow with qita board, replay, and export.
+  </Card>
+</CardGroup>

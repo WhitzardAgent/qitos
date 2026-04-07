@@ -1,0 +1,217 @@
+---
+title: "CLI Reference"
+description: "Complete reference for the qita (trace & observability) and qit (developer tools) command-line interfaces."
+---
+
+QitOS ships two CLI tools:
+
+- **`qita`** — trace inspection, web board, replay, and HTML export
+- **`qit`** — developer tools for managing third-party skills
+
+If you care about reproducibility, debugging, or reviewing long-running behavior, `qita` is the more important CLI. It is the human-facing layer for the trace artifacts produced by QitOS runs.
+
+---
+
+## qita
+
+The `qita` CLI starts a local web server that reads the structured trace artifacts written by the `TraceWriter` during runs.
+
+```
+qita <command> [options]
+```
+
+### When to use qita
+
+Use `qita` when you want to:
+
+- compare runs after prompt, tool, or model changes
+- inspect a long-running trajectory step by step
+- replay a run for debugging or demos
+- export a single run as a standalone review artifact
+
+<AccordionGroup>
+
+<Accordion title="qita board">
+
+Start the qita web board — an interactive dashboard listing all runs in a log directory.
+
+**Usage**
+
+```bash
+qita board [--logdir <dir>] [--host <host>] [--port <port>]
+```
+
+**Flags**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--logdir <dir>` | `./runs` | Root directory containing trace run subdirectories |
+| `--host <host>` | `127.0.0.1` | Host address to bind the HTTP server to |
+| `--port <port>` | `8765` | TCP port to listen on |
+
+**What it does**
+
+The board discovers all run directories under `--logdir` (each must contain a `manifest.json`). It renders a filterable card grid with per-run metadata: stop reason, step count, event count, model ID, prompt hash, and run config hash. Each card links to the run detail view, replay, and raw/HTML export.
+
+The board auto-refreshes every 2.5 seconds when "Auto refresh" is checked.
+
+**Example**
+
+```bash
+# View all runs stored in ./runs
+qita board
+
+# Use a custom log directory and port
+qita board --logdir /data/agent-runs --port 9000
+```
+
+**Board routes**
+
+| Route | Description |
+|-------|-------------|
+| `/` | Run list dashboard |
+| `/run/<id>` | Full step-by-step trace view |
+| `/replay/<id>` | Animated step replay |
+| `/export/raw/<id>` | Download raw JSON payload |
+| `/export/html/<id>` | Download self-contained HTML |
+| `/api/runs` | JSON list of all discovered runs |
+| `/api/run/<id>` | JSON payload for a single run |
+
+</Accordion>
+
+<Accordion title="qita replay">
+
+Open one specific run directly in the replay view — a step-by-step animated playback of the agent trajectory.
+
+**Usage**
+
+```bash
+qita replay --run <dir> [--host <host>] [--port <port>]
+```
+
+**Flags**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--run <dir>` | required | Path to the run directory (e.g. `./runs/agent_20260407_120000`) |
+| `--host <host>` | `127.0.0.1` | Host address to bind |
+| `--port <port>` | `8765` | TCP port to listen on |
+
+**What it does**
+
+Starts the board server with the parent directory as `--logdir` and opens the browser URL directly at `/replay/<run_id>`. The replay view steps through events in chronological order with a configurable playback speed (`?speed=<ms>`, minimum 100 ms).
+
+**Example**
+
+```bash
+qita replay --run ./runs/agent_20260407_120000_abcdef
+```
+
+Then open `http://127.0.0.1:8765/replay/agent_20260407_120000_abcdef` in your browser.
+
+</Accordion>
+
+<Accordion title="qita export">
+
+Export one run to a self-contained standalone HTML file that can be shared without running the board server.
+
+**Usage**
+
+```bash
+qita export --run <dir> --html <output>
+```
+
+**Flags**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--run <dir>` | required | Path to the run directory |
+| `--html <output>` | required | Output path for the HTML file (e.g. `./report.html`) |
+
+**What it does**
+
+Reads `manifest.json`, `events.jsonl`, and `steps.jsonl` from the run directory, bundles them as inline JSON inside a single HTML document, and writes the result to `--html`. The output file contains the full trace viewer with no external dependencies.
+
+**Example**
+
+```bash
+qita export \
+  --run ./runs/agent_20260407_120000_abcdef \
+  --html ./reports/run_abcdef.html
+```
+
+</Accordion>
+
+</AccordionGroup>
+
+---
+
+## qit
+
+The `qit` CLI provides developer utilities. Currently it exposes one subcommand for managing third-party skills.
+
+```
+qit <command> [options]
+```
+
+<AccordionGroup>
+
+<Accordion title="qit skill">
+
+Manage third-party skills that extend the QitOS agent framework.
+
+**Usage**
+
+```bash
+qit skill <subcommand> [options]
+```
+
+`qit skill` delegates to the skill management CLI in `qitos.kit.skill.cli`. Run `qit skill --help` to list available subcommands for the installed version.
+
+**Example**
+
+```bash
+# List installed skills
+qit skill list
+
+# Install a skill package
+qit skill install my-skill-package
+```
+
+</Accordion>
+
+</AccordionGroup>
+
+---
+
+## Trace artifact structure
+
+Every run that uses `TraceWriter` (enabled by default in `AgentModule.run()`) produces the following files under `<trace_logdir>/<run_id>/`:
+
+```
+runs/
+└── agent_20260407_120000_abcdef/
+    ├── manifest.json    # Run metadata, config hash, model ID, final summary
+    ├── events.jsonl     # One JSON object per runtime event (INIT, DECIDE, ACT, ...)
+    └── steps.jsonl      # One JSON object per step (decision, actions, observations)
+```
+
+| File | Description |
+|------|-------------|
+| `manifest.json` | Written at run start (stub) and finalized at run end with `status`, `stop_reason`, `final_result`, step and event counts, `model_id`, `prompt_hash`, `run_config_hash`, and `task_meta` |
+| `events.jsonl` | Append-only stream of `RuntimeEvent` objects; each has `step_id`, `phase`, `ts` (ISO 8601), `ok`, `payload`, and optional `error` |
+| `steps.jsonl` | Append-only stream of `StepRecord` objects; each has `step_id`, `decision`, `actions`, `action_results`, `observation`, `critic_outputs`, and a state diff |
+
+<Note>
+The `qita board` and `qita replay` commands require all three files to be present. A directory missing `manifest.json` is not displayed in the board.
+</Note>
+
+## Suggested workflow
+
+For most research and debugging loops:
+
+1. Run your agent with tracing enabled.
+2. Open `qita board --logdir runs`.
+3. Compare stop reasons, step counts, and summaries across runs.
+4. Open the most interesting run in detail or replay view.
+5. Export the run when you need to share or archive it.

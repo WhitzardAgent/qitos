@@ -1,0 +1,108 @@
+---
+title: "Agent Patterns"
+description: "ReAct, PlanAct, Tree-of-Thought, and Reflexion patterns with working code examples."
+---
+
+QitOS ships with four canonical agent patterns. Each pattern changes the policy layer, but all of them still run through the same `AgentModule + Engine` kernel.
+
+Use this page as the map. Use the [Tutorials](/tutorials) track when you want a step-by-step build.
+
+| Pattern | Best for | Key mechanism |
+|---|---|---|
+| **ReAct** | Open-ended tool use, coding, search | Thought -> Action -> Observation loop |
+| **PlanAct** | Multi-step tasks with a known structure | Explicit plan list, cursor advances on success |
+| **Tree-of-Thought** | Exploration, research, question answering | `Decision.branch()` over scored candidates |
+| **Reflexion** | Tasks requiring grounded self-critique | Actor drafts, critic evaluates, loop until grounded |
+
+## Pattern overview
+
+### ReAct
+
+ReAct is the simplest useful pattern in QitOS.
+
+- The model emits `Thought:` and `Action:`
+- `ReActTextParser` parses the text into `Decision`
+- tools execute
+- `reduce()` appends the latest trajectory to state
+
+Use it when the task is open-ended and the next useful action depends on the latest observation.
+
+Primary example:
+
+- `examples/patterns/react.py`
+
+Best next reading:
+
+- [Lesson 1: ReAct](/tutorials/react)
+
+### PlanAct
+
+PlanAct adds one explicit planning layer before normal execution.
+
+- `decide()` creates the plan when needed
+- state holds `plan_steps` and a `cursor`
+- later steps still use the Engine's ordinary model path
+
+Use it when the task has a stable multi-step structure and you want progress to be inspectable.
+
+Primary example:
+
+- `examples/patterns/planact.py`
+
+Best next reading:
+
+- [Lesson 2: PlanAct](/tutorials/planact)
+
+### Tree-of-Thought
+
+Tree-of-Thought is for exploration rather than single-path execution.
+
+- candidate branches are generated and scored
+- the Engine selects a branch
+- evidence accumulates across branch decisions
+
+Use it when several next actions are plausible and the cost of early commitment is high.
+
+Primary example:
+
+- `examples/patterns/tot.py`
+
+### Reflexion
+
+Reflexion adds grounded self-critique.
+
+- the actor proposes a move
+- a critic evaluates the trajectory
+- the loop can retry or stop based on critique output
+
+Use it when a task benefits from explicit self-checking rather than only raw continuation.
+
+Primary example:
+
+- `examples/patterns/reflexion.py`
+
+## How to choose
+
+| If your task feels like... | Start with... |
+|---|---|
+| "I need the next best tool call right now." | ReAct |
+| "The task has a stable checklist or execution order." | PlanAct |
+| "I need to compare several plausible branches." | Tree-of-Thought |
+| "I need grounded critique and retry behavior." | Reflexion |
+
+## Suggested learning order
+
+<CardGroup cols={2}>
+  <Card title="Lesson 1: ReAct" icon="brain" href="/tutorials/react">
+    Learn the minimal thought-action-observation loop.
+  </Card>
+  <Card title="Lesson 2: PlanAct" icon="list-check" href="/tutorials/planact">
+    Learn explicit planning without changing the kernel.
+  </Card>
+  <Card title="Claude Code-style agent" icon="rectangle-terminal" href="/tutorials/claude-code">
+    See how the same kernel becomes a long-running coding agent.
+  </Card>
+  <Card title="Code security audit agent" icon="shield-check" href="/tutorials/code-security-audit">
+    See how the same kernel becomes a domain-specific audit workflow.
+  </Card>
+</CardGroup>

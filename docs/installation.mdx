@@ -1,0 +1,95 @@
+---
+title: "Installation"
+description: "Install QitOS from PyPI or source, with optional extras for models and benchmarks."
+---
+
+<Warning>
+QitOS is currently **Alpha**. The core `AgentModule + Engine` kernel, tracing, and canonical examples are stable. Higher-level APIs may change between releases. Pin your version in production.
+</Warning>
+
+## Requirements
+
+QitOS requires **Python 3.9 or later**. It is tested on Python 3.9, 3.10, 3.11, and 3.12.
+
+## Standard install
+
+Install the core framework from PyPI:
+
+```bash
+pip install qitos
+```
+
+The core install includes the `AgentModule + Engine` kernel, the `qita` observability tools, and the `kit` toolkit modules. It does not include the OpenAI client or benchmark dataset loaders.
+
+## Optional extras
+
+Use extras to add support for models, benchmarks, or everything at once.
+
+<CodeGroup>
+
+```bash OpenAI support
+pip install "qitos[models]"
+```
+
+```bash Benchmark adapters
+pip install "qitos[benchmarks]"
+```
+
+```bash Everything
+pip install "qitos[all]"
+```
+
+</CodeGroup>
+
+| Extra | What it adds |
+|---|---|
+| `models` | `openai>=1.0.0` — required to use OpenAI-compatible model endpoints |
+| `benchmarks` | `datasets` and `huggingface_hub` — required for GAIA, Tau-Bench, and CyBench adapters |
+| `all` | All of the above |
+
+<Tip>
+If you're just getting started, `pip install "qitos[models]"` is the right choice. It gives you everything you need to run the quickstart examples.
+</Tip>
+
+## Source install
+
+Clone the repository and install in editable mode with all development dependencies:
+
+```bash
+git clone https://github.com/Qitor/qitos.git
+cd qitos
+pip install -e ".[dev,models,benchmarks]"
+```
+
+The `dev` extra adds `pytest`, `black`, `flake8`, `mypy`, and the build tools used by the QitOS team.
+
+## Verify your installation
+
+Confirm the package is installed and check the version:
+
+```bash
+python -c "import qitos; print(qitos.__version__)"
+```
+
+You should see output like:
+
+```
+0.1.0a1
+```
+
+You can also verify the `qita` CLI is on your path:
+
+```bash
+qita --help
+```
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Run your first agent in under 2 minutes
+  </Card>
+  <Card title="Core concepts" icon="book" href="/concepts/agent-module">
+    Understand AgentModule, Engine, State, and Tools
+  </Card>
+</CardGroup>

@@ -1,0 +1,94 @@
+{
+  "projectType": "framework",
+  "projectName": "QitOS",
+  "projectDescription": "A research-first agent framework for building reproducible LLM agents with a clean AgentModule + Engine kernel, built-in tracing, and benchmark-ready workflows.",
+  "theme": "luma",
+  "primaryColor": "#94cb04",
+  "lightColor": "#545454",
+  "darkColor": null,
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Docs",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "installation"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/agent-module",
+              "concepts/engine",
+              "concepts/state-and-task",
+              "concepts/tools-and-registry",
+              "concepts/tracing"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/build-your-first-agent",
+              "guides/agent-patterns",
+              "guides/memory-and-history",
+              "guides/critics-and-stop-criteria",
+              "guides/observability"
+            ]
+          },
+          {
+            "group": "Benchmarks",
+            "pages": [
+              "benchmarks/overview",
+              "benchmarks/gaia",
+              "benchmarks/tau-bench",
+              "benchmarks/cybench"
+            ]
+          },
+          {
+            "group": "Reference",
+            "pages": [
+              "reference/api",
+              "reference/kit",
+              "reference/cli",
+              "reference/configuration"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "AgentModule + Engine kernel: clean separation of policy and execution for reproducible research",
+    "Built-in run tracing with manifest, events, and steps artifacts per run",
+    "qita board: web UI for run overview, trace inspection, step replay, and HTML export",
+    "Canonical agent patterns: ReAct, PlanAct, Tree-of-Thought, Reflexion out of the box",
+    "Kit toolkit: parsers, memory adapters, critics, planners, and tool sets",
+    "Benchmark adapters: GAIA, Tau-Bench, and CyBench runners on the same kernel",
+    "Skill system for extending agents with third-party capabilities via qit CLI",
+    "Task + Env abstraction with structured budget, resource validation, and lifecycle management"
+  ],
+  "publicApiSurface": [
+    "AgentModule (init_state, prepare, build_system_prompt, decide, reduce, should_stop, run)",
+    "Engine (run, register_hook, unregister_hook, clear_hooks)",
+    "EngineResult (state, records, events, step_count, task_result)",
+    "Decision (act, final, wait, branch)",
+    "Action",
+    "StateSchema",
+    "Task, TaskBudget, TaskResource, TaskResult",
+    "Env, EnvSpec",
+    "tool decorator",
+    "ToolRegistry",
+    "Memory, History, HistoryPolicy",
+    "StopReason, QitosRuntimeError",
+    "qita board / qita replay / qita export (CLI)",
+    "qit skill (CLI)",
+    "kit.ReActTextParser, kit.JsonParser, kit.XmlParser",
+    "kit.EditorToolSet, kit.ShellToolSet, kit.WebToolSet",
+    "kit.WindowMemory, kit.SummaryMemory, kit.VectorMemory",
+    "models.OpenAICompatibleModel"
+  ]
+}

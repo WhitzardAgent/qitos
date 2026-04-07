@@ -1,0 +1,279 @@
+---
+title: "Tools and Registry"
+description: "QitOS tools are plain Python callables marked with the @tool decorator. ToolRegistry collects them and makes them available to the Engine for execution."
+---
+
+Tools are the actions your agent can take. At runtime, the Engine dispatches tool calls from a `Decision` to the `ToolRegistry`, which looks up and executes the matching callable.
+
+## The `@tool` decorator
+
+Mark any callable as a QitOS tool with `@tool`. The decorator attaches metadata to the function without changing its behavior — you can still call the function normally in tests.
+
+```python
+from qitos import tool
+from qitos.core.tool import ToolPermission
+
+@tool(
+    name="read_file",
+    description="Read the contents of a file at the given path.",
+    timeout_s=10.0,
+    permissions=ToolPermission(filesystem_read=True),
+)
+def read_file(path: str) -> str:
+    with open(path, "r") as f:
+        return f.read()
+```
+
+### `@tool` parameters
+
+| Parameter     | Type                        | Description                                                                  |
+| ------------- | --------------------------- | ---------------------------------------------------------------------------- |
+| `name`        | `str \| None`               | Tool name used in `Decision.actions`. Defaults to the function's `__name__`. |
+| `description` | `str \| None`               | Description shown to the LLM. Falls back to the function's docstring.        |
+| `timeout_s`   | `float \| None`             | Per-call timeout in seconds. `None` means no timeout.                        |
+| `max_retries` | `int`                       | How many times to retry on failure. Defaults to `0`.                         |
+| `permissions` | `ToolPermission \| None`    | Declares which system capabilities this tool requires.                        |
+| `required_ops`| `list[str] \| None`         | Low-level operation identifiers required from the environment.               |
+
+### `ToolPermission`
+
+`ToolPermission` declares what the tool is allowed to do. The Engine uses this information during preflight validation to check environment capabilities.
+
+```python
+from qitos.core.tool import ToolPermission
+
+# A tool that reads files and makes network requests
+ToolPermission(
+    filesystem_read=True,
+    filesystem_write=False,
+    network=True,
+    command=False,
+)
+```
+
+All four fields default to `False`.
+
+---
+
+## ToolRegistry
+
+`ToolRegistry` is the collection the Engine queries when dispatching actions. Pass it to your `AgentModule` via the constructor.
+
+```python
+from qitos import ToolRegistry
+
+registry = ToolRegistry()
+```
+
+### Registering individual tools
+
+Use `registry.register()` to add a single callable or `BaseTool` instance:
+
+```python
+@tool(name="add")
+def add(a: int, b: int) -> int:
+    """Add two integers."""
+    return a + b
+
+registry.register(add)
+```
+
+You can also supply a custom name or override metadata at registration time:
+
+```python
+from qitos.core.tool import ToolMeta
+
+registry.register(add, name="math.add")
+registry.register(some_func, meta=ToolMeta(description="Custom description"))
+```
+
+<Warning>
+  Tool names must be unique within a registry. Registering two tools with the same name raises a `ValueError`.
+</Warning>
+
+### Scanning a module or object with `include`
+
+`registry.include(obj)` scans all public, callable attributes of `obj` and registers any that have `@tool` metadata:
+
+```python
+class MyTools:
+    @tool(name="summarize")
+    def summarize(self, text: str) -> str:
+        ...
+
+    @tool(name="translate")
+    def translate(self, text: str, lang: str) -> str:
+        ...
+
+tools = MyTools()
+registry.include(tools)
+```
+
+This is the preferred pattern when you organize related tools as methods on a class.
+
+### Registering toolsets
+
+A _toolset_ is any object that has a `tools()` method returning a list of callables or `BaseTool` instances. Register it with `register_toolset()`:
+
+```python
+from qitos.kit import CodingToolSet
+
+registry.register_toolset(
+    CodingToolSet(
+        workspace_root="/tmp/work",
+        include_notebook=False,
+        enable_lsp=False,
+        enable_tasks=False,
+        enable_web=False,
+        expose_modern_names=False,
+    )
+)
+```
+
+Tools from a toolset are automatically namespaced: `toolset_name.tool_name`. You can override the namespace:
+
+```python
+registry.register_toolset(CodingToolSet(workspace_root="/tmp/work"), namespace="coding")
+# registers as coding.view, coding.str_replace, coding.run_command, etc.
+```
+
+---
+
+## `BaseTool` and `FunctionTool`
+
+For tools that need shared state or lifecycle management, subclass `BaseTool` directly:
+
+```python
+from qitos.core.tool import BaseTool, ToolSpec, ToolPermission
+
+
+class DatabaseTool(BaseTool):
+    """Query a SQLite database."""
+
+    def __init__(self, db_path: str):
+        self.db_path = db_path
+        super().__init__(
+            ToolSpec(
+                name="query_db",
+                description="Run a SQL query and return rows as a list.",
+                parameters={"sql": {"type": "string", "description": "SQL statement"}},
+                required=["sql"],
+                permissions=ToolPermission(filesystem_read=True),
+            )
+        )
+
+    def run(self, sql: str) -> list:
+        import sqlite3
+        with sqlite3.connect(self.db_path) as conn:
+            return conn.execute(sql).fetchall()
+
+
+registry.register(DatabaseTool(db_path="data.db"))
+```
+
+`FunctionTool` is the wrapper that `register()` creates automatically when you pass a plain callable. You rarely need to instantiate it directly.
+
+<Note>
+For most practical coding agents, prefer preset toolsets such as `CodingToolSet` or the registry builders in `qitos.kit.toolset` rather than hand-registering every file and shell tool yourself.
+</Note>
+
+---
+
+## Passing the registry to AgentModule
+
+Pass your populated `ToolRegistry` to `AgentModule.__init__()`:
+
+```python
+from qitos import AgentModule, ToolRegistry, tool
+
+
+class SearchAgent(AgentModule[MyState, dict, Action]):
+    def __init__(self):
+        registry = ToolRegistry()
+        registry.register(web_search)
+        registry.register(read_file)
+        super().__init__(tool_registry=registry)
+```
+
+The Engine reads `agent.tool_registry` and creates an `ActionExecutor` from it. You can also call `registry.get_tool_descriptions()` to get a formatted string of all registered tools for inclusion in your system prompt:
+
+```python
+def build_system_prompt(self, state: MyState) -> str | None:
+    tools_text = self.tool_registry.get_tool_descriptions()
+    return f"You have access to these tools:\n\n{tools_text}"
+```
+
+---
+
+## Full example
+
+<CodeGroup>
+```python tools.py
+from qitos import tool, ToolPermission
+
+@tool(
+    name="read_file",
+    timeout_s=5.0,
+    permissions=ToolPermission(filesystem_read=True),
+)
+def read_file(path: str) -> str:
+    """Read the contents of a file."""
+    with open(path) as f:
+        return f.read()
+
+
+@tool(
+    name="write_file",
+    timeout_s=5.0,
+    permissions=ToolPermission(filesystem_write=True),
+)
+def write_file(path: str, content: str) -> str:
+    """Write content to a file."""
+    with open(path, "w") as f:
+        f.write(content)
+    return f"Written {len(content)} bytes to {path}"
+```
+
+```python agent.py
+from dataclasses import dataclass
+from typing import Any
+
+from qitos import AgentModule, StateSchema, ToolRegistry
+
+from .tools import read_file, write_file
+
+
+@dataclass
+class EditorState(StateSchema):
+    files_read: list[str] = None
+
+    def __post_init__(self):
+        if self.files_read is None:
+            self.files_read = []
+
+
+class EditorAgent(AgentModule[EditorState, dict[str, Any], Any]):
+    def __init__(self, llm):
+        registry = ToolRegistry()
+        registry.register(read_file)
+        registry.register(write_file)
+        super().__init__(tool_registry=registry, llm=llm)
+
+    def init_state(self, task: str, **kwargs: Any) -> EditorState:
+        return EditorState(task=task, max_steps=int(kwargs.get("max_steps", 10)))
+
+    def build_system_prompt(self, state: EditorState) -> str | None:
+        return (
+            "You are a file editor.\n\n"
+            f"Tools:\n{self.tool_registry.get_tool_descriptions()}"
+        )
+
+    def reduce(self, state: EditorState, observation: dict, decision) -> EditorState:
+        for action in decision.actions:
+            if action.name == "read_file":
+                state.files_read.append(action.args.get("path", ""))
+        if decision.final_answer:
+            state.final_result = decision.final_answer
+        return state
+```
+</CodeGroup>

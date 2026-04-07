@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 from .tool import BaseTool, FunctionTool, ToolMeta, get_tool_meta
 
@@ -63,6 +63,20 @@ class ToolRegistry:
                 ),
             )
 
+        return self
+
+    def include_toolset(self, items: Any) -> "ToolRegistry":
+        """Include tools, toolsets, registries, or nested collections as one bundle.
+
+        This is the default composition-oriented API for end users. It accepts:
+
+        - one atomic tool
+        - one toolset object with ``tools()``
+        - one existing ``ToolRegistry``
+        - a nested list/tuple/set containing any mix of the above
+        """
+        for item in self._iter_toolset_items(items):
+            self._include_toolset_item(item)
         return self
 
     def include(self, obj: Any) -> "ToolRegistry":
@@ -238,6 +252,45 @@ class ToolRegistry:
             raise ValueError(f"Tool name collision: '{tool_obj.name}'")
         self._tools[tool_obj.name] = tool_obj
         self._origins[tool_obj.name] = origin
+
+    def _include_toolset_item(self, item: Any) -> None:
+        if item is None:
+            return
+        if isinstance(item, ToolRegistry):
+            self._merge_registry(item)
+            return
+        if isinstance(item, BaseTool) or callable(item):
+            self.register(item)
+            return
+        if hasattr(item, "tools") and callable(getattr(item, "tools")):
+            if item not in self._toolsets:
+                self._toolsets.append(item)
+            for nested in item.tools():
+                self._include_toolset_item(nested)
+            return
+        raise TypeError(
+            "include_toolset() accepts tools, toolsets, registries, or nested collections"
+        )
+
+    def _iter_toolset_items(self, items: Any) -> Iterable[Any]:
+        if isinstance(items, (list, tuple, set)):
+            for item in items:
+                yield from self._iter_toolset_items(item)
+            return
+        yield items
+
+    def _merge_registry(self, other: "ToolRegistry") -> None:
+        for toolset in getattr(other, "_toolsets", []):
+            if toolset not in self._toolsets:
+                self._toolsets.append(toolset)
+        for name in other.list_tools():
+            tool = other.get(name)
+            if tool is None:
+                continue
+            origin = getattr(other, "_origins", {}).get(
+                name, ToolOrigin(source="function")
+            )
+            self._register_tool_object(tool, origin=origin)
 
     def __contains__(self, name: str) -> bool:
         return name in self._tools

@@ -1,0 +1,110 @@
+---
+title: "Benchmarks"
+description: "Run GAIA, Tau-Bench, and CyBench on the same AgentModule + Engine kernel for reproducible agent research."
+---
+
+Benchmarks are the ground truth for agent research. Without a reproducible evaluation harness, it's impossible to know whether a change in model, prompt, or planner actually improved performance — or just got lucky on a particular run.
+
+QitOS ships first-class adapters for three standard benchmarks. Every benchmark runs through the same `AgentModule + Engine` execution kernel, so your trace artifacts, replay files, and run metadata are identical whether you're evaluating on GAIA or CyBench.
+
+## Supported benchmarks
+
+| Benchmark | Domain | Primary metric |
+|-----------|--------|----------------|
+| [GAIA](/benchmarks/gaia) | General AI assistant tasks | Exact match accuracy |
+| [Tau-Bench](/benchmarks/tau-bench) | Tool-agent-user interaction | Reward (pass^k) |
+| [CyBench](/benchmarks/cybench) | CTF-style security evaluation | Guided subtask score |
+
+## Install benchmark dependencies
+
+Benchmark adapters require optional dependencies that are not installed with the base `qitos` package.
+
+```bash
+pip install "qitos[benchmarks]"
+```
+
+This installs `datasets`, `huggingface_hub`, and other packages needed by the adapters.
+
+## The single kernel rule
+
+Every benchmark adapter converts its native dataset format into canonical `Task` objects. The `Engine` then runs those tasks through your `AgentModule` exactly as it would for any other task. There is no separate benchmark runner, no second orchestrator, and no special execution mode.
+
+```
+Dataset rows
+    ↓  BenchmarkAdapter.to_tasks()
+list[Task]
+    ↓  Engine.run(task)
+Trace + Steps + Manifest
+```
+
+This means:
+- Benchmark runs produce the same `manifest.json`, `events.jsonl`, and `steps.jsonl` artifacts as any other run.
+- You can replay benchmark runs with `qita replay --run <run_dir>`.
+- You can compare runs across benchmarks using `qita board`.
+
+## Base interface
+
+All three adapters extend `BenchmarkAdapter` from `qitos.benchmark.base`:
+
+```python
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from typing import Any, Iterable, Mapping, Optional
+
+from qitos.core.task import Task
+
+
+@dataclass
+class BenchmarkSource:
+    """Metadata describing one benchmark data source."""
+    name: str
+    split: str
+    subset: Optional[str] = None
+    version: Optional[str] = None
+
+
+class BenchmarkAdapter(ABC):
+    """Base adapter interface for converting benchmark samples to Task objects."""
+
+    source: BenchmarkSource
+
+    @abstractmethod
+    def to_tasks(
+        self,
+        records: Iterable[Mapping[str, Any]],
+        split: str,
+        limit: Optional[int] = None,
+    ) -> list[Task]:
+        """Convert iterable records into validated QitOS Task objects."""
+```
+
+Each adapter also exposes a `load_records()` method specific to its dataset source (HuggingFace, vendored files, or a local directory), and a convenience function for one-line loading.
+
+## Inspecting results
+
+After a benchmark run, use `qita` to inspect the trace:
+
+```bash
+# View all runs in a log directory
+qita board --logdir runs
+
+# Replay a single run step by step
+qita replay --run runs/<run_id>
+
+# Export a run to standalone HTML
+qita export --run runs/<run_id> --html run.html
+```
+
+Each result entry in the output JSONL file includes `task_id`, `prediction`, `stop_reason`, `steps`, and `latency_seconds` so you can compute aggregate metrics without re-running.
+
+<CardGroup cols={3}>
+  <Card title="GAIA" icon="magnifying-glass" href="/benchmarks/gaia">
+    General AI assistant benchmark over web research, file reading, and multi-step reasoning tasks
+  </Card>
+  <Card title="Tau-Bench" icon="users" href="/benchmarks/tau-bench">
+    Tool-agent-user benchmark with retail and airline customer service environments
+  </Card>
+  <Card title="CyBench" icon="shield-halved" href="/benchmarks/cybench">
+    CTF-style security evaluation with guided subtask scoring and Docker isolation
+  </Card>
+</CardGroup>

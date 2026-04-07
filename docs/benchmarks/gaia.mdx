@@ -1,0 +1,222 @@
+---
+title: "GAIA"
+description: "Run the GAIA general AI assistant benchmark with QitOS using the GaiaAdapter and a ReAct web research agent."
+---
+
+GAIA (General AI Assistants) is a benchmark of real-world tasks that require multi-step reasoning, web research, file inspection, and arithmetic. Tasks are grouped into three difficulty levels and evaluated by exact-match comparison to a reference answer.
+
+QitOS provides `GaiaAdapter` to convert GAIA dataset rows into `Task` objects, and a full evaluation script in `examples/benchmarks/gaia_eval.py` that wires up a ReAct web research agent against the dataset.
+
+## Setup
+
+<Steps>
+  <Step title="Install benchmark dependencies">
+    ```bash
+    pip install "qitos[benchmarks]"
+    ```
+  </Step>
+  <Step title="Authenticate with HuggingFace">
+    GAIA is a gated dataset. Request access at [huggingface.co/datasets/gaia-benchmark/GAIA](https://huggingface.co/datasets/gaia-benchmark/GAIA), then set your token:
+
+    ```bash
+    export HF_TOKEN="hf_..."
+    ```
+  </Step>
+  <Step title="Set your model API key">
+    ```bash
+    export OPENAI_API_KEY="sk-..."
+    # or for a custom endpoint:
+    export OPENAI_BASE_URL="https://api.siliconflow.cn/v1/"
+    ```
+  </Step>
+</Steps>
+
+## Loading tasks
+
+Use `GaiaAdapter` to load the dataset and convert rows to `Task` objects:
+
+```python
+from qitos.benchmark import GaiaAdapter
+
+adapter = GaiaAdapter()
+
+# Load from HuggingFace (requires HF_TOKEN)
+records = adapter.load_huggingface_records(split="validation")
+tasks = adapter.to_tasks(records, split="validation", limit=10)
+
+print(tasks[0].id)        # e.g. "7bd4f145-3dfe-..."
+print(tasks[0].objective) # The question text
+print(tasks[0].inputs["level"])        # 1, 2, or 3
+print(tasks[0].inputs["attachments"])  # list of file paths
+```
+
+Or use the one-line convenience loader:
+
+```python
+from qitos.benchmark.gaia.adapter import load_gaia_tasks
+
+tasks = load_gaia_tasks(split="validation", limit=20)
+```
+
+### Loading from a local snapshot
+
+If you have downloaded the dataset locally, load from disk to avoid repeated HuggingFace requests:
+
+```python
+adapter = GaiaAdapter(local_dir="data/gaia")
+
+# Download snapshot once
+adapter.snapshot_dataset(local_dir="data/gaia", hf_token="hf_...")
+
+# Load from local cache thereafter
+records = adapter.load_local_records(split="validation", local_dir="data/gaia")
+```
+
+## Configuration
+
+`GaiaAdapter` accepts the following parameters:
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `dataset_name` | `"gaia-benchmark/GAIA"` | HuggingFace repo ID |
+| `annotated_dataset_name` | `"smolagents/GAIA-annotated"` | Annotated variant repo ID |
+| `local_dir` | `"data/gaia"` | Local snapshot directory |
+| `config_name` | `"2023_all"` | Dataset config passed to `load_dataset` |
+| `default_subset` | `None` | Optional subset filter |
+| `default_max_steps` | `24` | Step budget per task |
+| `include_raw_record` | `True` | Attach raw row to `task.metadata` |
+
+## Running the evaluation
+
+The bundled `gaia_eval.py` script runs an OpenDeepResearch-style ReAct agent that uses web search, URL visiting, file reading, and command execution.
+
+**Run a single task:**
+
+```bash
+python examples/benchmarks/gaia_eval.py \
+  --gaia-split validation \
+  --gaia-index 0 \
+  --max-steps 16 \
+  --model-name "Qwen/Qwen3-8B" \
+  --api-key "$OPENAI_API_KEY"
+```
+
+**Run the full benchmark:**
+
+```bash
+python examples/benchmarks/gaia_eval.py \
+  --run-all \
+  --gaia-split validation \
+  --limit 50 \
+  --concurrency 4 \
+  --max-steps 16 \
+  --output-jsonl results/gaia_validation.jsonl \
+  --trace-logdir runs \
+  --model-name "Qwen/Qwen3-8B" \
+  --api-key "$OPENAI_API_KEY"
+```
+
+**Resume an interrupted run:**
+
+```bash
+python examples/benchmarks/gaia_eval.py \
+  --run-all \
+  --resume \
+  --output-jsonl results/gaia_validation.jsonl \
+  --gaia-split validation \
+  --api-key "$OPENAI_API_KEY"
+```
+
+<Tip>
+Pass `--gaia-use-annotated` to load the `smolagents/GAIA-annotated` variant, which includes pre-normalized answers for faster iteration.
+</Tip>
+
+## Agent architecture
+
+The evaluation script builds an `OpenDeepResearchGaiaAgent` with the following toolset:
+
+```python
+from qitos.kit import CodingToolSet
+from qitos.kit.tool.browser import (
+    ArchiveSearch,
+    FindInPage,
+    FindNext,
+    PageDown,
+    PageUp,
+    VisitURL,
+    WebSearch,
+)
+
+registry.register(WebSearch())
+registry.register(VisitURL())
+registry.register(PageDown())
+registry.register(FindInPage())
+registry.register(FindNext())
+registry.register(ArchiveSearch())
+registry.include(
+    CodingToolSet(
+        workspace_root=workspace_root,
+        include_notebook=False,
+        enable_lsp=False,
+        enable_tasks=False,
+        enable_web=False,
+        expose_modern_names=False,
+    )
+)
+```
+
+The agent uses a `ReActTextParser` expecting `Thought:` / `Action:` output format. You can swap in any `AgentModule` subclass and pass it to `Engine.run(task)` — the adapter produces standard `Task` objects.
+
+## Task structure
+
+Each `Task` produced by `GaiaAdapter` contains:
+
+```python
+Task(
+    id="7bd4f145-...",             # GAIA task_id or generated fallback
+    objective="What is the ...",   # Question text
+    inputs={
+        "benchmark": "GAIA",
+        "split": "validation",
+        "question": "...",
+        "reference_answer": "42",  # For evaluation, not passed to agent
+        "level": 1,                # 1, 2, or 3
+        "attachments": ["data/gaia/validation/file.pdf"],
+    },
+    resources=[TaskResource(kind="file", path="...", required=False)],
+    env_spec=EnvSpec(type="host", capabilities=["fs.read_text", "cmd.run", "network.http"]),
+    budget=TaskBudget(max_steps=24),
+)
+```
+
+## Expected output
+
+Each run appends one JSON line to the output file:
+
+```json
+{
+  "task_id": "7bd4f145-3dfe-4c57-a0b2-abcdef123456",
+  "split": "validation",
+  "question": "What is the largest prime factor of ...",
+  "reference_answer": "17",
+  "prediction": "17",
+  "stop_reason": "final",
+  "steps": 8,
+  "error": null,
+  "latency_seconds": 14.2,
+  "trace_run_dir": "runs/qitos_gaia_odr_7bd4f145_20250101_120000"
+}
+```
+
+**Interpreting results:**
+
+- `stop_reason: "final"` — the agent produced a `Final Answer`.
+- `stop_reason: "max_steps"` — the agent hit the step budget without answering.
+- `stop_reason: "exception"` — a runtime error occurred; check `error`.
+
+Compute accuracy by comparing `prediction` to `reference_answer` with exact-match normalization (strip whitespace, lowercase). Then inspect trace runs with `qita`:
+
+```bash
+qita board --logdir runs
+qita replay --run runs/qitos_gaia_odr_7bd4f145_20250101_120000
+```

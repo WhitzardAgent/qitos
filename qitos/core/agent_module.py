@@ -29,6 +29,7 @@ class AgentModule(ABC, Generic[StateT, ObservationT, ActionT]):
     def __init__(
         self,
         tool_registry: Any = None,
+        toolset: Any = None,
         llm: Any = None,
         model_parser: Any = None,
         model_protocol: Any = None,
@@ -36,7 +37,9 @@ class AgentModule(ABC, Generic[StateT, ObservationT, ActionT]):
         history: History | None = None,
         **config: Any,
     ):
-        self.tool_registry = tool_registry
+        self.tool_registry = self._resolve_tool_registry(
+            tool_registry=tool_registry, toolset=toolset
+        )
         self.llm = llm
         self.model_parser = model_parser
         self.model_protocol = model_protocol
@@ -215,6 +218,24 @@ class AgentModule(ABC, Generic[StateT, ObservationT, ActionT]):
     def _state_prompt_attr(self, state: StateT, name: str) -> str:
         value = getattr(state, name, "")
         return str(value or "").strip() if value is not None else ""
+
+    def _resolve_tool_registry(self, tool_registry: Any, toolset: Any) -> Any:
+        if tool_registry is None and toolset is None:
+            return None
+
+        from .tool_registry import ToolRegistry
+
+        if tool_registry is None:
+            registry = ToolRegistry()
+        elif isinstance(tool_registry, ToolRegistry):
+            registry = tool_registry
+        else:
+            registry = ToolRegistry()
+            registry.include_toolset(tool_registry)
+
+        if toolset is not None:
+            registry.include_toolset(toolset)
+        return registry
 
     def run(
         self,

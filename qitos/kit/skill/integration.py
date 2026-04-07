@@ -53,7 +53,7 @@ class SkillMixin:
             and getattr(self, "tool_registry", None) is not None
         ):
             try:
-                from qitos.kit.tool.skill_tools import SkillToolSet
+                from qitos.kit.tool.skill import SkillToolSet
 
                 self.tool_registry.register_toolset(
                     SkillToolSet(

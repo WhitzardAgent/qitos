@@ -1,0 +1,231 @@
+---
+title: "Lesson 1: ReAct"
+description: "Build a ReAct agent in QitOS and learn the base research loop: state, prompt-parser contract, tools, reduce, and qita."
+---
+
+This lesson teaches the smallest QitOS agent that still feels like real research work.
+
+You will build the ReAct coding agent from `examples/patterns/react.py`. The task is intentionally simple: open a buggy Python file, fix it, and run a verification command. The point is not the bug. The point is to learn the core loop.
+
+## What this lesson teaches in the QitOS mindmap
+
+| Mindmap branch | What you learn here |
+|---|---|
+| Task framing | How to turn a concrete repo task into `prepare()` text |
+| State | How to store a scratchpad and task-specific fields |
+| Tools | How to expose a compact coding surface through `CodingToolSet` |
+| Prompt and parser | Why `REACT_SYSTEM_PROMPT` must match `ReActTextParser` |
+| Reduce | How to fold tool output back into state and detect completion |
+| Observability | How to inspect the full trajectory with `qita` |
+
+## Before you start
+
+- Install QitOS and model support:
+
+```bash
+pip install "qitos[models]"
+```
+
+- Export an API key:
+
+```bash
+export OPENAI_API_KEY="sk-..."
+```
+
+- Optional provider override:
+
+```bash
+export OPENAI_BASE_URL="https://api.siliconflow.cn/v1/"
+export QITOS_MODEL="Qwen/Qwen3-8B"
+```
+
+## The lesson idea
+
+ReAct is the best first lesson because it keeps the design surface small:
+
+- `prepare()` builds the current task context
+- the Engine calls the LLM
+- `ReActTextParser` converts text output into `Decision`
+- tools execute
+- `reduce()` records the new trajectory
+
+Nothing extra is hidden. You can see the whole runtime.
+
+<Steps>
+  <Step title="Design the state around the trajectory you care about">
+    In this lesson, state is not a generic bag of fields. It carries exactly the information the next model step needs:
+
+    ```python
+    @dataclass
+    class ReactState(StateSchema):
+        scratchpad: list[str] = field(default_factory=list)
+        target_file: str = "buggy_module.py"
+        test_command: str = (
+            'python -c "import buggy_module; assert buggy_module.add(20, 22) == 42"'
+        )
+    ```
+
+    Why these fields?
+
+    - `scratchpad` keeps the recent `Thought / Action / Observation` trajectory.
+    - `target_file` keeps the task grounded in one concrete artifact.
+    - `test_command` turns "done" into a verifiable condition.
+
+    This is the first QitOS habit to build: add only the state fields that change the next step.
+  </Step>
+
+  <Step title="Expose a minimal tool surface">
+    The example uses `CodingToolSet`, but trims it down to the smallest useful subset for this task:
+
+    ```python
+    registry = ToolRegistry()
+    registry.include(
+        CodingToolSet(
+            workspace_root=workspace_root,
+            include_notebook=False,
+            enable_lsp=False,
+            enable_tasks=False,
+            enable_web=False,
+            expose_modern_names=False,
+        )
+    )
+    ```
+
+    This is important. In QitOS, tool design is part of agent design. You do not have to expose the full kitchen sink just because the preset exists.
+
+    For a first ReAct agent, a compact local coding surface is ideal:
+
+    - inspect files
+    - edit files
+    - run a verification command
+  </Step>
+
+  <Step title="Bind the prompt to the parser">
+    The example uses the canonical ReAct prompt and parser pair:
+
+    ```python
+    super().__init__(
+        tool_registry=registry,
+        llm=llm,
+        model_parser=ReActTextParser(),
+    )
+    ```
+
+    ```python
+    def build_system_prompt(self, state: ReactState) -> str | None:
+        return render_prompt(
+            REACT_SYSTEM_PROMPT,
+            {"tool_schema": self.tool_registry.get_tool_descriptions()},
+        )
+    ```
+
+    This pairing is the most important contract in the lesson.
+
+    - `REACT_SYSTEM_PROMPT` asks the model for `Thought:` and `Action:`
+    - `ReActTextParser` expects exactly that shape
+
+    If you change one without the other, the agent does not become "more flexible". It just becomes parse-error-prone.
+  </Step>
+
+  <Step title="Prepare only the context the next step needs">
+    `prepare()` turns the state into the model-ready user turn:
+
+    ```python
+    def prepare(self, state: ReactState) -> str:
+        lines = [
+            f"Task: {state.task}",
+            f"Target file: {state.target_file}",
+            f"Verification command: {state.test_command}",
+            f"Step: {state.current_step}/{state.max_steps}",
+        ]
+        if state.scratchpad:
+            lines.append("Recent trajectory:")
+            lines.extend(state.scratchpad[-8:])
+        return "\n".join(lines)
+    ```
+
+    This is the second QitOS habit to build: `prepare()` should not dump your whole state blindly. It should curate the next prompt.
+  </Step>
+
+  <Step title="Use reduce to make the loop learn from itself">
+    The learning in ReAct happens inside `reduce()`:
+
+    ```python
+    def reduce(
+        self,
+        state: ReactState,
+        observation: dict[str, Any],
+        decision: Decision[Action],
+    ) -> ReactState:
+        action_results = (
+            observation.get("action_results", [])
+            if isinstance(observation, dict)
+            else []
+        )
+        if decision.rationale:
+            state.scratchpad.append(f"Thought: {decision.rationale}")
+        if decision.actions:
+            state.scratchpad.append(f"Action: {format_action(decision.actions[0])}")
+        if action_results:
+            first = action_results[0]
+            state.scratchpad.append(f"Observation: {first}")
+            if isinstance(first, dict) and int(first.get("returncode", 1)) == 0:
+                state.final_result = "Patch applied and verification passed."
+        state.scratchpad = state.scratchpad[-30:]
+        return state
+    ```
+
+    The lesson here is simple:
+
+    - state stores what the next step should remember
+    - `reduce()` is where you decide what counts as memory
+    - `state.final_result` is the cleanest stop signal for success
+  </Step>
+
+  <Step title="Run and inspect the lesson end to end">
+    Run the example directly:
+
+    ```bash
+    python examples/patterns/react.py
+    ```
+
+    Then inspect the run:
+
+    ```bash
+    qita board --logdir runs
+    ```
+
+    What you should inspect in `qita`:
+
+    - whether the model keeps the file path and verification command in context
+    - whether the parser emits clean `Thought` and `Action` records
+    - whether the final successful shell result is the moment `final_result` is set
+  </Step>
+</Steps>
+
+## Full example
+
+The full runnable lesson lives at:
+
+- [`examples/patterns/react.py`](https://github.com/Qitor/qitos/blob/main/examples/patterns/react.py)
+
+## What to change on your own
+
+After you run the lesson once, try these variations:
+
+- Change `target_file` and `test_command` to another tiny repair task.
+- Replace the coding task with a file-inspection task and keep the same ReAct loop.
+- Increase the scratchpad window from `8` and see how the trajectory changes.
+
+## What lesson 2 adds
+
+ReAct is good when the next action is local and opportunistic. PlanAct is better when the task has an obvious multi-step structure and you want the model to commit to a plan before acting.
+
+<CardGroup cols={2}>
+  <Card title="Next lesson: PlanAct" icon="list-check" href="/tutorials/planact">
+    Add explicit planning, a plan cursor, and a hybrid decide path on top of the same kernel.
+  </Card>
+  <Card title="Related concept: Engine" icon="gear" href="/concepts/engine">
+    Review how the default model path works when `decide()` returns `None`.
+  </Card>
+</CardGroup>

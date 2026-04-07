@@ -1,0 +1,184 @@
+---
+title: "Lesson 2: PlanAct"
+description: "Extend the ReAct loop with explicit planning and learn how QitOS combines custom decide logic with the default model path."
+---
+
+This lesson builds on ReAct instead of replacing it.
+
+You will use `examples/patterns/planact.py` to learn one of the most important QitOS design moves: keep the same runtime, but intercept part of the control flow in `decide()`.
+
+## What this lesson teaches in the QitOS mindmap
+
+| Mindmap branch | What changes from ReAct |
+|---|---|
+| State | Add a plan list and execution cursor |
+| Decision policy | Use custom `decide()` for planning, then fall back to the Engine model path |
+| Planning | Generate an explicit numbered plan with `NumberedPlanBuilder` |
+| Reduce | Advance the cursor when a plan step succeeds |
+| Runtime reasoning | Separate "plan creation" from "plan execution" without adding a second loop |
+
+## Why PlanAct matters
+
+Researchers often jump from "pure ReAct" to "I need a whole new orchestrator". QitOS is designed to keep that jump small.
+
+PlanAct shows the intended move:
+
+- use `decide()` for the small amount of control that must be manual
+- use the default Engine LLM path for the rest
+
+That is one of the most reusable patterns in this project.
+
+<Steps>
+  <Step title="Extend state with a plan and a cursor">
+    The PlanAct example adds just enough structure to track progress:
+
+    ```python
+    @dataclass
+    class PlanActState(StateSchema):
+        plan_steps: list[str] = field(default_factory=list)
+        cursor: int = 0
+        target_file: str = "buggy_module.py"
+        test_command: str = TEST_COMMAND
+        scratchpad: list[str] = field(default_factory=list)
+    ```
+
+    The key design idea is that the plan is state, not hidden prompt text. That makes it:
+
+    - inspectable in traces
+    - editable by your own logic
+    - reusable across steps
+  </Step>
+
+  <Step title="Add a dedicated planner instead of improvising in the loop">
+    The example initializes a `NumberedPlanBuilder` once:
+
+    ```python
+    self.plan_builder = NumberedPlanBuilder()
+    ```
+
+    Then `_plan()` creates a concrete numbered list from `PLAN_DRAFT_PROMPT`:
+
+    ```python
+    prompt = render_prompt(
+        PLAN_DRAFT_PROMPT,
+        {
+            "task": (
+                f"{state.task}\n"
+                f"Target file: {state.target_file}\n"
+                f"Last step must run: {state.test_command}"
+            ),
+        },
+    )
+    plan = self.plan_builder.build(self.llm, prompt)
+    ```
+
+    This is the QitOS lesson: planning is a first-class artifact, not just a longer thought.
+  </Step>
+
+  <Step title="Use decide as the planning gate">
+    The core control logic is only a few lines:
+
+    ```python
+    def decide(self, state: PlanActState, observation: dict[str, Any]):
+        if not state.plan_steps or state.cursor >= len(state.plan_steps):
+            if not self._plan(state):
+                return Decision.final("Failed to build a valid plan.")
+            return Decision.wait("plan_ready")
+        return None
+    ```
+
+    This is the lesson's main idea:
+
+    - when the plan is missing, `decide()` handles it directly
+    - once the plan exists, `decide()` returns `None`
+    - the Engine resumes its normal LLM + parser execution path
+
+    You are not writing a second runtime. You are shaping the default one.
+  </Step>
+
+  <Step title="Make the plan visible in prepare">
+    `prepare()` exposes both the plan and the active cursor:
+
+    ```python
+    def prepare(self, state: PlanActState) -> str:
+        lines = [
+            f"Task: {state.task}",
+            f"Plan cursor: {state.cursor}/{len(state.plan_steps)}",
+            f"Current plan step: {self._current_step_text(state)}",
+            f"Step: {state.current_step}/{state.max_steps}",
+        ]
+    ```
+
+    This is what makes the execution phase different from plain ReAct. The model is not reasoning over the whole task again each step. It is reasoning over one explicit plan step.
+  </Step>
+
+  <Step title="Advance the cursor in reduce">
+    The execution bookkeeping belongs in `reduce()`:
+
+    ```python
+    if isinstance(first, dict) and first.get("status") == "success":
+        state.cursor += 1
+    if isinstance(first, dict) and int(first.get("returncode", 1)) == 0:
+        state.final_result = "Verification passed."
+        state.cursor = len(state.plan_steps)
+    ```
+
+    There are two important habits here:
+
+    - treat "plan progress" as state, not hidden control flow
+    - use verifiable tool output to advance the agent
+  </Step>
+
+  <Step title="Run the lesson and inspect the plan boundary">
+    Run the example:
+
+    ```bash
+    python examples/patterns/planact.py
+    ```
+
+    Then inspect it:
+
+    ```bash
+    qita board --logdir runs
+    ```
+
+    In the trace, pay attention to:
+
+    - the step where `Decision.wait("plan_ready")` appears
+    - the moment `plan_steps` becomes part of state
+    - how later steps still use the ordinary ReAct parser
+  </Step>
+</Steps>
+
+## Full example
+
+The full runnable lesson lives at:
+
+- [`examples/patterns/planact.py`](https://github.com/Qitor/qitos/blob/main/examples/patterns/planact.py)
+
+## When to choose PlanAct over ReAct
+
+Choose PlanAct when:
+
+- the task has a natural decomposition
+- you want to display or inspect an explicit plan
+- step ordering matters more than opportunistic local reasoning
+
+Stay with ReAct when:
+
+- the task is highly open-ended
+- the next useful action depends heavily on the last observation
+- upfront planning tends to be brittle
+
+## What lesson 3 adds
+
+The next lesson moves from "pattern tutorial" to "real long-running agent". The kernel is still the same, but the tool surface, history controls, and workflow prompt become more operational.
+
+<CardGroup cols={2}>
+  <Card title="Next lesson: Claude Code-style agent" icon="rectangle-terminal" href="/tutorials/claude-code">
+    Learn how QitOS presets support long-running coding workflows with todos and mode tracking.
+  </Card>
+  <Card title="Related guide: agent patterns" icon="diagram-project" href="/guides/agent-patterns">
+    Compare ReAct, PlanAct, Tree-of-Thought, and Reflexion at a high level.
+  </Card>
+</CardGroup>

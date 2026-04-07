@@ -1,0 +1,145 @@
+---
+title: "Engine"
+description: "Engine is the execution kernel that owns the agent loop: it calls your AgentModule hooks in sequence, executes actions, manages tracing, and enforces stop criteria."
+---
+
+`Engine` is the single execution kernel for all QitOS agent workflows. It runs the step loop, coordinates your `AgentModule` hooks, dispatches tool calls, applies critics, checks stop conditions, and writes trace artifacts. You interact with it directly only when you need control beyond what `agent.run()` provides.
+
+<Note>
+  QitOS enforces a **single-kernel rule**: there is exactly one `Engine` per run. Extensions like parsers, critics, memory adapters, and toolkits attach to this pipeline — they do not introduce a second execution loop.
+</Note>
+
+## How the loop works
+
+Each step follows a fixed sequence:
+
+```
+prepare → decide → act → reduce → critics → check_stop → trace
+```
+
+1. **prepare** — `agent.prepare(state)` formats state into the model-ready prompt text.
+2. **decide** — `agent.decide(state, observation)` is checked first; if it returns `None`, the Engine calls the LLM via the configured parser.
+3. **act** — Tool calls in the decision's `actions` list are executed against the `ToolRegistry`.
+4. **reduce** — `agent.reduce(state, observation, decision)` updates state with the new observation.
+5. **critics** — Any registered `Critic` instances evaluate the step; they can trigger a stop or retry.
+6. **check_stop** — Budget exhaustion, `FinalResultCriteria`, `agent.should_stop()`, and any custom `StopCriteria` are evaluated.
+7. **trace** — The step record and events are written to the `TraceWriter`.
+
+## Constructor
+
+```python
+from qitos import Engine
+
+engine = Engine(
+    agent=agent,
+    budget=RuntimeBudget(max_steps=20),
+    parser=ReActTextParser(),
+    critics=[my_critic],
+    stop_criteria=[FinalResultCriteria()],
+    env=host_env,
+    trace_writer=trace_writer,
+    hooks=[my_hook],
+)
+```
+
+| Parameter          | Type                        | Description                                                                 |
+| ------------------ | --------------------------- | --------------------------------------------------------------------------- |
+| `agent`            | `AgentModule`               | **Required.** The policy module to execute.                                 |
+| `budget`           | `RuntimeBudget \| None`     | Step/time/token limits. Defaults to `RuntimeBudget(max_steps=10)`.          |
+| `parser`           | `Parser \| None`            | Parses raw model output into a `Decision`. Must match your prompt format.   |
+| `critics`          | `list[Critic] \| None`      | Post-step evaluators that can stop or retry a step.                         |
+| `stop_criteria`    | `list[StopCriteria] \| None`| Stop conditions. Defaults to `[FinalResultCriteria()]`.                     |
+| `env`              | `Env \| None`               | Environment providing `reset/observe/step/is_terminal/close`.               |
+| `trace_writer`     | `TraceWriter \| None`       | Writes `manifest.json`, `events.jsonl`, `steps.jsonl` for this run.         |
+| `hooks`            | `list[EngineHook] \| None`  | Hook instances called on lifecycle events.                                  |
+| `render_hooks`     | `list \| None`              | Render hooks (e.g., terminal UI). Appended to `hooks` internally.           |
+| `history_policy`   | `HistoryPolicy \| None`     | Controls how the in-run conversation history is managed.                    |
+| `recovery_policy`  | `RecoveryPolicy \| None`    | Controls how the Engine responds to step failures.                          |
+
+<Tip>
+  Prefer calling `agent.run()` for single-run workflows. Use `Engine` directly when you need to reuse an Engine across multiple runs or configure hooks dynamically between runs.
+</Tip>
+
+## `Engine.run(task)`
+
+```python
+result = engine.run(task)
+```
+
+Accepts a plain string objective or a structured `Task` object. Returns an `EngineResult`.
+
+When you pass a `Task`, the Engine extracts the budget from `task.budget` and overrides the Engine's own budget for that run. It also orchestrates resource staging and environment lifecycle (reset, observe, close) automatically.
+
+## `EngineResult`
+
+```python
+@dataclass
+class EngineResult(Generic[StateT]):
+    state: StateT
+    records: List[StepRecord]
+    events: List[RuntimeEvent]
+    step_count: int
+    task_result: Optional[TaskResult]
+```
+
+| Field          | Description                                                               |
+| -------------- | ------------------------------------------------------------------------- |
+| `state`        | Final typed state after the run. Check `state.final_result` and `state.stop_reason`. |
+| `records`      | One `StepRecord` per step, containing decision, observation, and diffs.   |
+| `events`       | All `RuntimeEvent` objects emitted during the run.                        |
+| `step_count`   | Number of steps executed (`len(records)`).                                |
+| `task_result`  | Structured outcome including success flag and criterion results.           |
+
+Typical usage:
+
+```python
+result = engine.run("summarize the paper")
+
+print(result.state.final_result)   # the agent's final answer
+print(result.state.stop_reason)    # why the loop ended
+print(result.step_count)           # how many steps ran
+print(result.task_result.success)  # whether success criteria passed
+```
+
+## Hooks
+
+Hooks observe and react to lifecycle events without modifying Engine internals. They implement `EngineHook` and are called at `on_before_step` and `on_after_step` boundaries.
+
+```python
+engine.register_hook(my_hook)
+engine.unregister_hook(my_hook)
+engine.clear_hooks()
+```
+
+You can also pass hooks at construction time via the `hooks` parameter, or at run time via `agent.run(hooks=[...])`.
+
+## Budget exhaustion
+
+When the step budget, wall-clock time limit, or token budget is exceeded, the Engine sets `state.stop_reason` to the appropriate value and emits an `END` event. The run terminates gracefully and `EngineResult` is still returned — inspect `state.stop_reason` to detect this case.
+
+```python
+from qitos.engine.states import RuntimeBudget
+
+engine = Engine(
+    agent=agent,
+    budget=RuntimeBudget(
+        max_steps=30,
+        max_runtime_seconds=120.0,
+        max_tokens=50_000,
+    ),
+)
+```
+
+## Building an Engine from AgentModule
+
+`AgentModule.build_engine()` is a convenience factory that creates an Engine pre-bound to the agent:
+
+```python
+engine = agent.build_engine(
+    budget=RuntimeBudget(max_steps=15),
+    trace_writer=trace_writer,
+)
+result = engine.run(task)
+```
+
+This is equivalent to `Engine(agent=agent, ...)` and is what `agent.run()` calls internally.

@@ -12,6 +12,7 @@ from . import (
     prompts,
     state,
     tool,
+    toolset,
 )
 from .critic import ReActSelfReflectionCritic
 from .env import HostEnv, RepoEnv, TextWebEnv, TmuxEnv
@@ -55,9 +56,9 @@ from .tool import (
     SendTerminalKeys,
     SecurityAuditToolSet,
     TaskToolSet,
-    coding_tools,
     security_audit_tools,
 )
+from .toolset import codebase_tools, coding_tools, editor_tools, report_tools, toolset_from_tools
 
 __all__ = [
     "critic",
@@ -71,6 +72,7 @@ __all__ = [
     "prompts",
     "state",
     "tool",
+    "toolset",
     "ReActTextParser",
     "JsonDecisionParser",
     "MiniMaxToolCallParser",
@@ -97,7 +99,11 @@ __all__ = [
     "ReportToolSet",
     "EpubToolSet",
     "TaskToolSet",
+    "toolset_from_tools",
     "coding_tools",
+    "editor_tools",
+    "codebase_tools",
+    "report_tools",
     "security_audit_tools",
     "MarkdownFileMemory",
     "WindowMemory",

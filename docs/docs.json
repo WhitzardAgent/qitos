@@ -1,0 +1,82 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "name": "QitOS",
+  "theme": "luma",
+  "favicon": "https://media.brand.dev/288cc7c4-5cef-4376-950b-bdf0083eedae.png",
+  "colors": {
+    "primary": "#fcaa21",
+    "light": "#38d3da"
+  },
+  "navbar": {
+    "primary": {
+      "type": "github",
+      "href": "https://github.com/Qitor/qitos"
+    }
+  },
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Docs",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "installation"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/agent-module",
+              "concepts/engine",
+              "concepts/state-and-task",
+              "concepts/tools-and-registry",
+              "concepts/tracing"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/build-your-first-agent",
+              "guides/agent-patterns",
+              "guides/memory-and-history",
+              "guides/critics-and-stop-criteria",
+              "guides/observability"
+            ]
+          },
+          {
+            "group": "Tutorials",
+            "pages": [
+              "tutorials/index",
+              "tutorials/react",
+              "tutorials/planact",
+              "tutorials/claude-code",
+              "tutorials/code-security-audit"
+            ]
+          },
+          {
+            "group": "Benchmarks",
+            "pages": [
+              "benchmarks/overview",
+              "benchmarks/gaia",
+              "benchmarks/tau-bench",
+              "benchmarks/cybench"
+            ]
+          },
+          {
+            "group": "Reference",
+            "pages": [
+              "reference/api",
+              "reference/kit",
+              "reference/cli",
+              "reference/configuration"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "logo": "/images/logo.png"
+}

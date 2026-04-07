@@ -1,0 +1,158 @@
+---
+title: "Quickstart"
+description: "Run your first QitOS agent in under 2 minutes."
+---
+
+This guide gets you from a fresh environment to a running agent and a live trace view in under 2 minutes.
+
+## Prerequisites
+
+- Python 3.9 or later
+- `pip`
+- An OpenAI-compatible API key
+
+## Steps
+
+<Steps>
+  <Step title="Install QitOS">
+    Install QitOS from PyPI. The `models` extra adds the OpenAI client:
+
+    ```bash
+    pip install "qitos[models]"
+    ```
+
+    If you only want the core framework without the OpenAI dependency:
+
+    ```bash
+    pip install qitos
+    ```
+  </Step>
+
+  <Step title="Set your API key">
+    Export your OpenAI-compatible API key as an environment variable:
+
+    ```bash
+    export OPENAI_API_KEY="sk-..."
+    ```
+
+    <Tip>
+      Any OpenAI-compatible endpoint works. Point `OPENAI_BASE_URL` at your provider if you're not using OpenAI directly.
+    </Tip>
+  </Step>
+
+  <Step title="Run the minimal agent">
+    The minimal agent example shows the smallest working `AgentModule + Engine` flow. It defines a single `add` tool, runs a two-step loop to compute `40 + 2`, and writes a trace to `./playground/minimal_agent/`.
+
+    ```python minimal_agent.py
+    """Quickstart: smallest runnable AgentModule + Engine flow."""
+
+    from __future__ import annotations
+
+    from dataclasses import dataclass
+    from pathlib import Path
+    from typing import Any
+
+    from qitos import Action, AgentModule, Decision, StateSchema, ToolRegistry, tool
+
+    TASK = "compute 40 + 2"
+    WORKSPACE = Path("./playground/minimal_agent")
+    MAX_STEPS = 2
+
+
+    @dataclass
+    class CalcState(StateSchema):
+        pass
+
+
+    class MinimalAgent(AgentModule[CalcState, dict[str, Any], Action]):
+        def __init__(self):
+            registry = ToolRegistry()
+
+            @tool(name="add")
+            def add(a: int, b: int) -> int:
+                return a + b
+
+            registry.register(add)
+            super().__init__(tool_registry=registry)
+
+        def init_state(self, task: str, **kwargs: Any) -> CalcState:
+            return CalcState(task=task, max_steps=int(kwargs.get("max_steps", MAX_STEPS)))
+
+        def decide(self, state: CalcState, observation: dict[str, Any]) -> Decision[Action]:
+            if state.current_step == 0:
+                return Decision.act([Action(name="add", args={"a": 40, "b": 2})], rationale="compute_answer")
+            return Decision.final("42")
+
+        def reduce(self, state: CalcState, observation: dict[str, Any], decision: Decision[Action]) -> CalcState:
+            action_results = observation.get("action_results", []) if isinstance(observation, dict) else []
+            if action_results:
+                state.final_result = str(action_results[0])
+            return state
+
+
+    def main() -> None:
+        WORKSPACE.mkdir(parents=True, exist_ok=True)
+        agent = MinimalAgent()
+        result = agent.run(
+            task=TASK,
+            workspace=str(WORKSPACE),
+            max_steps=MAX_STEPS,
+            return_state=True,
+        )
+        print("workspace:", WORKSPACE)
+        print("final_result:", result.state.final_result)
+        print("stop_reason:", result.state.stop_reason)
+
+
+    if __name__ == "__main__":
+        main()
+    ```
+
+    Run it:
+
+    ```bash
+    python minimal_agent.py
+    ```
+
+    You should see output similar to:
+
+    ```
+    workspace: playground/minimal_agent
+    final_result: 42
+    stop_reason: max_steps
+    ```
+  </Step>
+
+  <Step title="Inspect the run with qita">
+    QitOS writes a full trace for every run. Launch the `qita` board to inspect it:
+
+    ```bash
+    qita board --logdir runs
+    ```
+
+    Open [http://127.0.0.1:8765](http://127.0.0.1:8765) in your browser. The board shows every run in your log directory with step counts, stop reasons, and final results. Click **view** on any run to inspect its step-by-step trajectory, or **replay** to play it back.
+
+    <Note>
+      The minimal agent writes its trace to `./playground/minimal_agent/`. If you don't see your run in the board, pass `--logdir playground` to point qita at the right directory.
+    </Note>
+  </Step>
+</Steps>
+
+## What's next
+
+You've run an agent and inspected its trace. Here's where to go from here:
+
+<CardGroup cols={2}>
+  <Card title="Build your first agent" icon="code" href="/guides/build-your-first-agent">
+    A full walkthrough of the AgentModule interface
+  </Card>
+  <Card title="Tutorial track" icon="graduation-cap" href="/tutorials">
+    Learn agent design step by step through ReAct, PlanAct, Claude Code-style, and security audit lessons
+  </Card>
+  <Card title="Observability" icon="chart-line" href="/guides/observability">
+    Everything qita can do: board, replay, and export
+  </Card>
+  <Card title="Benchmarks" icon="trophy" href="/benchmarks/overview">
+    Run GAIA, Tau-Bench, and CyBench on the QitOS kernel
+  </Card>
+</CardGroup>

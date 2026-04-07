@@ -1,0 +1,88 @@
+---
+title: "Tutorials"
+description: "A course-style learning path for researchers designing agents in the QitOS mindmap."
+---
+
+If you want to learn QitOS the way researchers actually build agents, start here.
+
+This track follows one rule: every agent is still the same kernel shape.
+
+`task -> state -> prompt/protocol -> decision -> tool execution -> reduce -> trace`
+
+What changes from lesson to lesson is not the runtime. What changes is the policy you implement on top of it.
+
+## How to use this track
+
+PyTorch tutorials work well because they do three things clearly: they teach one idea at a time, keep every lesson runnable, and make the next lesson feel like a natural extension of the last one. This QitOS track follows the same pattern.
+
+Work through the lessons in order:
+
+1. Start with ReAct to learn the base loop.
+2. Add explicit planning with PlanAct.
+3. Move to a long-running coding agent with the Claude Code-style preset.
+4. Specialize the same kernel into a domain agent with the security audit workflow.
+
+## The QitOS mindmap
+
+When you design an agent in QitOS, you are always answering the same set of questions:
+
+| Design question | QitOS surface | What you decide |
+|---|---|---|
+| What problem is the agent solving? | `task`, `prepare()` | Task framing and prompt-ready context |
+| What must persist across steps? | `StateSchema` | Scratchpads, plans, findings, mode flags, counters |
+| What can the agent do? | `ToolRegistry`, preset toolsets | File edits, shell commands, web fetches, audit scans |
+| How does it decide the next move? | `decide()`, LLM + parser, or plan builders | ReAct loop, plan-first loop, domain-specific control |
+| How does it learn from execution? | `reduce()` | Observation folding, cursor updates, final-result detection |
+| What keeps runs bounded and inspectable? | `max_steps`, `HistoryPolicy`, `qita` | Step budgets, history trimming, replay/export |
+
+That is the mindmap. The point of the tutorials is to make you fluent in changing one branch of that mindmap without breaking the others.
+
+## Recommended path
+
+<CardGroup cols={2}>
+  <Card title="Lesson 1: ReAct" icon="brain" href="/tutorials/react">
+    Learn the base thought-action-observation loop with the smallest useful coding agent.
+  </Card>
+  <Card title="Lesson 2: PlanAct" icon="list-check" href="/tutorials/planact">
+    Add explicit planning, a cursor, and a hybrid decide path without changing the kernel.
+  </Card>
+  <Card title="Lesson 3: Claude Code-style agent" icon="rectangle-terminal" href="/tutorials/claude-code">
+    Use QitOS presets to build a long-running coding agent with todos, history policy, and workspace tools.
+  </Card>
+  <Card title="Lesson 4: Code security audit agent" icon="shield-check" href="/tutorials/code-security-audit">
+    Specialize the runtime for a defensive security workflow with ranked findings and audit-specific tools.
+  </Card>
+</CardGroup>
+
+## What you should know before lesson 1
+
+- You have already run [Quickstart](/quickstart).
+- You understand the basic `AgentModule + Engine` split from [Agent module](/concepts/agent-module) and [Engine](/concepts/engine).
+- You can set `OPENAI_API_KEY` or another OpenAI-compatible endpoint.
+
+## What you will know after lesson 4
+
+You will know how to:
+
+- choose between direct LLM-driven ReAct and explicit `decide()` control
+- design state fields that matter instead of building ad hoc scratchpads
+- move from hand-built registries to preset tool bundles
+- add long-running structure with todos, history limits, and qita
+- specialize a generic agent into a domain agent without introducing a second runtime
+
+## Related reading
+
+<CardGroup cols={2}>
+  <Card title="Build your first agent" icon="code" href="/guides/build-your-first-agent">
+    Review the base AgentModule contract before starting the track.
+  </Card>
+  <Card title="Agent patterns" icon="diagram-project" href="/guides/agent-patterns">
+    See the high-level map of ReAct, PlanAct, Tree-of-Thought, and Reflexion.
+  </Card>
+  <Card title="Kit reference" icon="toolbox" href="/reference/kit">
+    Look up parsers, planners, toolsets, and helper APIs used by the lessons.
+  </Card>
+  <Card title="Observability" icon="chart-line" href="/guides/observability">
+    Inspect every lesson with qita board, replay, and export.
+  </Card>
+</CardGroup>

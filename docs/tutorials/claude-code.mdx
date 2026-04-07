@@ -1,0 +1,184 @@
+---
+title: "Lesson 3: Claude Code-style agent"
+description: "Build a long-running coding agent on top of QitOS presets and learn how workflow structure, history policy, and observability fit together."
+---
+
+This lesson is where QitOS starts to feel like a real agent framework instead of a pattern sandbox.
+
+You will study `examples/real/claude_code_agent.py`, which uses the canonical coding preset and a Claude Code-style workflow prompt to operate over a workspace for multiple steps.
+
+## What this lesson teaches in the QitOS mindmap
+
+| Mindmap branch | What you learn here |
+|---|---|
+| Tools | How to use `coding_tools(...)` as a high-leverage preset instead of assembling every tool manually |
+| State | How to track todos, working mode, target file, and verification command |
+| Workflow prompt | How to encode an operating style without changing the runtime |
+| Long-running control | How `HistoryPolicy` and qita help multi-step agents stay tractable |
+| Reduce | How to absorb tool-generated workflow state such as todo lists and mode changes |
+
+## Why this lesson matters
+
+Researchers often know how to prototype a ReAct loop, but not how to grow it into a long-running agent that still feels legible.
+
+This example is valuable because it keeps the runtime clean:
+
+- still one `AgentModule`
+- still one `Engine`
+- still parser -> `Decision` -> tool execution -> `reduce`
+
+The difference is that more of the workflow is pushed into:
+
+- preset tool bundles
+- explicit operator-like system instructions
+- bounded history management
+
+<Steps>
+  <Step title="Start from the preset, not from scratch">
+    The example uses the prebuilt registry returned by `coding_tools(...)`:
+
+    ```python
+    super().__init__(
+        toolset=[
+            coding_tools(
+                workspace_root=workspace_root,
+                shell_timeout=30,
+                include_notebook=True,
+            )
+        ],
+        llm=llm,
+        model_parser=ReActTextParser(),
+    )
+    ```
+
+    This is a key QitOS design move. Once you know the kernel, you should stop hand-assembling every coding tool unless the lesson really requires it.
+
+    The preset gives you a coherent coding workspace:
+
+    - file inspection and edits
+    - shell execution
+    - task and planning helpers
+    - optional notebook support
+    - documentation fetch tools when enabled
+  </Step>
+
+  <Step title="Treat workflow as prompt policy, not hidden code">
+    The lesson's system prompt is very explicit:
+
+    ```text
+    - Start by writing a todo list with `todo_write`.
+    - If you are unsure which tool to use, call `tool_search`.
+    - Read before you edit.
+    - Make the smallest correct change.
+    - Run verification immediately after editing.
+    ```
+
+    That is the right use of prompts in QitOS. The prompt does not replace the runtime. It sets the working discipline inside the runtime.
+
+    This lets you change behavior quickly while keeping traces and interfaces stable.
+  </Step>
+
+  <Step title="Design state for a long-running workspace agent">
+    The state holds workflow signals, not just raw observations:
+
+    ```python
+    @dataclass
+    class ClaudeCodeState(StateSchema):
+        scratchpad: list[str] = field(default_factory=list)
+        todos: list[dict[str, Any]] = field(default_factory=list)
+        target_file: str = TARGET_FILE
+        test_command: str = TEST_COMMAND
+        doc_url: str = DOC_URL
+        mode: str = "work"
+    ```
+
+    Why this shape works:
+
+    - `todos` exposes an explicit work queue
+    - `mode` lets the agent remember whether it is planning or executing
+    - `doc_url` gives you optional external grounding without hard-coding browsing
+    - `scratchpad` keeps a recent compressed trajectory
+  </Step>
+
+  <Step title="Let tools feed workflow state back into reduce">
+    The example's `reduce()` listens for structured results from the preset tools:
+
+    ```python
+    if isinstance(first, dict):
+        if first.get("todos"):
+            state.todos = list(first.get("todos") or [])
+        if first.get("current_mode"):
+            state.mode = str(first.get("current_mode"))
+        if int(first.get("returncode", 1)) == 0:
+            state.final_result = (
+                "Verification passed with the canonical coding toolset."
+            )
+    if state.metadata.get("todos"):
+        state.todos = list(state.metadata.get("todos") or [])
+    if state.metadata.get("mode"):
+        state.mode = str(state.metadata.get("mode"))
+    ```
+
+    This is a very important QitOS pattern:
+
+    tools do work, but `reduce()` is still where the agent decides what that work means for future steps.
+  </Step>
+
+  <Step title="Bound the run with history policy">
+    Long-running agents need memory discipline.
+
+    The example passes:
+
+    ```python
+    history_policy=HistoryPolicy(max_messages=16, max_tokens=2800)
+    ```
+
+    This is where QitOS becomes more research-useful than a loose loop. You can study how history truncation interacts with behavior instead of treating context blow-up as an accidental side effect.
+  </Step>
+
+  <Step title="Run it like an operator and inspect it like a researcher">
+    Run the example:
+
+    ```bash
+    python examples/real/claude_code_agent.py
+    ```
+
+    Then inspect it:
+
+    ```bash
+    qita board --logdir runs
+    ```
+
+    What to look for:
+
+    - whether todos appear early and stay updated
+    - whether the agent switches mode coherently
+    - whether verification happens immediately after edits
+    - how the trajectory changes when history trimming kicks in
+  </Step>
+</Steps>
+
+## Full example
+
+The full runnable lesson lives at:
+
+- [`examples/real/claude_code_agent.py`](https://github.com/Qitor/qitos/blob/main/examples/real/claude_code_agent.py)
+
+## What to experiment with next
+
+- Swap the workflow prompt from "Claude Code-style" to your own lab protocol.
+- Tighten or loosen `HistoryPolicy` and compare the traces.
+- Add a documentation URL and inspect when the agent chooses to fetch it.
+
+## What lesson 4 adds
+
+The final lesson keeps the same runtime shape but changes the domain and tool surface. Instead of editing code to satisfy a test, the agent will inspect a repository and rank security findings.
+
+<CardGroup cols={2}>
+  <Card title="Next lesson: Code security audit agent" icon="shield-check" href="/tutorials/code-security-audit">
+    Learn how to specialize QitOS into a defensive security workflow without changing the kernel.
+  </Card>
+  <Card title="Related guide: observability" icon="chart-line" href="/guides/observability">
+    Review qita board, replay, and export if you want to study long runs more deeply.
+  </Card>
+</CardGroup>

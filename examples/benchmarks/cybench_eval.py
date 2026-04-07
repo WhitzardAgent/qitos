@@ -26,7 +26,7 @@ from qitos import (
 )
 from qitos.benchmark import CyBenchAdapter, CyBenchRuntime, score_cybench_submission
 from qitos.evaluate import EvaluationContext, EvaluationSuite
-from qitos.kit import HostEnv, ReActTextParser, format_action, render_prompt
+from qitos.kit import CodingToolSet, HostEnv, ReActTextParser, format_action, render_prompt
 from qitos.kit.env import DockerEnvScheduler
 from qitos.kit.evaluate import CyBenchEvaluator
 from qitos.kit.metric import (
@@ -37,7 +37,7 @@ from qitos.kit.metric import (
     MeanStepsMetric,
     StopReasonDistributionMetric,
 )
-from qitos.kit.tool import CodingToolSet, SubmitAnswer
+from qitos.kit.tool.cybench import SubmitAnswer
 from qitos.metric import MetricInput, MetricRegistry
 from qitos.models import OpenAICompatibleModel
 from qitos.render import ClaudeStyleHook

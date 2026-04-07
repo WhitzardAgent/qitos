@@ -20,10 +20,10 @@ import os
 from dataclasses import dataclass, field
 from typing import Any, Dict, List
 
-from qitos import Action, Decision, StateSchema, ToolRegistry
+from qitos import Action, Decision, StateSchema
+from qitos.kit import CodingToolSet
 from qitos.kit.parser import ReActTextParser
 from qitos.kit.skill import SkilledAgent
-from qitos.kit.tool import CodingToolSet
 from qitos.models import OpenAIModel
 
 TASK = (
@@ -66,23 +66,20 @@ class GitHubSkillAgent(SkilledAgent[GitHubSkillState, Dict[str, Any], Action]):
         bootstrap_github_skill: bool = True,
         allow_runtime_skill_install: bool = True,
     ):
-        registry = ToolRegistry()
-        registry.include(
-            CodingToolSet(
-                workspace_root=workspace_root,
-                include_notebook=False,
-                enable_lsp=False,
-                enable_tasks=False,
-                enable_web=False,
-                expose_modern_names=False,
-            )
-        )
-
         skill_sources = ["skillhub:github"] if bootstrap_github_skill else []
         active_skills = ["github"] if bootstrap_github_skill else []
 
         super().__init__(
-            tool_registry=registry,
+            toolset=[
+                CodingToolSet(
+                    workspace_root=workspace_root,
+                    include_notebook=False,
+                    enable_lsp=False,
+                    enable_tasks=False,
+                    enable_web=False,
+                    expose_modern_names=False,
+                )
+            ],
             llm=llm,
             model_parser=ReActTextParser(),
             workspace_root=workspace_root,

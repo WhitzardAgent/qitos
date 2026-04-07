@@ -1,0 +1,995 @@
+---
+title: "Kit Reference"
+description: "Reference for qitos.kit — reusable parsers, memory adapters, tool sets, planning helpers, critics, and models."
+---
+
+`qitos.kit` provides concrete, reusable building blocks for common agent authoring patterns. All components attach to the `AgentModule + Engine` pipeline and do not introduce a second orchestrator.
+
+```python
+from qitos.kit import ReActTextParser, WindowMemory, CodingToolSet, ...
+```
+
+## How to read this page
+
+Use this page as a capability map for QitOS authoring.
+
+| If you are deciding... | Start here |
+|---|---|
+| How the model should emit actions | Parsers |
+| How to keep useful context in long runs | Memory and history/compaction |
+| Which tools to expose | Tool sets |
+| Which ready-made registries to start from | Preset builders |
+| How to add planning or search structure | Planning |
+
+## Capability map
+
+### Parsers
+
+- `ReActTextParser` for `Thought:` / `Action:` protocols
+- `JsonDecisionParser` for JSON decision objects
+- `XmlDecisionParser` for XML protocols
+- `MiniMaxToolCallParser` when the model returns function-call-like structures
+- `TerminusJsonParser` and `TerminusXmlParser` for explicit termination-aware formats
+
+### Tool presets
+
+- `coding_tools(...)` for the canonical coding workspace
+- `advanced_coding_tools(...)` for a Claude-style coding preset
+- `web_tools()` for web research and extraction
+- `task_tools(...)` for persistent task-board workflows
+- `security_audit_tools(...)` for defensive repository review
+- `thinking_tools()` for explicit thought-recording flows
+- `notebook_tools(...)`, `report_tools(...)`, and `epub_tools(...)` for narrower scenarios
+
+### Long-running context blocks
+
+- `WindowHistory` for simple recency windows
+- `TokenBudgetSummaryHistory` for token-budget summarization
+- `CompactHistory` for multi-stage compaction with warning and summary events
+- `WindowMemory`, `SummaryMemory`, `VectorMemory`, and `MarkdownFileMemory` for cross-step recall
+
+### Planning and search
+
+- `NumberedPlanBuilder` for explicit plans
+- `PlanCursor` for plan execution bookkeeping
+- `DynamicTreeSearch` for branch selection and search-driven agents
+
+---
+
+<Tabs>
+
+<Tab title="Parsers">
+
+Parsers convert raw LLM output strings into typed `Decision` objects. Choose the parser that matches the output format your prompt requests.
+
+<Note>
+Prompt format and parser must match exactly. If your prompt asks for `Thought:` / `Action:` blocks, use `ReActTextParser`. If it asks for JSON, use `JsonDecisionParser`. If it asks for XML, use `XmlDecisionParser`.
+</Note>
+
+<AccordionGroup>
+
+<Accordion title="ReActTextParser">
+
+Parses ReAct-style text output with labeled blocks such as `Thought:` and `Action:`.
+
+```python
+from qitos.kit import ReActTextParser
+
+class ReActTextParser(BaseParser[dict[str, Any]])
+```
+
+**Constructor**
+
+```python
+def __init__(
+    self,
+    *,
+    thought_keys: Optional[Sequence[str]] = None,
+    reflection_keys: Optional[Sequence[str]] = None,
+    action_keys: Optional[Sequence[str]] = None,
+    final_keys: Optional[Sequence[str]] = None,
+)
+```
+
+| Parameter | Default recognized keys | Description |
+|-----------|------------------------|-------------|
+| `thought_keys` | `thought, thinking, think, rationale` | Keys for the reasoning block |
+| `reflection_keys` | `reflection, reflect, selfreflection` | Keys for self-reflection blocks |
+| `action_keys` | `action, tool, call` | Keys for the action block |
+| `final_keys` | `finalanswer, final, answer` | Keys for the final answer block |
+
+**Usage**
+
+```python
+from qitos.kit import ReActTextParser
+
+parser = ReActTextParser()
+
+# Expects output like:
+# Thought: I should search for the answer.
+# Action: search(query="QitOS architecture")
+```
+
+Pass `parser` to `AgentModule.run()` or the `Engine` constructor.
+
+</Accordion>
+
+<Accordion title="JsonDecisionParser">
+
+Parses JSON-formatted model output. Supports `mode` field (`"act"`, `"final"`, `"wait"`) and configurable key names.
+
+```python
+from qitos.kit import JsonDecisionParser
+
+class JsonDecisionParser(BaseParser[dict[str, Any]])
+```
+
+**Constructor**
+
+```python
+def __init__(
+    self,
+    *,
+    thought_keys: Optional[Sequence[str]] = None,
+    reflection_keys: Optional[Sequence[str]] = None,
+    action_keys: Optional[Sequence[str]] = None,
+    final_keys: Optional[Sequence[str]] = None,
+)
+```
+
+Same parameter names as `ReActTextParser`. All keys default to the same values.
+
+**Usage**
+
+```python
+from qitos.kit import JsonDecisionParser
+
+parser = JsonDecisionParser()
+
+# Expects output like:
+# {"thought": "I need to search.", "action": {"name": "search", "args": {"query": "..."}}}
+```
+
+</Accordion>
+
+<Accordion title="XmlDecisionParser">
+
+Parses XML-formatted model output. Supports both XML `mode` attribute and configurable tag names.
+
+```python
+from qitos.kit import XmlDecisionParser
+
+class XmlDecisionParser(BaseParser[dict[str, Any]])
+```
+
+**Constructor**
+
+```python
+def __init__(
+    self,
+    *,
+    thought_keys: Optional[Sequence[str]] = None,
+    reflection_keys: Optional[Sequence[str]] = None,
+    action_keys: Optional[Sequence[str]] = None,
+    final_keys: Optional[Sequence[str]] = None,
+    xml_think_tags: Optional[Sequence[str]] = None,
+    xml_reflection_tags: Optional[Sequence[str]] = None,
+    xml_action_tags: Optional[Sequence[str]] = None,
+    xml_final_tags: Optional[Sequence[str]] = None,
+)
+```
+
+`xml_*_tags` take priority over `*_keys` for XML parsing. Defaults: `xml_think_tags=("think", "thought", "thinking", "rationale")`, `xml_action_tags=("action", "tool", "call")`, `xml_final_tags=("final_answer", "final", "answer")`.
+
+**Usage**
+
+```python
+from qitos.kit import XmlDecisionParser
+
+parser = XmlDecisionParser()
+
+# Expects output like:
+# <response mode="act">
+#   <think>I should search.</think>
+#   <action name="search"><query>QitOS docs</query></action>
+# </response>
+```
+
+</Accordion>
+
+<Accordion title="TerminusJsonParser / TerminusXmlParser">
+
+Terminus parsers are specialized variants that handle agent formats with explicit `<terminus>` or JSON-level termination signals. Use them with their matching system prompts (`TERMINUS_JSON_SYSTEM_PROMPT`, `TERMINUS_XML_SYSTEM_PROMPT`).
+
+```python
+from qitos.kit import TerminusJsonParser, TerminusXmlParser
+```
+
+Both share the same constructor signature as `JsonDecisionParser` and `XmlDecisionParser` respectively.
+
+</Accordion>
+
+</AccordionGroup>
+
+</Tab>
+
+<Tab title="History & Compaction">
+
+QitOS treats long-running context management as a first-class authoring concern.
+
+The key separation is:
+
+- **History** controls what goes back into the next model call
+- **Memory** stores useful records outside the immediate chat window
+
+### WindowHistory
+
+`WindowHistory` is the simplest history strategy. It keeps a fixed sliding message window.
+
+Use it when:
+
+- your runs are short
+- you want deterministic recency behavior
+- you do not want summaries or compaction
+
+### TokenBudgetSummaryHistory
+
+`TokenBudgetSummaryHistory` watches a token budget and summarizes older messages into one continuation message when needed.
+
+Use it when:
+
+- your runs are getting longer
+- you want a cheap "summary instead of overflow" behavior
+- you do not need the richer compaction controls of `CompactHistory`
+
+### CompactHistory
+
+`CompactHistory` is the most advanced built-in context compactor.
+
+It supports:
+
+- warning thresholds before overflow
+- round grouping with `MessageGrouper`
+- micro-compaction of large old messages
+- summary compaction for earlier rounds
+- runtime metadata and compaction events that can surface in traces
+
+Use it when:
+
+- you are building long-running agents
+- you want compaction to be inspectable
+- you want more control than a simple summary fallback
+
+### CompactConfig
+
+`CompactConfig` controls the compaction behavior, including:
+
+- `max_tokens`
+- `keep_last_rounds`
+- `keep_last_messages`
+- `warning_ratio`
+- `auto_compact`
+- micro-compaction preview sizes
+- summary length limits
+
+### MessageGrouper
+
+`MessageGrouper` groups messages into compactable rounds. It prefers grouping by step when possible, and falls back to assistant-boundary grouping otherwise.
+
+This matters because QitOS tries to compact context in ways that still preserve the structure of an agent trajectory.
+
+</Tab>
+
+<Tab title="Memory">
+
+Memory adapters implement `qitos.Memory` and give your agent persistent recall across steps.
+
+<AccordionGroup>
+
+<Accordion title="WindowMemory">
+
+Keeps the last N records in memory. Oldest records are dropped when the window overflows.
+
+```python
+from qitos.kit import WindowMemory
+```
+
+**Constructor**
+
+```python
+def __init__(self, window_size: int = 20)
+```
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `window_size` | `20` | Maximum number of records to retain in memory |
+
+**Usage**
+
+```python
+from qitos.kit import WindowMemory
+
+memory = WindowMemory(window_size=30)
+agent = MyAgent(memory=memory, ...)
+```
+
+</Accordion>
+
+<Accordion title="SummaryMemory">
+
+Keeps the last N records in memory and compresses older records into a summary string when `evict()` is called.
+
+```python
+from qitos.kit.memory import SummaryMemory
+```
+
+**Constructor**
+
+```python
+def __init__(self, keep_last: int = 10)
+```
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `keep_last` | `10` | Number of recent records to keep verbatim |
+
+When `evict()` runs, records beyond `keep_last` are pipe-joined into `self._summaries` for later retrieval via `summarize()`.
+
+</Accordion>
+
+<Accordion title="MarkdownFileMemory">
+
+Persists all memory records to a local markdown file in an append-only format. Useful for debugging and long-running agents that need durable memory.
+
+```python
+from qitos.kit import MarkdownFileMemory
+```
+
+**Constructor**
+
+```python
+def __init__(self, path: str = "memory.md", max_in_memory: int = 200)
+```
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `path` | `"memory.md"` | Path to the markdown file (created if absent) |
+| `max_in_memory` | `200` | Maximum records held in memory; older records are dropped from RAM but remain on disk |
+
+Each appended record is written as a markdown section:
+
+```markdown
+## Step 3 · observation
+- time_utc: 2026-04-07T10:00:00+00:00
+
+```text
+{"result": "..."}
+```
+```
+
+</Accordion>
+
+<Accordion title="VectorMemory">
+
+Stores records in an in-process embedding index and retrieves the top-K most similar records for a given query.
+
+```python
+from qitos.kit.memory import VectorMemory
+```
+
+**Constructor**
+
+```python
+def __init__(self, top_k: int = 5)
+```
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `top_k` | `5` | Number of most-relevant records to return |
+
+</Accordion>
+
+</AccordionGroup>
+
+**Factory helpers**
+
+```python
+from qitos.kit.memory import window_memory, summary_memory, vector_memory, markdown_file_memory
+
+memory = window_memory(window_size=20)
+memory = summary_memory(keep_last=10)
+memory = vector_memory(top_k=5)
+memory = markdown_file_memory(path="memory.md", max_in_memory=200)
+```
+
+</Tab>
+
+<Tab title="Tool Sets">
+
+Tool sets bundle related tools with shared lifecycle hooks (`setup` / `teardown`). Register them with `ToolRegistry.register_toolset()`.
+
+<AccordionGroup>
+
+<Accordion title="CodingToolSet">
+
+Full coding bundle combining editor, codebase search, file I/O, shell, and optionally notebook tools.
+
+```python
+from qitos.kit import CodingToolSet
+```
+
+**Constructor**
+
+```python
+def __init__(
+    self,
+    workspace_root: str = ".",
+    shell_timeout: int = 30,
+    include_notebook: bool = True,
+    enable_lsp: bool = True,
+    enable_tasks: bool = True,
+    enable_web: bool = True,
+)
+```
+
+**Typical usage**
+
+```python
+from qitos import ToolRegistry
+from qitos.kit import CodingToolSet
+
+registry = ToolRegistry()
+registry.register_toolset(
+    CodingToolSet(
+        workspace_root="/path/to/project",
+        include_notebook=False,
+        enable_lsp=False,
+        enable_tasks=False,
+        enable_web=False,
+        expose_modern_names=False,
+    )
+)
+```
+
+</Accordion>
+
+<Accordion title="AdvancedCodingToolSet">
+
+Higher-level coding preset intended for Claude-style or operator-style long-running coding agents.
+
+```python
+from qitos.kit.toolset import advanced_coding_tools
+```
+
+Use this preset when you want a richer coding workflow surface than the base `coding_tools(...)` bundle.
+
+</Accordion>
+
+<Accordion title="TaskToolSet">
+
+Persistent task-board tools backed by a JSON file. Useful for agents that manage multi-step plans.
+
+```python
+from qitos.kit import TaskToolSet
+```
+
+**Constructor**
+
+```python
+def __init__(
+    self,
+    workspace_root: str = ".",
+    board_relpath: str = ".qitos/task_board.json",
+)
+```
+
+</Accordion>
+
+<Accordion title="ThinkingToolSet">
+
+Lightweight thought-recording tools for workflows that want explicit scratch thoughts as tool calls.
+
+```python
+from qitos.kit.toolset import thinking_tools
+
+registry = thinking_tools()
+```
+
+Use this as an opt-in research toolset rather than a default dependency for all agents.
+
+</Accordion>
+
+<Accordion title="ReportToolSet">
+
+Assessment and reporting tools for evaluation agents.
+
+```python
+from qitos.kit import ReportToolSet
+```
+
+**Constructor**
+
+```python
+def __init__(self, workspace_root: str = ".")
+```
+
+</Accordion>
+
+<Accordion title="SecurityAuditToolSet">
+
+Defensive repository-audit tools for entrypoint discovery, sink analysis, secret scanning, dependency checks, and finding synthesis.
+
+```python
+from qitos.kit import SecurityAuditToolSet
+```
+
+**Typical usage**
+
+```python
+from qitos import ToolRegistry
+from qitos.kit import SecurityAuditToolSet
+
+registry = ToolRegistry()
+registry.register_toolset(
+    SecurityAuditToolSet(
+        workspace_root="/path/to/repo",
+        include_external=False,
+        max_matches=80,
+    )
+)
+```
+
+Use this toolset when you want a defensive code-review or audit agent rather than a general editing agent.
+
+</Accordion>
+
+<Accordion title="NotebookToolSet">
+
+Jupyter notebook manipulation tools.
+
+```python
+from qitos.kit.tool.notebook import NotebookToolSet
+```
+
+**Constructor**
+
+```python
+def __init__(self, workspace_root: str = ".")
+```
+
+**Tools provided:** `read_notebook`, `replace_notebook_cell`, `insert_notebook_cell`.
+
+</Accordion>
+
+<Accordion title="WebToolSet">
+
+Web-oriented preset built around HTTP and extraction tools.
+
+```python
+from qitos.kit.toolset import web_tools
+
+registry = web_tools()
+```
+
+Use it for lightweight web research and scraping flows when you do not need the full coding preset.
+
+</Accordion>
+
+</AccordionGroup>
+
+**Pre-built registry helpers**
+
+The `qitos.kit.toolset` module provides factory functions that return a configured `ToolRegistry`:
+
+```python
+from qitos.kit.toolset import (
+    advanced_coding_tools,
+    codebase_tools,
+    coding_tools,
+    editor_tools,
+    math_tools,
+    notebook_tools,
+    report_tools,
+    task_tools,
+    web_tools,
+)
+
+registry = coding_tools(workspace_root="/path/to/project", shell_timeout=60)
+registry = advanced_coding_tools(workspace_root="/path/to/project")
+registry = web_tools()
+```
+
+</Tab>
+
+<Tab title="Individual Tools">
+
+Stand-alone tool objects you can register directly.
+
+<AccordionGroup>
+
+<Accordion title="HTTPGet / HTTPPost / HTTPRequest">
+
+HTTP request tools with automatic retries and structured response payloads.
+
+```python
+from qitos.kit import HTTPGet, HTTPPost
+from qitos.kit.tool.web import HTTPRequest
+```
+
+**`HTTPGet` constructor**
+
+```python
+def __init__(
+    self,
+    headers: Optional[Dict[str, str]] = None,
+    timeout: int = 30,
+    max_retries: int = 2,
+)
+```
+
+**`HTTPPost` constructor** — same signature as `HTTPGet`.
+
+**`HTTPRequest` constructor**
+
+```python
+def __init__(
+    self,
+    headers: Optional[Dict[str, str]] = None,
+    timeout: int = 30,
+    max_retries: int = 2,
+    backoff_factor: float = 0.4,
+    user_agent: str = "QitOS-WebTool/1.0",
+)
+```
+
+`HTTPRequest.run()` accepts `method`, `url`, `params`, `data`, `json_data`, `headers`, `timeout`, `verify_tls`, `allow_redirects`, `max_content_chars`.
+
+</Accordion>
+
+<Accordion title="HTMLExtractText">
+
+Extract readable text from raw HTML, optionally preserving anchor links.
+
+```python
+from qitos.kit import HTMLExtractText
+```
+
+**Constructor** — `HTMLExtractText()` (no parameters)
+
+**`run(html, max_chars=6000, keep_links=False)`** — Returns `{"status", "content", "length", "title"}`.
+
+</Accordion>
+
+<Accordion title="SubmitAnswer">
+
+Utility tool used by benchmark-style agents to submit a final candidate answer or flag.
+
+```python
+from qitos.kit.tool.cybench import SubmitAnswer
+```
+
+This is especially useful in CyBench-like settings where the agent must explicitly hand over a candidate result through a tool call rather than only return a final natural-language answer.
+
+</Accordion>
+
+<Accordion title="SendTerminalKeys">
+
+Send keystrokes to a terminal session (tmux or similar).
+
+```python
+from qitos.kit import SendTerminalKeys
+```
+
+Useful for agents that need to interact with a long-running terminal process.
+
+</Accordion>
+
+</AccordionGroup>
+
+</Tab>
+
+<Tab title="Planning">
+
+Planning helpers for building structured plans and search-driven agents.
+
+<AccordionGroup>
+
+<Accordion title="NumberedPlanBuilder">
+
+Calls an LLM to generate a numbered plan from a prompt.
+
+```python
+from qitos.kit import NumberedPlanBuilder
+```
+
+**Constructor**
+
+```python
+def __init__(self, system_prompt: str = "Return a numbered plan only.")
+```
+
+**`build(llm, prompt, extra_messages=None) -> List[str]`**
+
+Calls `llm` with the system prompt and user `prompt`, then parses lines matching `1. ...`, `2. ...` etc. Returns the list of step strings.
+
+**Usage**
+
+```python
+from qitos.kit import NumberedPlanBuilder
+
+builder = NumberedPlanBuilder()
+plan = builder.build(llm=agent.llm, prompt="How to analyse a Python codebase?")
+# ["Read the directory structure", "Identify entry points", ...]
+```
+
+</Accordion>
+
+<Accordion title="PlanCursor">
+
+Manages plan and cursor fields on a state object.
+
+```python
+from qitos.kit.planning import PlanCursor
+```
+
+**Constructor**
+
+```python
+def __init__(self, plan_field: str = "plan", cursor_field: str = "plan_cursor")
+```
+
+**Methods**
+
+```python
+def init(self, state: Any, plan: List[str]) -> None
+def current(self, state: Any) -> Optional[str]
+def advance(self, state: Any) -> None
+def done(self, state: Any) -> bool
+```
+
+</Accordion>
+
+<Accordion title="DynamicTreeSearch">
+
+Adaptive tree search that maintains a frontier of unexplored candidates and selects branches by score plus novelty bonus.
+
+```python
+from qitos.kit import DynamicTreeSearch
+```
+
+**Constructor**
+
+```python
+def __init__(
+    self,
+    top_k: int = 3,
+    max_frontier: int = 64,
+    score_key: str = "score",
+    exploration_bonus: float = 0.25,
+)
+```
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `top_k` | `3` | Candidates to keep per expansion |
+| `max_frontier` | `64` | Maximum frontier size |
+| `score_key` | `"score"` | Key in `Decision.meta` to read as base score |
+| `exploration_bonus` | `0.25` | Bonus added for less-visited candidates |
+
+Pass it to `Engine(search=DynamicTreeSearch(...))` or `AgentModule.run(search=...)`.
+
+</Accordion>
+
+<Accordion title="State ops">
+
+Lightweight helpers for safely updating common state fields:
+
+```python
+from qitos.kit.planning import append_log, format_action, set_final, set_if_empty
+
+# Append a message to state.log (creates the list if absent)
+append_log(state, "step completed")
+
+# Render an action dict as a readable string
+label = format_action({"name": "search", "args": {"query": "foo"}})
+
+# Set state.final_result and stop_reason
+set_final(state, result="Done", reason=StopReason.SUCCESS)
+
+# Set a field only if it is currently falsy
+set_if_empty(state, "plan", [])
+```
+
+</Accordion>
+
+</AccordionGroup>
+
+</Tab>
+
+<Tab title="Critics">
+
+Critics evaluate each step's decision and action results, and can signal `continue`, `retry`, or `stop` to the Engine.
+
+<AccordionGroup>
+
+<Accordion title="ReActSelfReflectionCritic">
+
+Generates reflection notes when tool calls fail and triggers retries up to a configurable limit.
+
+```python
+from qitos.kit import ReActSelfReflectionCritic
+```
+
+**Constructor**
+
+```python
+def __init__(self, max_retries: int = 2)
+```
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `max_retries` | `2` | Maximum retry attempts before signalling `stop` |
+
+**Behaviour**
+
+- If any action result contains an `"error"` key: writes a structured reflection to `state.metadata["self_reflections"]` and returns `action="retry"`.
+- After `max_retries` failed attempts: returns `action="stop"`.
+- On a `Decision.final()` without errors: appends a pass note and returns `action="continue"`.
+
+**Usage**
+
+```python
+from qitos.kit import ReActSelfReflectionCritic
+
+critic = ReActSelfReflectionCritic(max_retries=3)
+agent.run(task="...", critics=[critic])
+```
+
+</Accordion>
+
+<Accordion title="SelfReflectionCritic">
+
+General-purpose self-reflection critic. Checks action results and produces structured feedback without the ReAct-specific format assumptions.
+
+```python
+from qitos.kit.critic import SelfReflectionCritic
+```
+
+</Accordion>
+
+<Accordion title="PassThroughCritic">
+
+A no-op critic that always returns `action="continue"`. Useful as a placeholder during development.
+
+```python
+from qitos.kit.critic import PassThroughCritic
+```
+
+</Accordion>
+
+</AccordionGroup>
+
+</Tab>
+
+<Tab title="Models">
+
+The models module provides concrete LLM callables compatible with `AgentModule.llm`.
+
+<AccordionGroup>
+
+<Accordion title="OpenAICompatibleModel">
+
+Works with any OpenAI-compatible API endpoint — including SiliconFlow, Azure OpenAI, Tongyi, Zhipu AI, LM Studio, vLLM, and LocalAI.
+
+```python
+from qitos.models import OpenAICompatibleModel
+```
+
+**Constructor**
+
+```python
+def __init__(
+    self,
+    model: str = "default",
+    api_key: Optional[str] = None,
+    base_url: Optional[str] = None,
+    system_prompt: Optional[str] = None,
+    temperature: float = 0.7,
+    max_tokens: int = 2048,
+    timeout: int = 60,
+)
+```
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `model` | `"default"` | Model name sent to the API |
+| `api_key` | `None` | Falls back to `OPENAI_API_KEY`; uses `"dummy-key"` if absent |
+| `base_url` | `None` | Falls back to `OPENAI_BASE_URL`; **required** |
+| `system_prompt` | `None` | Prepended as a system message to every call |
+| `temperature` | `0.7` | Sampling temperature |
+| `max_tokens` | `2048` | Maximum tokens in the response |
+| `timeout` | `60` | Request timeout in seconds |
+
+**Usage**
+
+```python
+from qitos.models import OpenAICompatibleModel
+
+llm = OpenAICompatibleModel(
+    model="Qwen/Qwen3-8B",
+    base_url="https://api.siliconflow.cn/v1/",
+    temperature=0.2,
+)
+agent = MyAgent(llm=llm, ...)
+```
+
+</Accordion>
+
+<Accordion title="OpenAIModel">
+
+Direct OpenAI (GPT) model integration.
+
+```python
+from qitos.models import OpenAIModel
+```
+
+**Constructor**
+
+```python
+def __init__(
+    self,
+    model: str = "gpt-4",
+    api_key: Optional[str] = None,
+    base_url: Optional[str] = None,
+    system_prompt: Optional[str] = None,
+    temperature: float = 0.7,
+    max_tokens: int = 2048,
+    timeout: int = 60,
+)
+```
+
+Reads `OPENAI_API_KEY` and `OPENAI_BASE_URL` from the environment by default.
+
+</Accordion>
+
+<Accordion title="Local models">
+
+```python
+from qitos.models import OllamaModel, LMStudioModel, VLLMModel
+
+llm = OllamaModel(model="llama3")
+llm = LMStudioModel(model="mistral", base_url="http://localhost:1234/v1")
+llm = VLLMModel(model="meta-llama/Llama-3-8b", base_url="http://localhost:8000/v1")
+```
+
+All local models share the same base constructor signature as `OpenAICompatibleModel`.
+
+</Accordion>
+
+<Accordion title="ModelFactory">
+
+Automatically selects and constructs a model from environment variables.
+
+```python
+from qitos.models import ModelFactory
+
+llm = ModelFactory.from_env()
+```
+
+Reads `QITOS_MODEL` (or `OPENAI_API_KEY` / `OPENAI_BASE_URL`) to pick the right backend.
+
+Register a custom backend:
+
+```python
+@ModelFactory.register("my_backend")
+class MyModel(Model):
+    ...
+```
+
+</Accordion>
+
+</AccordionGroup>
+
+</Tab>
+
+</Tabs>

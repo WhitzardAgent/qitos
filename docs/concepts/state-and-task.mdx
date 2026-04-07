@@ -1,0 +1,210 @@
+---
+title: "State and Task"
+description: "StateSchema is the typed container for everything your agent tracks across steps. Task is the structured package that describes what the agent should accomplish."
+---
+
+## StateSchema
+
+`StateSchema` is the base class for your agent's typed state. It acts as the single source of truth during a run — every hook in your `AgentModule` reads from and writes to it.
+
+### Built-in fields
+
+```python
+@dataclass
+class StateSchema:
+    schema_version: int = 1
+    task: str = ""
+    current_step: int = 0
+    max_steps: int = 10
+    final_result: Optional[str] = None
+    stop_reason: Optional[str] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    metrics: Dict[str, Any] = field(default_factory=dict)
+```
+
+| Field           | Description                                                                 |
+| --------------- | --------------------------------------------------------------------------- |
+| `task`          | The task string passed to `init_state`. Set automatically by the Engine.    |
+| `current_step`  | The current step index. Incremented by the Engine after each step.          |
+| `max_steps`     | Maximum steps allowed. Validated: must be `> 0` and `>= current_step`.     |
+| `final_result`  | The agent's final answer, as a string. Set to stop the run via `FinalResultCriteria`. |
+| `stop_reason`   | Why the run ended. Set by `state.set_stop()` or the Engine on budget exhaustion. |
+| `metadata`      | Freeform dict for any extra per-run context you want to carry.              |
+| `metrics`       | Freeform dict for tracking numeric measurements across steps.               |
+
+### Subclassing StateSchema
+
+Add your own fields by subclassing `StateSchema`. The Engine serializes state diffs into each step record using `state.to_dict()`, so all fields are captured in the trace automatically.
+
+```python
+from dataclasses import dataclass, field
+from typing import Any
+
+from qitos import StateSchema
+
+
+@dataclass
+class ResearchState(StateSchema):
+    scratchpad: list[str] = field(default_factory=list)
+    sources_visited: list[str] = field(default_factory=list)
+    confidence: float = 0.0
+```
+
+Initialize it in `init_state`:
+
+```python
+def init_state(self, task: str, **kwargs: Any) -> ResearchState:
+    return ResearchState(
+        task=task,
+        max_steps=int(kwargs.get("max_steps", 20)),
+    )
+```
+
+### Stopping the run
+
+Call `state.set_stop()` from within `reduce` to halt the run on the next stop check. It accepts a `StopReason` enum value or its string equivalent.
+
+```python
+from qitos import StopReason
+
+def reduce(self, state, observation, decision):
+    if some_terminal_condition:
+        state.set_stop(StopReason.MAX_STEPS_REACHED, final_result="Done.")
+    return state
+```
+
+Setting `state.final_result` triggers the default `FinalResultCriteria` stop condition, which is the preferred way to signal a successful completion:
+
+```python
+state.final_result = "The answer is 42."
+```
+
+---
+
+## Task
+
+`Task` is a structured package that describes what the agent should do, what resources it needs, and what constraints apply. You can pass a `Task` anywhere `agent.run()` or `Engine.run()` accepts a task argument.
+
+```python
+from qitos import Task, TaskBudget, TaskResource
+
+task = Task(
+    id="research-001",
+    objective="Summarize the findings in paper.pdf",
+    resources=[
+        TaskResource(kind="file", path="paper.pdf", required=True),
+    ],
+    budget=TaskBudget(max_steps=25, max_runtime_seconds=300.0),
+    success_criteria=["Summary covers abstract, methods, and conclusions"],
+    constraints={"output_format": "markdown"},
+)
+
+result = agent.run(task, return_state=True)
+```
+
+### Task fields
+
+| Field              | Type                    | Description                                                       |
+| ------------------ | ----------------------- | ----------------------------------------------------------------- |
+| `id`               | `str`                   | Unique run identifier. Used in trace artifacts.                   |
+| `objective`        | `str`                   | The plain-text task instruction passed to `init_state`.           |
+| `resources`        | `list[TaskResource]`    | Files, directories, URLs, or artifacts the agent needs.           |
+| `env_spec`         | `EnvSpec \| None`       | Declares the environment type and configuration.                  |
+| `constraints`      | `dict[str, Any]`        | Freeform key-value constraints communicated to the agent.         |
+| `success_criteria` | `list[str]`             | Human-readable criteria evaluated in `TaskResult`.                |
+| `budget`           | `TaskBudget`            | Per-task budget that overrides the Engine's default budget.       |
+| `inputs`           | `dict[str, Any]`        | Structured input data available to the agent.                     |
+| `metadata`         | `dict[str, Any]`        | Freeform metadata stored in the trace manifest.                   |
+
+### TaskBudget
+
+`TaskBudget` sets per-task limits on steps, wall-clock time, and tokens. When a `Task` is passed to `Engine.run()`, its budget takes precedence over the Engine's default `RuntimeBudget`.
+
+```python
+from qitos import TaskBudget
+
+budget = TaskBudget(
+    max_steps=30,
+    max_runtime_seconds=180.0,
+    max_tokens=100_000,
+)
+```
+
+Any field left as `None` inherits the Engine's default.
+
+### TaskResource
+
+`TaskResource` declares a file, directory, URL, or artifact that the task depends on. The Engine validates required resources before the loop starts.
+
+```python
+from qitos import TaskResource
+
+# A required local file
+TaskResource(kind="file", path="data/corpus.txt", required=True)
+
+# An optional directory
+TaskResource(kind="dir", path="output/", required=False)
+
+# A remote URL
+TaskResource(kind="url", uri="https://arxiv.org/abs/2501.12345", required=True)
+
+# An artifact from a prior run
+TaskResource(kind="artifact", path="runs/agent_20260407/steps.jsonl")
+```
+
+Valid `kind` values: `"file"`, `"dir"`, `"url"`, `"artifact"`.
+
+---
+
+## Decision
+
+`Decision` represents the output of a single decide step — what the agent wants to do next. It has four modes, each with a factory method.
+
+<Tabs>
+  <Tab title="act">
+    Execute one or more tool actions.
+
+    ```python
+    from qitos import Decision, Action
+
+    decision = Decision.act(
+        actions=[Action(name="read_file", args={"path": "paper.pdf"})],
+        rationale="Need to read the file before summarizing.",
+    )
+    ```
+  </Tab>
+  <Tab title="final">
+    Signal that the agent has a final answer and the run should end.
+
+    ```python
+    decision = Decision.final(
+        answer="The paper proposes a novel attention mechanism that reduces memory usage by 40%.",
+        rationale="Finished reading all sections.",
+    )
+    ```
+  </Tab>
+  <Tab title="wait">
+    Do nothing this step — useful when waiting on an external event or environment signal.
+
+    ```python
+    decision = Decision.wait(rationale="Waiting for environment to reset.")
+    ```
+  </Tab>
+  <Tab title="branch">
+    Propose multiple candidate decisions for the `BranchSelector` to evaluate.
+
+    ```python
+    decision = Decision.branch(
+        candidates=[
+            Decision.act([Action(name="search", args={"query": "attention mechanism"})]),
+            Decision.act([Action(name="read_file", args={"path": "intro.txt"})]),
+        ],
+        rationale="Exploring two strategies in parallel.",
+    )
+    ```
+  </Tab>
+</Tabs>
+
+<Note>
+  Use the factory methods (`Decision.act()`, `Decision.final()`, etc.) rather than constructing `Decision` directly. They validate required fields and set `mode` correctly.
+</Note>

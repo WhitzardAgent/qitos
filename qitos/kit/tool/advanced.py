@@ -7,7 +7,7 @@ from typing import Any, Dict, Optional
 
 from qitos.core.tool import BaseTool, ToolPermissionDecision, ToolValidationResult
 from qitos.core.tool import FunctionTool
-from qitos.kit.tool.coding import CodingToolSet
+from qitos.kit.tool.internal.coding_impl import CodingToolSet
 from qitos.kit.tool.web import HTMLExtractText, HTTPGet
 
 

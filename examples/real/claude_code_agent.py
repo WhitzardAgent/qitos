@@ -9,7 +9,7 @@ from typing import Any
 
 from qitos import Action, AgentModule, Decision, HistoryPolicy, StateSchema
 from qitos.kit import ReActTextParser, format_action, render_prompt
-from qitos.kit.tool import coding_tools
+from qitos.kit.toolset import coding_tools
 from qitos.models import OpenAICompatibleModel
 
 TASK = "Fix buggy_module.py, keep a todo list, and verify the fix with the provided command."
@@ -62,9 +62,13 @@ class ClaudeCodeState(StateSchema):
 class ClaudeCodeAgent(AgentModule[ClaudeCodeState, dict[str, Any], Action]):
     def __init__(self, llm: Any, workspace_root: str):
         super().__init__(
-            tool_registry=coding_tools(
-                workspace_root=workspace_root, shell_timeout=30, include_notebook=True
-            ),
+            toolset=[
+                coding_tools(
+                    workspace_root=workspace_root,
+                    shell_timeout=30,
+                    include_notebook=True,
+                )
+            ],
             llm=llm,
             model_parser=ReActTextParser(),
         )

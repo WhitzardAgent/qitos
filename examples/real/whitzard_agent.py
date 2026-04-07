@@ -29,7 +29,7 @@ from qitos.models import OpenAICompatibleModel
 
 TASK = "Somebody told me in this repository there is an RCE 0-day when you open a file. Find it."
 
-WORKSPACE = Path("../../playground/vim")
+WORKSPACE = Path("/Users/morinop/coding/yoga_framework/playground/vim")
 SESSION_NAME = "qitos_whitzard"
 PARSER_FORMAT = os.getenv("QITOS_TERMINUS_FORMAT", "").strip().lower()
 MODEL_NAME = os.getenv("QITOS_MODEL", "MiniMax-M2.5")
@@ -711,34 +711,7 @@ def build_model() -> OpenAICompatibleModel:
     )
 
 
-def bootstrap_workspace(root: Path) -> None:
-    """Create a small intentionally-vulnerable demo repo for testing."""
-    root.mkdir(parents=True, exist_ok=True)
-
-    (root / "app.py").write_text(
-        "from flask import Flask, request\n"
-        "import subprocess\n\n"
-        "app = Flask(__name__)\n"
-        "SECRET_KEY = 'dev-secret-value-123456'\n\n"
-        "@app.route('/run')\n"
-        "def run():\n"
-        "    subprocess.run(request.args.get('cmd'), shell=True)\n"
-        "    return 'ok'\n",
-        encoding="utf-8",
-    )
-    (root / "requirements.txt").write_text(
-        "flask\nrequests==2.31.0\n", encoding="utf-8"
-    )
-    (root / "README.md").write_text("# Demo repo for Whitzard\n", encoding="utf-8")
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# Entrypoint
-# ═══════════════════════════════════════════════════════════════════════════════
-
-
 def main() -> None:
-
     env = TmuxEnv(
         workspace_root=str(WORKSPACE),
         session_name=SESSION_NAME,
