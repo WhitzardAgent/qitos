@@ -90,7 +90,7 @@ Trace artifacts and qita views are part of the framework contract, not an aftert
 
 - `qitos/`: framework source
 - `tests/`: regression and behavior tests
-- `docs/`: MkDocs content
+- `docs/`: Mintlify documentation content
 - `examples/`: canonical patterns and reference agents
 - `templates/`: starter agent layouts
 

@@ -55,7 +55,7 @@ class GeminiModel(Model):
                 "GEMINI_API_KEY or GOOGLE_API_KEY not set. Please set one or pass api_key."
             )
 
-    def _call_api(self, messages: List[Dict[str, str]]) -> str:
+    def _call_api(self, messages: List[Dict[str, str]], **kwargs: Any) -> str:
         payload: Dict[str, Any] = {
             "contents": self._gemini_contents(messages),
             "generationConfig": {
@@ -63,6 +63,7 @@ class GeminiModel(Model):
                 "maxOutputTokens": self.max_tokens,
             },
         }
+        _ = kwargs
         system_text = self._system_text(messages)
         if system_text:
             payload["systemInstruction"] = {"parts": [{"text": system_text}]}

@@ -81,7 +81,7 @@ class OllamaModel(Model):
         if not self.host:
             raise ValueError("Ollama host 未设置。请设置环境变量或传入 host 参数。")
 
-    def _call_api(self, messages: List[Dict[str, str]]) -> str:
+    def _call_api(self, messages: List[Dict[str, str]], **kwargs: Any) -> str:
         """
         调用 Ollama API
 
@@ -94,6 +94,7 @@ class OllamaModel(Model):
         import urllib.request
         import urllib.error
 
+        _ = kwargs
         url = f"{self.host}/api/chat"
 
         payload = {
@@ -246,7 +247,7 @@ class OllamaGenerateModel(Model):
         )
         self.timeout = timeout
 
-    def _call_api(self, messages: List[Dict[str, str]]) -> str:
+    def _call_api(self, messages: List[Dict[str, str]], **kwargs: Any) -> str:
         """
         调用 Ollama Generate API
 
@@ -259,6 +260,7 @@ class OllamaGenerateModel(Model):
         import urllib.request
         import urllib.error
 
+        _ = kwargs
         url = f"{self.host}/api/generate"
 
         prompt = self._build_prompt(messages)
@@ -373,13 +375,14 @@ class LMStudioModel(Model):
                 "LM Studio base_url 未设置。请设置环境变量或传入 base_url 参数。"
             )
 
-    def _call_api(self, messages: List[Dict[str, str]]) -> str:
+    def _call_api(self, messages: List[Dict[str, str]], **kwargs: Any) -> str:
         """
         调用 LM Studio API (OpenAI 兼容格式)
         """
         import urllib.request
         import urllib.error
 
+        _ = kwargs
         url = f"{self.base_url}/chat/completions"
 
         payload = {
@@ -515,13 +518,14 @@ class VLLMModel(Model):
         )
         self.timeout = timeout
 
-    def _call_api(self, messages: List[Dict[str, str]]) -> str:
+    def _call_api(self, messages: List[Dict[str, str]], **kwargs: Any) -> str:
         """
         调用 vLLM API (OpenAI 兼容格式)
         """
         import urllib.request
         import urllib.error
 
+        _ = kwargs
         url = f"{self.base_url}/chat/completions"
 
         payload = {

@@ -36,6 +36,7 @@ How to update:
 - Slimmed `qita` and `render` entry modules so public behavior stays the same while implementation can evolve behind clearer boundaries.
 - Reworked root installation guidance so `requirements.txt` is now a lightweight repo install path instead of a drifting copy of runtime and dev dependencies.
 - Added coverage, dependency audit, and pre-commit tooling to the standard contributor workflow.
+- Removed legacy root planning/audit scratch files, obsolete MkDocs configuration, and local phase-artifact directories so the repository surface matches the current Mintlify-based docs flow.
 
 ### Fixed
 

@@ -1,46 +1,19 @@
 ---
 title: "Configuration"
-description: "All configuration options available in QitOS: config.yaml, AgentModule.run() arguments, Engine constructor arguments, and environment variables."
+description: "All configuration options available in QitOS: AgentModule.run() arguments, Engine constructor arguments, tracing controls, and environment variables."
 ---
 
-QitOS is configured through four overlapping layers, each narrowing in scope:
+QitOS is configured through three overlapping layers:
 
-1. **`config.yaml`** — file-level defaults loaded by agent templates
-2. **`AgentModule.run()` keyword arguments** — per-run overrides
-3. **`Engine` constructor keyword arguments** — fine-grained execution knobs
-4. **Environment variables** — secrets and deployment-level settings
-
----
-
-## config.yaml
-
-Agent templates read a `config.yaml` from the project directory. Below is the full set of recognized keys with their defaults.
-
-```yaml
-name: qitos_default        # Agent/run name; used as the trace prefix
-max_steps: 12              # Maximum steps per run (overridable at runtime)
-
-model:
-  provider: openai_compatible   # Model backend: "openai_compatible" | "openai" | "azure" | "ollama" | ...
-  base_url: https://api.siliconflow.cn/v1/   # API base URL
-  api_key: ${OPENAI_API_KEY}                 # API key; supports ${ENV_VAR} interpolation
-  model: Qwen/Qwen3-8B                       # Model identifier sent to the API
-  model_name: Qwen/Qwen3-8B                  # Human-readable model name (used in traces)
-  temperature: 0.2                           # Sampling temperature (0.0–1.0)
-  max_tokens: 2048                           # Maximum response tokens
-```
-
-**Key notes**
-
-- `name` becomes the prefix for auto-generated run IDs when `trace_prefix` is not set.
-- `max_steps` is the default budget. You can override it per-run with `AgentModule.run(max_steps=...)`.
-- `api_key` supports `${VAR}` syntax for environment variable substitution at load time.
+1. **`AgentModule.run()` keyword arguments** — the normal per-run entrypoint
+2. **`Engine` constructor keyword arguments** — lower-level runtime control
+3. **Environment variables** — provider credentials and model defaults
 
 ---
 
 ## AgentModule.run() arguments
 
-All of the following can be passed to `agent.run(task, ...)`. They override any defaults from `config.yaml` or the `Engine` constructor.
+All of the following can be passed to `agent.run(task, ...)`. This is the canonical user-facing configuration surface for QitOS runs.
 
 <AccordionGroup>
 
@@ -147,7 +120,7 @@ When a `Task` object is passed to `Engine.run()`, the `Task.budget` values overr
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `OPENAI_API_KEY` | Yes (for OpenAI / compatible APIs) | API key sent in the `Authorization` header. Used by `OpenAIModel`, `OpenAICompatibleModel`, and as the default `api_key` in `config.yaml` |
+| `OPENAI_API_KEY` | Yes (for OpenAI / compatible APIs) | API key sent in the `Authorization` header. Used by `OpenAIModel` and `OpenAICompatibleModel` |
 | `OPENAI_BASE_URL` | Yes (for compatible APIs) | Base URL of the API endpoint. Required by `OpenAICompatibleModel`; optional for `OpenAIModel` (defaults to `https://api.openai.com/v1`) |
 | `QITOS_API_KEY` | No | Alternative API key variable. Recognized by `ModelFactory.from_env()` as a fallback when `OPENAI_API_KEY` is not set |
 | `QITOS_MODEL` | No | Default model identifier. Read by `ModelFactory.from_env()` to select the model when none is specified in code |

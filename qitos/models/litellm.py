@@ -47,7 +47,7 @@ class LiteLLMModel(Model):
         self.custom_llm_provider = custom_llm_provider or os.getenv("LITELLM_PROVIDER")
         self.timeout = timeout
 
-    def _call_api(self, messages: List[Dict[str, str]]) -> str:
+    def _call_api(self, messages: List[Dict[str, str]], **call_kwargs: Any) -> str:
         try:
             import litellm
         except ImportError:
@@ -56,7 +56,7 @@ class LiteLLMModel(Model):
                 'Install optional model dependencies with `pip install "qitos[models]"`.'
             )
 
-        kwargs: Dict[str, Any] = {
+        request_kwargs: Dict[str, Any] = {
             "model": self.model,
             "messages": messages,
             "temperature": self.temperature,
@@ -64,16 +64,17 @@ class LiteLLMModel(Model):
             "timeout": self.timeout,
         }
         if self.api_key:
-            kwargs["api_key"] = self.api_key
+            request_kwargs["api_key"] = self.api_key
         if self.api_base:
-            kwargs["api_base"] = self.api_base
+            request_kwargs["api_base"] = self.api_base
         if self.api_version:
-            kwargs["api_version"] = self.api_version
+            request_kwargs["api_version"] = self.api_version
         if self.custom_llm_provider:
-            kwargs["custom_llm_provider"] = self.custom_llm_provider
+            request_kwargs["custom_llm_provider"] = self.custom_llm_provider
+        request_kwargs.update(call_kwargs)
 
         try:
-            response = litellm.completion(**kwargs)
+            response = litellm.completion(**request_kwargs)
             self._set_last_usage(self._usage_from_response(response))
             return self._parse_response(response)
         except Exception as exc:

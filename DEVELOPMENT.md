@@ -64,11 +64,10 @@ Audit Python dependencies:
 pip-audit
 ```
 
-Serve docs locally:
+Preview docs locally:
 
 ```bash
-pip install -r docs/requirements.txt
-mkdocs serve
+npx mintlify dev docs
 ```
 
 ## Environment Configuration
@@ -119,4 +118,4 @@ If build artifacts or caches cause confusion, remove:
 - `.pytest_cache/`
 - `.mypy_cache/`
 
-If docs links appear stale, rebuild locally with `mkdocs serve` and verify generated navigation.
+If docs links appear stale, run `npx mintlify broken-links docs` and preview the site with `npx mintlify dev docs`.

@@ -275,9 +275,10 @@ class AsyncModel(Model):
         """
         pass
 
-    def _call_api(self, messages: List[Dict[str, str]]) -> str:
+    def _call_api(self, messages: List[Dict[str, str]], **kwargs: Any) -> str:
         import asyncio
 
+        _ = kwargs
         return asyncio.run(self._acall_api(messages))
 
     async def acall(self, messages: List[Dict[str, str]]) -> str:

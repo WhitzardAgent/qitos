@@ -58,12 +58,13 @@ class AnthropicModel(Model):
                 "ANTHROPIC_API_KEY not set. Please set it or pass api_key."
             )
 
-    def _call_api(self, messages: List[Dict[str, str]]) -> str:
+    def _call_api(self, messages: List[Dict[str, str]], **kwargs: Any) -> str:
         headers = {
             "x-api-key": self.api_key,
             "anthropic-version": self.api_version,
             "content-type": "application/json",
         }
+        _ = kwargs
         payload: Dict[str, Any] = {
             "model": self.model,
             "max_tokens": self.max_tokens,

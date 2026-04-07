@@ -466,7 +466,7 @@ class AzureOpenAIModel(OpenAICompatibleModel):
         self.deployment = deployment
         self.endpoint = endpoint
 
-    def _call_api(self, messages: List[Dict[str, str]]) -> str:
+    def _call_api(self, messages: List[Dict[str, str]], **kwargs: Any) -> str:
         """
         Call Azure OpenAI API (adds api_version parameter)
         """
@@ -485,6 +485,7 @@ class AzureOpenAIModel(OpenAICompatibleModel):
                 messages=cast(Any, messages),
                 temperature=self.temperature,
                 max_tokens=self.max_tokens,
+                **kwargs,
             )
             self._set_last_usage(self._usage_from_response(response))
 

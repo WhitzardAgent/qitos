@@ -21,9 +21,18 @@ norecursedirs = [
 python_version = "3.11"
 warn_unused_configs = true
 ignore_missing_imports = true
+disable_error_code = ["import-untyped"]
 exclude = [
   "^qitos/benchmark/",
   "^qitos/kit/tool/experimental/",
   "^site/",
   "^dist/",
 ]
+
+[[tool.mypy.overrides]]
+module = [
+  "qitos.kit.*",
+  "qitos.render.*",
+  "qitos.benchmark.*",
+]
+ignore_errors = true

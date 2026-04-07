@@ -253,11 +253,75 @@ domain logic belongs in:
 
 It does not belong in a separate hidden runtime.
 
+## Whitzard and model-native scaffolding
+
+The tutorial example above keeps the most portable path:
+
+- text-first prompt contract
+- prompt-injected tool schema
+- `ReActTextParser`
+
+That is still the right place to start. But QitOS is not limited to that pairing.
+
+If you open [`examples/real/whitzard_agent.py`](https://github.com/Qitor/qitos/blob/main/examples/real/whitzard_agent.py), you can see the next design idea in the course:
+
+model and scaffolding should sometimes be designed together.
+
+`Whitzard` is useful because it makes this concrete. In practice, some models do not naturally prefer the same tool-call format. MiniMax is a good example: depending on provider and training prior, it often emits native XML-like tool calls such as:
+
+```xml
+<minimax:tool_call>
+  <invoke name="send_terminal_keys">
+    <parameter name="keystrokes">pwd</parameter>
+    <parameter name="submit">true</parameter>
+  </invoke>
+</minimax:tool_call>
+```
+
+If you keep forcing a pure JSON contract in that setting, the model may spend extra effort fighting its own native habits. The agent can still work, but the fit is worse.
+
+That is why QitOS treats these choices as a coordinated protocol decision rather than as isolated knobs:
+
+- parser
+- tool schema style
+- output contract
+- repair path
+
+With `Whitzard`, users can keep the default model-native path and let QitOS choose a MiniMax-oriented protocol, or they can explicitly choose a different scaffolding shape when they want stricter control. For example:
+
+- keep the model-native protocol when MiniMax tool calls are the most reliable output
+- switch to a Terminus XML-style contract when you want a more explicit XML parser and XML-oriented tool schema
+- switch to a Terminus JSON-style contract when your model follows JSON contracts reliably enough to justify the stricter shape
+
+In the example, this is exposed through the protocol layer rather than through a custom runtime rewrite. `Whitzard` still uses the same kernel ideas you have learned in the course:
+
+- state
+- `prepare()`
+- `reduce()`
+- tool composition
+- `qita` traces
+
+What changes is the interaction protocol. That is the important design lesson.
+
+QitOS makes this easy because protocol-aware scaffolding is built into the framework:
+
+- the model profile can select a default protocol automatically
+- the tool schema renderer can match that protocol
+- the parser can match that schema
+- parser diagnostics and repair flow still go through the same observability stack
+
+So the point of `Whitzard` is not only that it is a stronger audit agent. It also teaches a broader idea:
+
+when a model has a strong native tool-calling prior, you often get a better agent by adapting the scaffolding to the model instead of forcing every model through the same contract.
+
+That is one of the reasons QitOS keeps parser choice, tool schema choice, and prompt/protocol choice explicit and composable.
+
 ## Full example
 
 The full runnable lesson lives at:
 
 - [`examples/real/code_security_audit_agent.py`](https://github.com/Qitor/qitos/blob/main/examples/real/code_security_audit_agent.py)
+- [`examples/real/whitzard_agent.py`](https://github.com/Qitor/qitos/blob/main/examples/real/whitzard_agent.py)
 
 ## Where to go next
 
