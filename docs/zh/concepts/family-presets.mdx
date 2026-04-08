@@ -1,0 +1,115 @@
+---
+title: "Family Presets"
+description: "理解 QitOS v0.4 为什么引入 family preset、harness policy 与 transport adapter。"
+---
+
+QitOS v0.4 继续保留同一个 `AgentModule + Engine` kernel，但在模型接入层上新增了一层稳定抽象：
+
+- `FamilyPreset`
+- `HarnessPolicy`
+- `ModelAdapter`
+- `ToolPolicy`
+- `ContextPolicy`
+
+这层的目的不是替代 kernel，而是让**同一个 agent 可以切换不同模型家族，而不必重写 runtime**。
+
+## 一句话理解
+
+family preset 就是一个模型家族的研究默认值。
+
+它会回答：
+
+- 用什么 transport
+- 默认走什么 protocol
+- fallback protocol chain 是什么
+- tool schema 应该如何交付
+- context 默认策略是什么
+
+## 不变的部分
+
+preset 层不会改变主链路。
+
+它只是在 run 开始前，先把模型侧策略解析出来：
+
+```text
+family preset -> harness policy -> model transport + protocol + parser
+```
+
+真正执行时仍然是：
+
+```text
+task -> state -> prepare -> llm -> parser -> Decision -> tools -> reduce -> trace
+```
+
+## v0.4 的公共表面
+
+```python
+from qitos.harness import (
+    FamilyPreset,
+    HarnessPolicy,
+    ModelAdapter,
+    ToolPolicy,
+    ContextPolicy,
+    resolve_family_preset,
+    build_harness_policy,
+    build_model_for_preset,
+)
+```
+
+## 第一批 gold presets
+
+QitOS v0.4 首批内建的 gold presets 是：
+
+- `qwen`
+- `kimi`
+- `minimax`
+- `gpt-oss`
+- `gemma-4`
+
+这 5 个家族当前都走 OpenAI-compatible serving，但默认 protocol 并不完全相同。
+
+例如：
+
+- Qwen、Kimi、`gpt-oss`、Gemma 4 默认走 `json_decision_v1`
+- MiniMax 保留 `minimax_tool_call_v1`
+
+这正是 v0.4 的关键设计点：**模型家族** 和 **底层 transport** 被正式拆开了。
+
+## 为什么不直接手写 `OpenAICompatibleModel(...)`
+
+当然仍然可以。
+
+如果你只是：
+
+- 手工接一个单独模型
+- 调试某一个 provider endpoint
+- 暂时不需要 family-level defaults
+
+那么直接 new transport 完全合理。
+
+但如果你的目标是：
+
+- 做研究比较
+- 让 examples 可复用
+- 让 trace 更可解释
+
+那么 preset 更合适，因为它能稳定记录：
+
+- protocol 选择
+- fallback chain
+- tool delivery mode
+- context defaults
+
+## preset 元信息会出现在哪里
+
+QitOS 通过 `RunSpec.metadata` 把 preset / harness 信息写进 trace。
+
+因此 `qita` 可以直接展示：
+
+- family preset
+- protocol
+- parser
+- tool delivery mode
+- context policy
+
+而不需要引入第二套 trace 格式。

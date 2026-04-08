@@ -8,6 +8,11 @@ def test_infer_context_window_for_common_models() -> None:
     assert infer_context_window("gpt-4o-mini-2024-07-18") == 128_000
     assert infer_context_window("o3-mini") == 200_000
     assert infer_context_window("gpt-3.5-turbo") == 16_385
+    assert infer_context_window("Qwen/Qwen3-8B") == 128_000
+    assert infer_context_window("kimi-k2-0905-preview") == 128_000
+    assert infer_context_window("MiniMax-M2.5") == 128_000
+    assert infer_context_window("gpt-oss-120b") == 128_000
+    assert infer_context_window("gemma-4-31b-it") == 128_000
     assert infer_context_window("unknown-model", fallback=99_999) == 99_999
 
 

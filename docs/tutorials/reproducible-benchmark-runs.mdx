@@ -1,0 +1,104 @@
+---
+title: "Tutorial: Reproducible Benchmark Runs"
+description: "How to run GAIA, Tau-Bench, or CyBench through the official QitOS benchmark path and inspect the resulting artifacts."
+---
+
+This tutorial shows the shortest path to an **official QitOS benchmark run**.
+
+The goal is not just to get a score. The goal is to produce a run that you can replay, diff, export, and discuss later.
+
+## What you will learn
+
+- why `qit bench` is the canonical benchmark entrypoint
+- how `RunSpec` and `ExperimentSpec` are attached automatically
+- what files to expect after a run
+- how to evaluate and inspect results with `qita`
+
+## Step 1: choose a benchmark
+
+For a dry first pass, use Tau-Bench because it does not require external dataset download:
+
+```bash
+qit bench run \
+  --benchmark tau-bench \
+  --split test \
+  --subset retail \
+  --limit 2 \
+  --output ./results/tau_retail_test.jsonl \
+  --model-name "Qwen/Qwen3-8B"
+```
+
+If you want a real execution path instead of the default dry strategy, point `--runner` at a benchmark example wrapper or your own runner callback.
+
+## Step 2: inspect the result row
+
+Every output line is normalized to `BenchmarkRunResult`.
+
+You should expect fields like:
+
+- `task_id`
+- `benchmark`
+- `split`
+- `prediction`
+- `success`
+- `stop_reason`
+- `steps`
+- `latency_seconds`
+- `token_usage`
+- `cost`
+- `trace_run_dir`
+- `run_spec_ref`
+
+That common shape is what makes cross-benchmark aggregation possible.
+
+## Step 3: aggregate metrics
+
+```bash
+qit bench eval --input ./results/tau_retail_test.jsonl --json
+```
+
+This gives you a normalized summary over the result rows instead of forcing each benchmark to invent its own reporting surface.
+
+## Step 4: inspect the trace
+
+When the run also produced a trace directory, inspect it with `qita`:
+
+```bash
+qit bench replay --run ./runs/<run_id>
+qit bench export --run ./runs/<run_id> --html ./reports/run.html
+```
+
+Or open the whole board:
+
+```bash
+qita board --logdir ./runs
+```
+
+## Step 5: verify that it is an official run
+
+Open `manifest.json` or the qita run overview and confirm these fields exist:
+
+- `run_spec`
+- `experiment_spec`
+- `official_run`
+- `git_sha`
+- `package_version`
+- `prompt_protocol`
+- `parser_name`
+- `tool_manifest`
+
+If those are missing, you may still have a useful trace, but you do not yet have the full official-run contract.
+
+## When to still use `examples/benchmarks`
+
+Use the examples when you want:
+
+- benchmark-specific agent construction
+- a reference implementation for a paper-style setup
+- a thin runnable wrapper that already plugs into the official result format
+
+Do not treat the examples as a separate benchmark framework. In v0.3 they are thin wrappers over the same official path.
+
+## Next step
+
+Continue with [Replay and inspect a failed run](/tutorials/replay-and-inspect-failed-runs).

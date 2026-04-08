@@ -1,16 +1,16 @@
 ---
 title: "Quickstart"
-description: "Run your first QitOS agent in under 2 minutes."
+description: "Run your first QitOS minimal coding agent in under 2 minutes, then inspect it with qita."
 ---
 
-This guide gets you from a fresh environment to a running agent and a live trace view in under 2 minutes.
+This guide gets you from a fresh environment to a model-backed minimal coding agent and a live trace view in under 2 minutes.
 
 This is what the runtime feels like when you actually watch it work:
 
 ![QitOS runtime snapshot](/images/qitos-cli.png)
 
 <Note>
-If you do not already have a remote model endpoint and API key, read [Prerequisites](/prerequisites) first. It explains where to register, how to create an API key, and how to verify an OpenAI-compatible provider before running QitOS.
+Need a provider first? Read [Prerequisites](/prerequisites). It explains how to get an OpenAI-compatible API key and validate your endpoint before running QitOS.
 </Note>
 
 ## Prerequisites
@@ -23,24 +23,16 @@ If you do not already have a remote model endpoint and API key, read [Prerequisi
 
 <Steps>
   <Step title="Install QitOS">
-    Install QitOS from PyPI. The `models` extra adds the OpenAI client:
-
     ```bash
     pip install "qitos[models]"
     ```
-
-    If you only want the core framework without the OpenAI dependency:
-
-    ```bash
-    pip install qitos
-    ```
   </Step>
 
-  <Step title="Set your API key">
-    Export your OpenAI-compatible API key as an environment variable:
-
+  <Step title="Set your provider config">
     ```bash
     export OPENAI_API_KEY="sk-..."
+    export OPENAI_BASE_URL="https://api.siliconflow.cn/v1/"
+    export QITOS_MODEL="Qwen/Qwen3-8B"
     ```
 
     <Tip>
@@ -48,111 +40,44 @@ If you do not already have a remote model endpoint and API key, read [Prerequisi
     </Tip>
   </Step>
 
-  <Step title="Run the minimal agent">
-    The minimal agent example shows the smallest working `AgentModule + Engine` flow. It defines a single `add` tool, runs a two-step loop to compute `40 + 2`, and writes a trace to `./playground/minimal_agent/`.
-
-    ```python minimal_agent.py
-    """Quickstart: smallest runnable AgentModule + Engine flow."""
-
-    from __future__ import annotations
-
-    from dataclasses import dataclass
-    from pathlib import Path
-    from typing import Any
-
-    from qitos import Action, AgentModule, Decision, StateSchema, ToolRegistry, tool
-
-    TASK = "compute 40 + 2"
-    WORKSPACE = Path("./playground/minimal_agent")
-    MAX_STEPS = 2
-
-
-    @dataclass
-    class CalcState(StateSchema):
-        pass
-
-
-    class MinimalAgent(AgentModule[CalcState, dict[str, Any], Action]):
-        def __init__(self):
-            registry = ToolRegistry()
-
-            @tool(name="add")
-            def add(a: int, b: int) -> int:
-                return a + b
-
-            registry.register(add)
-            super().__init__(tool_registry=registry)
-
-        def init_state(self, task: str, **kwargs: Any) -> CalcState:
-            return CalcState(task=task, max_steps=int(kwargs.get("max_steps", MAX_STEPS)))
-
-        def decide(self, state: CalcState, observation: dict[str, Any]) -> Decision[Action]:
-            if state.current_step == 0:
-                return Decision.act([Action(name="add", args={"a": 40, "b": 2})], rationale="compute_answer")
-            return Decision.final("42")
-
-        def reduce(self, state: CalcState, observation: dict[str, Any], decision: Decision[Action]) -> CalcState:
-            action_results = observation.get("action_results", []) if isinstance(observation, dict) else []
-            if action_results:
-                state.final_result = str(action_results[0])
-            return state
-
-
-    def main() -> None:
-        WORKSPACE.mkdir(parents=True, exist_ok=True)
-        agent = MinimalAgent()
-        result = agent.run(
-            task=TASK,
-            workspace=str(WORKSPACE),
-            max_steps=MAX_STEPS,
-            return_state=True,
-        )
-        print("workspace:", WORKSPACE)
-        print("final_result:", result.state.final_result)
-        print("stop_reason:", result.state.stop_reason)
-
-
-    if __name__ == "__main__":
-        main()
-    ```
-
-    Run it:
-
+  <Step title="Run the minimal coding agent">
     ```bash
-    python minimal_agent.py
+    qit demo minimal
     ```
 
-    You should see output similar to:
+    This demo seeds a tiny buggy workspace, configures a real model, asks a minimal coding agent to fix the bug, runs verification, and writes a qita-ready trace. You should see output similar to:
 
     ```
-    workspace: playground/minimal_agent
-    final_result: 42
-    stop_reason: max_steps
+    model_name: Qwen/Qwen3-8B
+    workspace: .../playground/minimal_coding_agent
+    target_file: buggy_module.py
+    trace_run: .../runs/qitos_minimal_coding_<timestamp>
+    final_result: Patch applied and verification passed.
+    stop_reason: final
+    next_step: qita board --logdir runs
     ```
   </Step>
 
   <Step title="Inspect the run with qita">
-    QitOS writes a full trace for every run. Launch the `qita` board to inspect it:
-
     ```bash
     qita board --logdir runs
     ```
 
     Open [http://127.0.0.1:8765](http://127.0.0.1:8765) in your browser. The board shows every run in your log directory with step counts, stop reasons, and final results. Click **view** on any run to inspect its step-by-step trajectory, or **replay** to play it back.
 
-    <Note>
-      The minimal agent writes its trace to `./playground/minimal_agent/`. If you don't see your run in the board, pass `--logdir playground` to point qita at the right directory.
-    </Note>
+    <Tip>
+      The packaged demo and [`examples/quickstart/minimal_agent.py`](https://github.com/Qitor/qitos/blob/main/examples/quickstart/minimal_agent.py) follow the same minimal coding-agent path. Start from the example file when you want to read or customize the code directly.
+    </Tip>
   </Step>
 </Steps>
 
 ## What's next
 
-You've run an agent and inspected its trace. Here's where to go from here:
+You've run a minimal coding agent and inspected its trace. Here's where to go from here:
 
 <CardGroup cols={2}>
   <Card title="Build your first agent" icon="code" href="/guides/build-your-first-agent">
-    A full walkthrough of the AgentModule interface
+    A walkthrough of the minimal coding-agent shape: state, model, tools, run, and qita
   </Card>
   <Card title="Tutorial track" icon="graduation-cap" href="/tutorials">
     Learn agent design step by step through ReAct, PlanAct, Claude Code-style, and security audit lessons

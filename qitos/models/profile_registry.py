@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Iterable, Optional
 
+from ..harness._presets import known_family_presets
+
 
 @dataclass(frozen=True)
 class ModelProfile:
@@ -16,44 +18,34 @@ class ModelProfile:
     notes: str = ""
 
 
-_PROFILES: tuple[ModelProfile, ...] = (
-    ModelProfile(
-        id="minimax_default",
-        model_matchers=("minimax-", "minimax/", "m2.5", "abab"),
-        default_protocol="minimax_tool_call_v1",
-        fallback_protocols=("terminus_xml_v1", "terminus_json_v1", "json_decision_v1"),
-        tool_schema_style="minimax",
-        notes="MiniMax models commonly emit native XML-like tool call markup.",
-    ),
-    ModelProfile(
-        id="openai_json",
-        model_matchers=("gpt-4.1", "gpt-4o", "o3", "o4-mini", "chatgpt-4o"),
-        default_protocol="json_decision_v1",
-        fallback_protocols=("react_text_v1",),
-        tool_schema_style="json",
-    ),
-    ModelProfile(
-        id="anthropic_react",
-        model_matchers=("claude-",),
-        default_protocol="react_text_v1",
-        fallback_protocols=("json_decision_v1",),
-        tool_schema_style="react",
-    ),
-    ModelProfile(
-        id="gemini_xml",
-        model_matchers=("gemini-",),
-        default_protocol="xml_decision_v1",
-        fallback_protocols=("json_decision_v1", "react_text_v1"),
-        tool_schema_style="xml",
-    ),
-    ModelProfile(
-        id="qwen_json",
-        model_matchers=("qwen",),
-        default_protocol="json_decision_v1",
-        fallback_protocols=("xml_decision_v1", "react_text_v1"),
-        tool_schema_style="json",
-    ),
-)
+def _tool_schema_style(default_protocol: str) -> str:
+    value = str(default_protocol or "").strip().lower()
+    if value == "minimax_tool_call_v1":
+        return "minimax"
+    if "xml" in value:
+        return "xml"
+    if "json" in value:
+        return "json"
+    return "react"
+
+
+def _build_profiles() -> tuple[ModelProfile, ...]:
+    profiles = []
+    for preset in known_family_presets():
+        profiles.append(
+            ModelProfile(
+                id=f"{preset.id}_default",
+                model_matchers=tuple(preset.model_matchers),
+                default_protocol=preset.default_protocol,
+                fallback_protocols=tuple(preset.fallback_protocols),
+                tool_schema_style=_tool_schema_style(preset.default_protocol),
+                notes=preset.notes,
+            )
+        )
+    return tuple(profiles)
+
+
+_PROFILES: tuple[ModelProfile, ...] = _build_profiles()
 
 
 def _normalize(model_name: Optional[str]) -> str:

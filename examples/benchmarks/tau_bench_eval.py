@@ -18,7 +18,10 @@ from typing import Any, Dict, List, Optional
 from qitos import (
     Action,
     AgentModule,
+    BenchmarkRunResult,
     Decision,
+    ExperimentSpec,
+    RunSpec,
     StateSchema,
     Task,
     TaskBudget,
@@ -41,6 +44,14 @@ from qitos.metric import MetricInput, MetricRegistry
 from qitos.models import OpenAICompatibleModel
 from qitos.render import ClaudeStyleHook
 from qitos.trace import TraceWriter
+
+from ._shared import (
+    build_example_specs,
+    default_output_path,
+    execute_example_jobs,
+    print_benchmark_summary,
+    print_single_result,
+)
 
 DEFAULT_MODEL_BASE_URL = "https://api.siliconflow.cn/v1/"
 DEFAULT_MODEL_NAME = "Qwen/Qwen3-8B"
@@ -375,6 +386,8 @@ def _run_one_task(
     record: Dict[str, Any],
     root: Path,
     trial: int = 0,
+    run_spec: RunSpec | None = None,
+    experiment_spec: ExperimentSpec | None = None,
 ) -> Dict[str, Any]:
     started = time.time()
     task = adapter.to_task(record, split=args.tau_split, idx=idx)
@@ -397,6 +410,7 @@ def _run_one_task(
     )
 
     error_msg = None
+    token_usage = 0
     try:
         result = agent.run(
             task=task,
@@ -405,6 +419,8 @@ def _run_one_task(
             task_index=idx,
             trace=trace_writer,
             render=render,
+            run_spec=run_spec,
+            experiment_spec=experiment_spec,
         )
         eval_out = _evaluate_one(
             task=task,
@@ -415,6 +431,12 @@ def _run_one_task(
         reward = float(result.state.metadata.get("tau_reward", 0.0))
         stop_reason = result.state.stop_reason
         steps = result.step_count
+        token_usage = int(
+            (
+                (result.task_result.metrics if result.task_result is not None else {})
+                or {}
+            ).get("token_usage", 0)
+        )
     except Exception as exc:
         reward = 0.0
         stop_reason = "exception"
@@ -436,11 +458,62 @@ def _run_one_task(
         "eval_details": eval_out.get("results", []),
         "stop_reason": stop_reason,
         "steps": steps,
+        "token_usage": token_usage,
+        "cost": 0.0,
+        "trace_run_dir": (
+            str(trace_writer.run_dir) if trace_writer is not None else None
+        ),
         "error": error_msg,
         "started_at": datetime.fromtimestamp(started, tz=timezone.utc).isoformat(),
         "ended_at": datetime.now(timezone.utc).isoformat(),
         "latency_seconds": round(time.time() - started, 3),
     }
+
+
+def _tau_runner(
+    *,
+    task: Task,
+    record: Dict[str, Any],
+    idx: int,
+    trial: int,
+    root: Path,
+    args: argparse.Namespace,
+    run_spec: RunSpec,
+    experiment_spec: ExperimentSpec,
+    **_: Any,
+) -> BenchmarkRunResult:
+    row = _run_one_task(
+        args=args,
+        adapter=TauBenchAdapter(env_name=args.tau_env, task_split=args.tau_split),
+        idx=idx,
+        record=record,
+        root=root,
+        trial=trial,
+        run_spec=run_spec,
+        experiment_spec=experiment_spec,
+    )
+    return BenchmarkRunResult(
+        task_id=str(task.id),
+        benchmark="tau-bench",
+        split=str(args.tau_split),
+        prediction=row.get("prediction"),
+        success=bool(row.get("success", False)),
+        stop_reason=str(row.get("stop_reason") or ""),
+        steps=int(row.get("steps", 0)),
+        latency_seconds=float(row.get("latency_seconds", 0.0)),
+        token_usage=int(row.get("token_usage", 0)),
+        cost=float(row.get("cost", 0.0)),
+        trace_run_dir=row.get("trace_run_dir"),
+        run_spec_ref=run_spec.fingerprint(),
+        metadata={
+            "reward": row.get("reward"),
+            "eval_score": row.get("eval_score"),
+            "eval_details": row.get("eval_details"),
+            "env": row.get("env"),
+            "trial": trial,
+            "idx": idx,
+        },
+    )
 
 
 def _print_metrics(rows: List[Dict[str, Any]]) -> None:
@@ -595,18 +668,97 @@ def main() -> None:
         raise RuntimeError("No Tau-Bench tasks loaded.")
 
     if args.run_all:
-        _run_full(args=args, adapter=adapter, records=records, root=root)
+        tasks = adapter.to_tasks(records, split=args.tau_split)
+        run_spec, experiment_spec = build_example_specs(
+            benchmark="tau-bench",
+            split=args.tau_split,
+            model_name=args.model_name,
+            trace_logdir=args.trace_logdir,
+            parser_name="ReActTextParser",
+            toolset_name="ToolRegistry",
+            subset=args.tau_env,
+            seed=int(args.seed),
+            limit=int(args.limit) if int(args.limit) > 0 else None,
+            workspace=str(root),
+            metadata={
+                "example_entrypoint": "examples.benchmarks.tau_bench_eval",
+            },
+        )
+        start_idx = max(0, int(args.start_index))
+        end_idx = (
+            len(records)
+            if int(args.end_index) < 0
+            else min(len(records), int(args.end_index))
+        )
+        indices = list(range(start_idx, end_idx))
+        if int(args.limit) > 0:
+            indices = indices[: int(args.limit)]
+        jobs: List[Dict[str, Any]] = []
+        for trial in range(int(args.num_trials)):
+            seq = list(indices)
+            if bool(args.shuffle):
+                rnd = random.Random(int(args.seed) + trial)
+                rnd.shuffle(seq)
+            for idx in seq:
+                jobs.append(
+                    {
+                        "task": tasks[idx],
+                        "record": records[idx],
+                        "idx": idx,
+                        "trial": trial,
+                        "root": root,
+                        "args": args,
+                        "job_key": f"{trial}:{idx}",
+                    }
+                )
+        output_path = (
+            Path(args.output_jsonl).expanduser().resolve()
+            if args.output_jsonl
+            else default_output_path(
+                root,
+                benchmark=f"tau_bench_{args.tau_env}",
+                split=args.tau_split,
+            )
+        )
+        rows = execute_example_jobs(
+            jobs=jobs,
+            runner=_tau_runner,
+            output_path=output_path,
+            run_spec=run_spec,
+            experiment_spec=experiment_spec,
+            concurrency=int(args.concurrency),
+            resume=bool(args.resume),
+        )
+        print(f"output_jsonl: {output_path}")
+        print_benchmark_summary(rows)
     else:
         idx = max(0, min(int(args.task_index), len(records) - 1))
-        row = _run_one_task(
-            args=args, adapter=adapter, idx=idx, record=records[idx], root=root, trial=0
+        run_spec, experiment_spec = build_example_specs(
+            benchmark="tau-bench",
+            split=args.tau_split,
+            model_name=args.model_name,
+            trace_logdir=args.trace_logdir,
+            parser_name="ReActTextParser",
+            toolset_name="ToolRegistry",
+            subset=args.tau_env,
+            seed=int(args.seed),
+            workspace=str(root),
+            metadata={
+                "example_entrypoint": "examples.benchmarks.tau_bench_eval",
+            },
+        )
+        row = _tau_runner(
+            task=adapter.to_task(records[idx], split=args.tau_split, idx=idx),
+            record=records[idx],
+            idx=idx,
+            trial=0,
+            root=root,
+            args=args,
+            run_spec=run_spec,
+            experiment_spec=experiment_spec,
         )
         print("workspace:", root)
-        print("task_id:", row["task_id"])
-        print("reward:", row["reward"])
-        print("success:", row["success"])
-        print("stop_reason:", row["stop_reason"])
-        _print_metrics([row])
+        print_single_result(row)
 
     if temp_ctx is not None:
         temp_ctx.cleanup()

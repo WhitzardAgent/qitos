@@ -28,7 +28,7 @@ def _read_readme() -> str:
 setup(
     name="qitos",
     version=_read_version(),
-    description="QitOS - research-first AgentModule + Engine framework",
+    description="QitOS - torch-flavor framework for agent researchers",
     long_description=_read_readme(),
     long_description_content_type="text/markdown",
     author="QitOS Team",
@@ -36,9 +36,16 @@ setup(
     url="https://github.com/Qitor/qitos",
     project_urls={
         "Documentation": "https://qitor.mintlify.app/",
+        "Quickstart": "https://qitor.mintlify.app/quickstart",
+        "Tutorials": "https://qitor.mintlify.app/tutorials",
+        "Changelog": "https://github.com/Qitor/qitos/blob/main/CHANGELOG.md",
         "Source": "https://github.com/Qitor/qitos",
         "Issues": "https://github.com/Qitor/qitos/issues",
     },
+    keywords=(
+        "llm agents, ai agents, agent research, benchmark, reproducibility, "
+        "trajectory analysis, coding agent, tool using agents, qita"
+    ),
     packages=find_packages(exclude=["tests*", "examples*", "templates*", "docs*"]),
     python_requires=">=3.10",
     install_requires=[

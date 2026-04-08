@@ -27,6 +27,7 @@ from qitos import (
     ToolRegistry,
 )
 from qitos.benchmark import GaiaAdapter
+from qitos.core.spec import BenchmarkRunResult, ExperimentSpec, RunSpec
 from qitos.kit import CodingToolSet, ReActTextParser, TextWebEnv, format_action, render_prompt
 from qitos.kit.tool.browser import (
     ArchiveSearch,
@@ -40,6 +41,14 @@ from qitos.kit.tool.browser import (
 from qitos.models import OpenAICompatibleModel
 from qitos.render import ClaudeStyleHook
 from qitos.trace import TraceWriter
+
+from ._shared import (
+    build_example_specs,
+    default_output_path,
+    execute_example_jobs,
+    print_benchmark_summary,
+    print_single_result,
+)
 
 DEFAULT_MODEL_BASE_URL = "https://api.siliconflow.cn/v1/"
 DEFAULT_MODEL_NAME = "Qwen/Qwen3-8B"
@@ -335,6 +344,8 @@ def _run_one_record(
     record: Mapping[str, Any],
     idx: int,
     root: Path,
+    run_spec: RunSpec | None = None,
+    experiment_spec: ExperimentSpec | None = None,
 ) -> Dict[str, Any]:
     started = time.time()
     raw_id = _first_non_empty(record, ["task_id", "id", "sample_id", "qid"])
@@ -373,14 +384,22 @@ def _run_one_record(
             env=TextWebEnv(workspace_root=str(task_workspace)),
             trace=trace_writer,
             render=render,
+            run_spec=run_spec,
+            experiment_spec=experiment_spec,
         )
         final_result = result.state.final_result
         stop_reason = result.state.stop_reason
         step_count = result.step_count
+        token_usage = int(
+            (
+                (result.task_result.metrics if result.task_result is not None else {}) or {}
+            ).get("token_usage", 0)
+        )
     except Exception as exc:
         final_result = None
         stop_reason = "exception"
         step_count = 0
+        token_usage = 0
         error_msg = str(exc)
 
     answer_path = task_workspace / "gaia_answer.txt"
@@ -403,6 +422,8 @@ def _run_one_record(
         "prediction": final_result,
         "stop_reason": stop_reason,
         "steps": step_count,
+        "token_usage": token_usage,
+        "cost": 0.0,
         "error": error_msg,
         "workspace": str(task_workspace),
         "answer_file": str(answer_path),
@@ -413,6 +434,49 @@ def _run_one_record(
         "ended_at": datetime.now(timezone.utc).isoformat(),
         "latency_seconds": round(time.time() - started, 3),
     }
+
+
+def _gaia_runner(
+    *,
+    task: Task,
+    record: Mapping[str, Any],
+    idx: int,
+    root: Path,
+    args: argparse.Namespace,
+    run_spec: RunSpec,
+    experiment_spec: ExperimentSpec,
+    **_: Any,
+) -> BenchmarkRunResult:
+    row = _run_one_record(
+        args=args,
+        adapter=GaiaAdapter(local_dir=args.gaia_local_dir),
+        record=record,
+        idx=idx,
+        root=root,
+        run_spec=run_spec,
+        experiment_spec=experiment_spec,
+    )
+    return BenchmarkRunResult(
+        task_id=str(task.id),
+        benchmark="gaia",
+        split=str(args.gaia_split),
+        prediction=row.get("prediction"),
+        success=not bool(row.get("error")) and str(row.get("stop_reason")) == "final",
+        stop_reason=str(row.get("stop_reason") or ""),
+        steps=int(row.get("steps", 0)),
+        latency_seconds=float(row.get("latency_seconds", 0.0)),
+        token_usage=int(row.get("token_usage", 0)),
+        cost=float(row.get("cost", 0.0)),
+        trace_run_dir=row.get("trace_run_dir"),
+        run_spec_ref=run_spec.fingerprint(),
+        metadata={
+            "question": row.get("question"),
+            "reference_answer": row.get("reference_answer"),
+            "workspace": row.get("workspace"),
+            "answer_file": row.get("answer_file"),
+            "source_task_id": row.get("source_task_id"),
+        },
+    )
 
 
 def _run_full_benchmark(
@@ -550,21 +614,65 @@ def main() -> None:
     adapter, records = _load_gaia_records(args)
     if not records:
         raise RuntimeError("No GAIA records loaded.")
+    tasks = adapter.to_tasks(records, split=args.gaia_split)
+    run_spec, experiment_spec = build_example_specs(
+        benchmark="gaia",
+        split=str(args.gaia_split),
+        model_name=str(args.model_name),
+        trace_logdir=str(args.trace_logdir),
+        parser_name="ReActTextParser",
+        toolset_name="OpenDeepResearchGaiaAgent",
+        subset=(str(args.gaia_subset).strip() or None),
+        workspace=str(root),
+        limit=(int(args.limit) if int(args.limit) > 0 else None),
+        metadata={"wrapper": "examples/benchmarks/gaia_eval.py"},
+    )
 
     if args.run_all:
-        _run_full_benchmark(args=args, adapter=adapter, records=records, root=root)
+        selected_jobs: List[Dict[str, Any]] = []
+        start_idx = max(0, int(args.start_index))
+        upper = len(tasks)
+        if int(args.limit) > 0:
+            upper = min(upper, start_idx + int(args.limit))
+        for idx in range(start_idx, upper):
+            selected_jobs.append(
+                {
+                    "job_key": str(tasks[idx].id),
+                    "task": tasks[idx],
+                    "record": records[idx],
+                    "idx": idx,
+                    "root": root,
+                    "args": args,
+                }
+            )
+        output_path = (
+            Path(args.output_jsonl).expanduser().resolve()
+            if args.output_jsonl
+            else default_output_path(root, benchmark="gaia", split=str(args.gaia_split))
+        )
+        rows = execute_example_jobs(
+            jobs=selected_jobs,
+            runner=_gaia_runner,
+            output_path=output_path,
+            run_spec=run_spec,
+            experiment_spec=experiment_spec,
+            concurrency=int(args.concurrency),
+            resume=bool(args.resume),
+        )
+        print("output_jsonl:", output_path)
+        print_benchmark_summary(rows)
     else:
         idx = max(0, min(int(args.gaia_index), len(records) - 1))
-        entry = _run_one_record(
-            args=args, adapter=adapter, record=records[idx], idx=idx, root=root
+        row = _gaia_runner(
+            task=tasks[idx],
+            record=records[idx],
+            idx=idx,
+            root=root,
+            args=args,
+            run_spec=run_spec,
+            experiment_spec=experiment_spec,
         )
-        print("workspace:", root)
-        print("task_id:", entry["task_id"])
-        print("final_result:", entry["prediction"])
-        print("stop_reason:", entry["stop_reason"])
-        print("answer_file:", entry["answer_file"])
-        if entry["trace_run_dir"]:
-            print("trace_run_dir:", entry["trace_run_dir"])
+        print_single_result(row)
 
     if temp_ctx is not None:
         temp_ctx.cleanup()

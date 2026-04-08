@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Generic, Optional, TypeVar
 
 from ..core.errors import StopReason
+from ..core.spec import ExperimentSpec, RunSpec
 from ..core.state import StateSchema
 from ..core.task import Task, TaskCriterionResult, TaskResult, TaskValidationIssue
 from ..trace import runtime_event_to_trace, runtime_step_to_trace
@@ -168,11 +169,65 @@ class _TraceRuntime(Generic[StateT]):
                 ),
             }
         )
+        run_spec = getattr(engine, "run_spec", None)
+        if isinstance(run_spec, RunSpec):
+            if not run_spec.model_name and run_meta.get("model_name"):
+                run_spec.model_name = str(run_meta.get("model_name"))
+            if not run_spec.model_family and run_spec.model_name:
+                inferred = RunSpec.infer(model_name=run_spec.model_name)
+                run_spec.model_family = inferred.model_family
+            if not run_spec.prompt_protocol and run_meta.get("protocol"):
+                run_spec.prompt_protocol = str(run_meta.get("protocol"))
+            if not run_spec.parser_name and run_meta.get("parser"):
+                run_spec.parser_name = str(run_meta.get("parser"))
+            if not run_spec.tool_manifest and isinstance(run_meta.get("tools"), list):
+                run_spec.tool_manifest = list(run_meta.get("tools") or [])
+            if not run_spec.toolset_name and engine.tool_registry is not None:
+                run_spec.toolset_name = engine.tool_registry.__class__.__name__
+            if not run_spec.environment and isinstance(run_meta.get("env"), dict):
+                run_spec.environment = dict(run_meta.get("env") or {})
+            if task_obj is not None:
+                benchmark_name = (
+                    task_obj.metadata.get("benchmark")
+                    or task_obj.inputs.get("benchmark")
+                    or task_obj.metadata.get("benchmark_name")
+                )
+                benchmark_split = (
+                    task_obj.metadata.get("split")
+                    or task_obj.inputs.get("split")
+                    or task_obj.metadata.get("benchmark_split")
+                )
+                if not run_spec.benchmark_name and benchmark_name:
+                    run_spec.benchmark_name = str(benchmark_name)
+                if not run_spec.benchmark_split and benchmark_split:
+                    run_spec.benchmark_split = str(benchmark_split)
+            engine.trace_writer.metadata.update(
+                {
+                    "git_sha": run_spec.git_sha,
+                    "package_version": run_spec.package_version,
+                    "benchmark_name": run_spec.benchmark_name,
+                    "benchmark_split": run_spec.benchmark_split,
+                    "model_family": run_spec.model_family,
+                    "prompt_protocol": run_spec.prompt_protocol,
+                    "parser_name": run_spec.parser_name,
+                    "tool_manifest": list(run_spec.tool_manifest or []),
+                    "run_spec": run_spec.to_dict(),
+                    "official_run": run_spec.is_official_run(),
+                }
+            )
+        experiment_spec = getattr(engine, "experiment_spec", None)
+        if isinstance(experiment_spec, ExperimentSpec):
+            engine.trace_writer.metadata["experiment_spec"] = experiment_spec.to_dict()
 
     def run_meta(self) -> Dict[str, Any]:
         engine = self.engine
         llm = getattr(engine.agent, "llm", None)
         model_name = getattr(llm, "model", None) if llm is not None else None
+        harness_meta = (
+            dict(getattr(llm, "qitos_harness_metadata", {}) or {})
+            if llm is not None
+            else {}
+        )
         protocol = engine.resolve_protocol() if hasattr(engine, "resolve_protocol") else None
         parser_name = (
             engine.parser.__class__.__name__
@@ -198,6 +253,10 @@ class _TraceRuntime(Generic[StateT]):
         env_info = engine._env_identity()
         return {
             "model_name": model_name,
+            "model_family": (
+                harness_meta.get("family_preset")
+                or (RunSpec.infer(model_name=model_name).model_family if model_name else None)
+            ),
             "protocol": getattr(protocol, "id", None) if protocol is not None else None,
             "protocol_resolution_source": getattr(
                 engine, "_resolved_protocol_source", ""
@@ -208,6 +267,17 @@ class _TraceRuntime(Generic[StateT]):
             "env": env_info,
             "context": engine._context_runtime.run_meta(llm),
             "prompt": dict(getattr(engine, "_last_prompt_metadata", {}) or {}),
+            "harness": harness_meta,
+            "run_spec": (
+                engine.run_spec.to_dict()
+                if isinstance(getattr(engine, "run_spec", None), RunSpec)
+                else None
+            ),
+            "experiment_spec": (
+                engine.experiment_spec.to_dict()
+                if isinstance(getattr(engine, "experiment_spec", None), ExperimentSpec)
+                else None
+            ),
         }
 
     def record_parser_diagnostics(self, diagnostics: Dict[str, Any]) -> None:

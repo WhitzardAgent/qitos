@@ -8,11 +8,20 @@
 [![PyPI](https://img.shields.io/pypi/v/qitos.svg)](https://pypi.org/project/qitos/)
 [![Repo](https://img.shields.io/badge/github-Qitor%2Fqitos-black)](https://github.com/Qitor/qitos)
 
-Research-first agent framework for building reproducible LLM agents.
+QitOS is the torch-flavor framework for agent researchers.
 
-QitOS gives you a clean `AgentModule + Engine` kernel, benchmark-ready workflows, and built-in run observability with `qita`.
+Prototype methods, run benchmarks, and inspect long-horizon trajectories on one `AgentModule + Engine` kernel with built-in `qita` observability.
 
-[Get Started](https://qitor.mintlify.app/start-here/) · [10-Minute Tutorial](https://qitor.mintlify.app/getting-started/build_agent_in_10_minutes/) · [Examples](https://qitor.mintlify.app/tutorials/examples/) · [Changelog](CHANGELOG.md) · [Chinese README](README.zh.md)
+[Quickstart](https://qitor.mintlify.app/quickstart) · [Tutorial Track](https://qitor.mintlify.app/tutorials) · [Benchmarks](https://qitor.mintlify.app/benchmarks/overview) · [CLI Reference](https://qitor.mintlify.app/reference/cli) · [Changelog](CHANGELOG.md) · [Chinese README](README.zh.md)
+
+## What's New in v0.3.0
+
+- Official reproducible-run foundation with `RunSpec`, `ExperimentSpec`, and normalized benchmark outputs.
+- New `qit bench` workflow for `run`, `eval`, `replay`, and `export`.
+- `qita` replay, export, and diff surfaces for review-grade trajectory inspection.
+- Course-style tutorial track plus new reproducibility and failed-run replay guides.
+
+If this direction resonates, please star the repo, open an issue, or contribute. Early feedback matters a lot.
 
 ## Live Terminal of QitOS for Code Review
 
@@ -22,26 +31,35 @@ QitOS gives you a clean `AgentModule + Engine` kernel, benchmark-ready workflows
 
 ## Who QitOS is For
 
-- **Researchers**: prototype ReAct, PlanAct, ToT, Reflexion, and new agent methods with reproducible runs.
-- **Agent builders**: build tool-using agents on a stable execution loop instead of framework glue code.
-- **Evaluators**: run GAIA, Tau-Bench, and CyBench style workflows with the same kernel you use in product agents.
+- **Method researchers** who want to change prompts, parsers, critics, tools, and memory policies without rewriting the runtime.
+- **Benchmark users** who want GAIA, Tau-Bench, and CyBench workflows on the same kernel they use for agent development.
+- **Long-running agent debuggers** who care about trajectory review, replay, diff, and context-collapse diagnosis instead of app scaffolding alone.
 
-## Run in 2 Minutes
+## Run QitOS in 2 Minutes
 
-From the repository root:
+The minimal agent in QitOS is a minimal **coding agent**. It configures a real model, works inside a workspace, edits code, runs a verification command, and leaves behind a qita-ready trace.
 
 ```bash
-pip install -r requirements.txt
-export OPENAI_API_KEY="<your_api_key>"
-python examples/quickstart/minimal_agent.py
+pip install "qitos[models]"
+export OPENAI_API_KEY="sk-..."
+qit demo minimal
 qita board --logdir runs
 ```
+
+Optional but common for OpenAI-compatible providers:
+
+```bash
+export OPENAI_BASE_URL="https://api.siliconflow.cn/v1/"
+export QITOS_MODEL="Qwen/Qwen3-8B"
+```
+
+`qit demo minimal` seeds a tiny buggy workspace, asks a model-backed coding agent to fix it, verifies the patch, and writes the trajectory to `./runs`.
 
 Then go deeper:
 
 - Want ReAct? See [`examples/patterns/react.py`](examples/patterns/react.py)
 - Want a coding agent? See [`examples/real/coding_agent.py`](examples/real/coding_agent.py)
-- Want benchmarks? Start with the [benchmark guides](https://qitor.mintlify.app/builder/benchmark_gaia/)
+- Want benchmarks? Start with the [benchmark guides](https://qitor.mintlify.app/benchmarks/overview)
 
 ## Why QitOS
 
@@ -51,43 +69,6 @@ Then go deeper:
 | observability | `qita` board, replay, export, and trace artifacts |
 | benchmark workflows | GAIA, Tau-Bench, and CyBench adapters |
 | less framework glue code | one canonical execution loop |
-
-## Minimal Agent Shape
-
-```python
-from dataclasses import dataclass
-from typing import Any
-
-from qitos import Action, AgentModule, Decision, StateSchema
-
-
-@dataclass
-class DemoState(StateSchema):
-    pass
-
-
-class DemoAgent(AgentModule[DemoState, dict[str, Any], Action]):
-    def init_state(self, task: str, **kwargs: Any) -> DemoState:
-        return DemoState(task=task, max_steps=6)
-
-    def build_system_prompt(self, state: DemoState) -> str | None:
-        return "Solve the task step by step."
-
-    def prepare(self, state: DemoState) -> str:
-        return f"Task: {state.task}\nStep: {state.current_step}/{state.max_steps}"
-
-    def decide(self, state: DemoState, observation: dict[str, Any]):
-        return None
-
-    def reduce(self, state: DemoState, observation: dict[str, Any], decision: Decision[Action]) -> DemoState:
-        return state
-```
-
-For a full coding-agent walkthrough and the SWE-style example, see:
-
-- [Build an Agent in 10 Minutes](https://qitor.mintlify.app/getting-started/build_agent_in_10_minutes/)
-- [Coding Agent Walkthrough](https://qitor.mintlify.app/tutorials/examples/real_coding/)
-- [SWE Agent Walkthrough](https://qitor.mintlify.app/tutorials/examples/real_swe/)
 
 ## Example Gallery
 
@@ -143,15 +124,16 @@ registry = ToolRegistry().include_toolset(
 
 ## Documentation Map
 
-- New here: [Start Here](https://qitor.mintlify.app/start-here/)
-- First successful run: [Getting Started](https://qitor.mintlify.app/getting-started/)
-- Writing your first agent: [Build an Agent in 10 Minutes](https://qitor.mintlify.app/getting-started/build_agent_in_10_minutes/)
-- Understanding the runtime: [Kernel](https://qitor.mintlify.app/research/kernel/)
-- Framework contracts: [Contracts & Guarantees](https://qitor.mintlify.app/reference/contracts/)
-- Typical scenarios: [Use Cases](https://qitor.mintlify.app/use-cases/)
-- Need examples: [Example Walkthroughs](https://qitor.mintlify.app/tutorials/examples/)
-- Need benchmarks: [GAIA](https://qitor.mintlify.app/builder/benchmark_gaia/) / [Tau-Bench](https://qitor.mintlify.app/builder/benchmark_tau/)
-- Need API details: [API Reference](https://qitor.mintlify.app/reference/api_generated/)
+- Start here: [Introduction](https://qitor.mintlify.app/introduction)
+- First successful run: [Quickstart](https://qitor.mintlify.app/quickstart)
+- Install options: [Installation](https://qitor.mintlify.app/installation)
+- Build your own minimal coding agent: [First Agent](https://qitor.mintlify.app/guides/build-your-first-agent)
+- Learn the runtime: [AgentModule](https://qitor.mintlify.app/concepts/agent-module) / [Engine](https://qitor.mintlify.app/concepts/engine)
+- Inspect traces: [Observability](https://qitor.mintlify.app/guides/observability)
+- Follow the course: [Tutorials](https://qitor.mintlify.app/tutorials)
+- Run benchmarks: [Benchmarks Overview](https://qitor.mintlify.app/benchmarks/overview)
+- Check commands: [CLI Reference](https://qitor.mintlify.app/reference/cli)
+- Need API details: [API Reference](https://qitor.mintlify.app/reference/api)
 
 ## Preview
 
@@ -184,7 +166,7 @@ registry = ToolRegistry().include_toolset(
 
 QitOS is currently **Alpha**.
 
-- Stable direction: `AgentModule + Engine`, trace/qita flow, canonical examples, benchmark adapters.
+- Stable direction: `AgentModule + Engine`, trace/qita flow, canonical examples, benchmark adapters, and official reproducible-run contracts.
 - Likely to evolve: higher-level convenience APIs, some `kit` modules, and experimental toolsets.
 - If you are evaluating adoption, start from the kernel and examples, not assumptions about frozen surface area.
 - For ongoing project evolution and upgrade notes, see [CHANGELOG.md](CHANGELOG.md).
@@ -192,14 +174,17 @@ QitOS is currently **Alpha**.
 ## Installation and Versions
 
 - Supported Python version: **3.10+**
-- User install: `pip install qitos`
-- Repo quickstart: `pip install -r requirements.txt`
+- User install: `pip install "qitos[models]"`
+- Minimal coding agent: `qit demo minimal`
+- Optional provider config: `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `QITOS_MODEL`
+- Core-only install: `pip install qitos`
+- Repo source install: `pip install -r requirements.txt`
 - Full contributor install: `pip install -r requirements-dev.txt`
-- Installation guide: [Installation](https://qitor.mintlify.app/getting-started/installation/)
+- Installation guide: [Installation](https://qitor.mintlify.app/installation)
 
 ## Contributing
 
-Contributions are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md) for the PR process, [DEVELOPMENT.md](DEVELOPMENT.md) for the local workflow, [ARCHITECTURE.md](ARCHITECTURE.md) for system design, [SECURITY.md](SECURITY.md) for disclosure guidance, and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for community expectations.
+Contributions are welcome, especially around benchmark adapters, memory/history workflows, qita UX, and cyber-agent use cases. Start with [CONTRIBUTING.md](CONTRIBUTING.md) for the PR process, [DEVELOPMENT.md](DEVELOPMENT.md) for the local workflow, [ARCHITECTURE.md](ARCHITECTURE.md) for system design, [SECURITY.md](SECURITY.md) for disclosure guidance, and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for community expectations.
 
 ## License
 

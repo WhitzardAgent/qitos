@@ -1,70 +1,90 @@
 ---
 title: "基准测试"
-description: "在同一个 AgentModule + Engine 内核上运行 GAIA、Tau-Bench 与 CyBench，进行可复现的 agent 研究。"
+description: "通过统一的官方 QitOS benchmark 路径运行 GAIA、Tau-Bench 与 CyBench，并产出统一结果与 trace artifacts。"
 ---
 
-Benchmark 是 agent 研究的地面真相。如果没有可复现的评测 harness，你很难判断模型、prompt 或 planner 的变化到底带来了真实提升，还是只是碰巧在某些样本上运气好。
+在 QitOS 里，benchmark 不是另一套平行 runtime，而是同一条 agent runtime 叙事的延伸。
 
-QitOS 为三类标准 benchmark 提供了一等适配器。它们全部运行在同一个 `AgentModule + Engine` 内核上，因此无论你是在跑 GAIA 还是 CyBench，trace artifacts、replay 文件与 run metadata 都完全一致。
+这意味着 benchmark execution、replay、export 与结果聚合都建立在同一组核心原语之上：
+
+- `Task`
+- `RunSpec`
+- `ExperimentSpec`
+- `TraceWriter`
+- `BenchmarkRunResult`
+- `qita`
 
 ## 支持的 benchmarks
 
 | Benchmark | 领域 | 主指标 |
-|---|---|---|
-| [GAIA](/zh/benchmarks/gaia) | 通用 AI assistant 任务 | Exact match accuracy |
+| --- | --- | --- |
+| [GAIA](/zh/benchmarks/gaia) | 通用 AI assistant 任务 | Exact match |
 | [Tau-Bench](/zh/benchmarks/tau-bench) | Tool-agent-user 交互 | Reward / pass^k |
 | [CyBench](/zh/benchmarks/cybench) | CTF 风格安全评测 | Guided subtask score |
 
-## 安装 benchmark 依赖
+## 官方 benchmark 入口
 
 ```bash
-pip install "qitos[benchmarks]"
+qit bench run ...
+qit bench eval ...
+qit bench replay ...
+qit bench export ...
 ```
 
-## single kernel rule
+`examples/benchmarks/` 仍然保留，但在 v0.3 中它们已经是同一条官方结果与 trace 契约上的薄包装。
 
-每个 benchmark adapter 都会把原始数据格式转换成标准 `Task` 对象，然后交给 `Engine.run(task)` 执行。没有第二套 benchmark runner，也没有特殊执行模式。
+## 这为什么重要
 
-```text
-Dataset rows
-    ↓  BenchmarkAdapter.to_tasks()
-list[Task]
-    ↓  Engine.run(task)
-Trace + Steps + Manifest
-```
+因为 benchmark 输出形状统一之后，你就可以：
 
-这意味着：
+- 跨 benchmark 比较 runs
+- 无需每个 benchmark 单独写聚合脚本
+- 始终使用同一套 replay / export 表面
+- 用和普通 run 一样的 qita 工作流分析 benchmark 回归
 
-- benchmark runs 会产出和普通 runs 完全相同的 `manifest.json`、`events.jsonl` 与 `steps.jsonl`
-- 你可以直接用 `qita replay` 回放 benchmark run
-- 可以用 `qita board` 跨 benchmark 比较 runs
+## benchmark run 会产出什么
 
-## BenchmarkAdapter 基础接口
+一条 benchmark 路径通常会留下两层 artifact：
 
-三个适配器都继承自 `qitos.benchmark.base` 中的 `BenchmarkAdapter`，核心职责是把 records 转成 `Task`。
+1. trace 目录：`manifest.json`、`events.jsonl`、`steps.jsonl`
+2. 统一的 `BenchmarkRunResult` JSONL
 
-每个 adapter 通常还会提供：
-
-- `load_records()`
-- `to_tasks()`
-- 一行式 convenience loader
-
-## 如何检查 benchmark 结果
-
-运行完成后，直接使用 `qita`：
-
-```bash
-qita board --logdir runs
-qita replay --run runs/<run_id>
-qita export --run runs/<run_id> --html run.html
-```
-
-输出 JSONL 中通常会包含：
+每一行结果至少包含：
 
 - `task_id`
+- `benchmark`
+- `split`
 - `prediction`
+- `success`
 - `stop_reason`
 - `steps`
 - `latency_seconds`
+- `token_usage`
+- `cost`
+- `trace_run_dir`
+- `run_spec_ref`
 
-这让你可以离线聚合指标，而无需重新运行整个 benchmark。
+## 示例
+
+```bash
+qit bench run \
+  --benchmark tau-bench \
+  --split test \
+  --subset retail \
+  --limit 10 \
+  --output ./results/tau_retail_test.jsonl \
+  --model-name "Qwen/Qwen3-8B"
+```
+
+然后继续聚合与检查：
+
+```bash
+qit bench eval --input ./results/tau_retail_test.jsonl --json
+qita board --logdir ./runs
+```
+
+## 继续阅读
+
+- [Official runs](/zh/concepts/official-runs)
+- [CLI 参考](/zh/reference/cli)
+- [可复现 benchmark run 教程](/zh/tutorials/reproducible-benchmark-runs)

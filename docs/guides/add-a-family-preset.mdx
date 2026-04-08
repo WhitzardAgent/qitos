@@ -1,0 +1,82 @@
+---
+title: "Add a model-family preset"
+description: "How to extend QitOS v0.4 with a new family preset without forking the runtime."
+---
+
+When you add a new family preset, do not start by writing a new runtime.
+
+Start by answering five questions:
+
+1. What model names should resolve to this family?
+2. Which transport builds the model object?
+3. What is the default protocol?
+4. What fallback protocol chain should remain stable?
+5. How should tools and context be delivered by default?
+
+## The minimal path
+
+Add one `FamilyPreset` entry under `qitos/harness/_presets.py`.
+
+```python
+FamilyPreset(
+    id="my-family",
+    display_name="My Family",
+    model_matchers=("my-family", "my-model-prefix"),
+    adapter_kind="openai-compatible",
+    default_protocol="json_decision_v1",
+    fallback_protocols=("react_text_v1",),
+    tool_policy=ToolPolicy(
+        primary_delivery="api_parameter",
+        fallback_delivery="prompt_injection",
+    ),
+    context_policy=ContextPolicy(
+        context_window_hint=128_000,
+        fallback_context_window=128_000,
+    ),
+    recommended_models=("my-family-32b",),
+)
+```
+
+## Reuse protocol objects instead of inventing new ones
+
+QitOS v0.4 deliberately reuses `ModelProtocol`.
+
+That means most new families should choose from:
+
+- `react_text_v1`
+- `json_decision_v1`
+- `xml_decision_v1`
+- `terminus_json_v1`
+- `terminus_xml_v1`
+- `minimax_tool_call_v1`
+
+Only create a new protocol when the model truly emits a different contract.
+
+## Reuse adapters when possible
+
+For v0.4, the default adapter is:
+
+```python
+OpenAICompatibleAdapter
+```
+
+If the model is served through an OpenAI-compatible endpoint, prefer reusing that adapter.
+
+Only add a new adapter when the transport itself is different, not just because the family is different.
+
+## Keep the preset traceable
+
+The preset becomes valuable only if researchers can see it later.
+
+Make sure the resolved harness metadata is visible through:
+
+- `RunSpec.metadata`
+- trace manifest
+- `qita`
+
+## Validation checklist
+
+- `resolve_family_preset(...)` resolves the family from both family id and model name
+- `build_harness_policy(...)` returns the right protocol and parser
+- `infer_model_profile(...)` stays aligned with preset defaults
+- the flagship example can switch into the new family without changing agent code

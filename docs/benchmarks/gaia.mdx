@@ -5,7 +5,7 @@ description: "Run the GAIA general AI assistant benchmark with QitOS using the G
 
 GAIA (General AI Assistants) is a benchmark of real-world tasks that require multi-step reasoning, web research, file inspection, and arithmetic. Tasks are grouped into three difficulty levels and evaluated by exact-match comparison to a reference answer.
 
-QitOS provides `GaiaAdapter` to convert GAIA dataset rows into `Task` objects, and a full evaluation script in `examples/benchmarks/gaia_eval.py` that wires up a ReAct web research agent against the dataset.
+QitOS provides `GaiaAdapter` to convert GAIA dataset rows into `Task` objects. The canonical execution path is `qit bench run`, while `examples/benchmarks/gaia_eval.py` remains available as a thin wrapper around the same official result contract.
 
 ## Setup
 
@@ -87,6 +87,27 @@ records = adapter.load_local_records(split="validation", local_dir="data/gaia")
 | `include_raw_record` | `True` | Attach raw row to `task.metadata` |
 
 ## Running the evaluation
+
+Start with the official CLI:
+
+```bash
+qit bench run \
+  --benchmark gaia \
+  --split validation \
+  --limit 50 \
+  --root data/gaia \
+  --output results/gaia_validation.jsonl \
+  --model-name "Qwen/Qwen3-8B"
+```
+
+Then aggregate and inspect:
+
+```bash
+qit bench eval --input results/gaia_validation.jsonl --json
+qita board --logdir runs
+```
+
+If you want the benchmark-specific reference wrapper, use `examples/benchmarks/gaia_eval.py`.
 
 The bundled `gaia_eval.py` script runs an OpenDeepResearch-style ReAct agent that uses web search, URL visiting, file reading, and command execution.
 

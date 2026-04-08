@@ -17,9 +17,9 @@ How to update:
 
 ## Unreleased
 
-### Changed
+- No unreleased entries yet.
 
-- Dropped Python 3.9 support and aligned CI, packaging metadata, README, and installation docs around Python 3.10+.
+## 0.3.0 - 2026-04-08
 
 ### Added
 
@@ -29,9 +29,19 @@ How to update:
 - Added thin module boundaries for `qita` data/server/views and `render` terminal/themes façades to make future maintenance easier.
 - Added a root-level changelog to document ongoing project evolution.
 - Added a dedicated `requirements-dev.txt` entrypoint for full contributor installs from a local clone.
+- Added stable `RunSpec`, `ExperimentSpec`, and `BenchmarkRunResult` public contracts to anchor reproducible-run metadata and normalized benchmark outputs.
+- Added a first-pass unified `qit bench` CLI with `run`, `eval`, `replay`, and `export` subcommands.
+- Added qita compare/diff views and export routes for summary-level run comparison.
+- Added official-run and glossary docs, plus new reproducibility tutorials for benchmark runs and failed-run replay in both English and Chinese.
+- Added a blog entry on why reproducible runs matter in QitOS.
+- Added a first-class `qitos.harness` layer with `FamilyPreset`, `HarnessPolicy`, `ModelAdapter`, `ToolPolicy`, `ContextPolicy`, `build_harness_policy(...)`, and `build_model_for_preset(...)`.
+- Added built-in gold presets for Qwen, Kimi, MiniMax, `gpt-oss`, and Gemma 4, plus bilingual docs for family presets, preset authoring, the model-family matrix, and same-example switching.
+- Added `qit demo minimal`, a packaged minimal coding-agent demo that configures a real model, fixes a tiny workspace bug, and leaves behind a qita-ready trace.
+- Added release notes for the first formal GitHub release package under `plans/releases/v0.3.0.md`.
 
 ### Changed
 
+- Dropped Python 3.9 support and aligned CI, packaging metadata, README, and installation docs around Python 3.10+.
 - Normalized the class-based tool contract around `execute(args, runtime_context)` while keeping `run(...)` as a compatibility path.
 - Removed deprecated editor/codebase/file/shell compatibility shims in favor of the canonical `CodingToolSet` surface.
 - Tightened default public exports from `qitos.kit` and `qitos.kit.tool` so experimental and higher-risk tool families are no longer part of the default surface.
@@ -41,6 +51,14 @@ How to update:
 - Reworked root installation guidance so `requirements.txt` is now a lightweight repo install path instead of a drifting copy of runtime and dev dependencies.
 - Added coverage, dependency audit, and pre-commit tooling to the standard contributor workflow.
 - Removed legacy root planning/audit scratch files, obsolete MkDocs configuration, and local phase-artifact directories so the repository surface matches the current Mintlify-based docs flow.
+- Extended trace manifests with normalized run-spec, experiment-spec, benchmark, parser, and reproducibility metadata instead of keeping benchmark context in ad hoc side channels.
+- Reworked benchmark example scripts so GAIA, Tau-Bench, and CyBench wrappers now emit the unified `BenchmarkRunResult` shape and route through the official v0.3 runner contract.
+- Surfaced official-run and best-effort replay metadata inside qita board, run detail, and diff views.
+- Updated benchmark, tracing, and CLI docs to position `qit bench` as the canonical benchmark path while keeping `examples/benchmarks` as thin wrappers.
+- Refactored the flagship `examples/real/claude_code_agent.py` example into a preset-first showcase so the same agent can switch across supported model families without rewriting the agent implementation.
+- Moved model-profile defaults onto preset-derived family data and extended context inference for the new v0.4 target families.
+- Reworked README, quickstart, installation, CLI reference, and first-agent docs around the minimal coding-agent path so the public “minimal agent” story now matches the QitOS mindset: model config, workspace actions, verification, and qita inspection.
+- Updated package metadata and contributor guidance so PyPI, docs, and release materials all describe QitOS as the torch-flavor framework for agent researchers.
 
 ### Fixed
 

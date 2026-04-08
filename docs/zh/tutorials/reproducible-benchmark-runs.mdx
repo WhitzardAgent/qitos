@@ -1,0 +1,100 @@
+---
+title: "教程：可复现的 Benchmark Runs"
+description: "如何通过官方 QitOS benchmark 路径运行 GAIA、Tau-Bench 或 CyBench，并检查产出的 artifacts。"
+---
+
+这节课的目标不是“先拿一个分数”，而是产出一个真正可以 replay、diff、export 的 official QitOS benchmark run。
+
+## 你会学到什么
+
+- 为什么 `qit bench` 是 benchmark 官方入口
+- `RunSpec` 与 `ExperimentSpec` 如何自动附着到 run 上
+- 一次 benchmark run 结束后应该留下哪些文件
+- 如何用 `qita` 继续做 replay / export / compare
+
+## 第一步：选择 benchmark
+
+如果只是先熟悉流程，可以从 Tau-Bench 开始：
+
+```bash
+qit bench run \
+  --benchmark tau-bench \
+  --split test \
+  --subset retail \
+  --limit 2 \
+  --output ./results/tau_retail_test.jsonl \
+  --model-name "Qwen/Qwen3-8B"
+```
+
+如果你希望接入真实执行逻辑，而不是默认 dry strategy，可以通过 `--runner` 指向 benchmark wrapper 或自定义 runner callback。
+
+## 第二步：理解统一结果结构
+
+输出文件中的每一行都遵循 `BenchmarkRunResult`。你应该能看到：
+
+- `task_id`
+- `benchmark`
+- `split`
+- `prediction`
+- `success`
+- `stop_reason`
+- `steps`
+- `latency_seconds`
+- `token_usage`
+- `cost`
+- `trace_run_dir`
+- `run_spec_ref`
+
+这正是跨 benchmark 统一聚合的基础。
+
+## 第三步：聚合指标
+
+```bash
+qit bench eval --input ./results/tau_retail_test.jsonl --json
+```
+
+这会基于统一结果行输出标准 summary，而不是让每个 benchmark 各自定义一套报告接口。
+
+## 第四步：检查 trace
+
+如果 run 同时生成了 trace 目录，就继续用 `qita`：
+
+```bash
+qit bench replay --run ./runs/<run_id>
+qit bench export --run ./runs/<run_id> --html ./reports/run.html
+```
+
+或者打开整个 board：
+
+```bash
+qita board --logdir ./runs
+```
+
+## 第五步：确认它是不是 official run
+
+打开 `manifest.json` 或 qita 的 run 概览，确认这些字段存在：
+
+- `run_spec`
+- `experiment_spec`
+- `official_run`
+- `git_sha`
+- `package_version`
+- `prompt_protocol`
+- `parser_name`
+- `tool_manifest`
+
+如果缺失这些字段，trace 依然可能有用，但还没有达到 official run 契约。
+
+## 什么时候还应该使用 examples
+
+当你需要：
+
+- benchmark 特定的 agent 构造方式
+- 一篇论文风格的参考实现
+- 官方 runner 之上的薄包装演示
+
+可以继续使用 `examples/benchmarks`。但不要把它们理解成另一套 benchmark 框架；在 v0.3 中，它们只是官方路径上的 wrapper。
+
+## 下一步
+
+继续阅读 [Replay 并检查失败 run](/zh/tutorials/replay-and-inspect-failed-runs)。

@@ -1,154 +1,93 @@
 ---
 title: "Tracing"
-description: "QitOS automatically writes a structured trace for every run — a manifest, an event log, and a step log — so you can replay, audit, and reproduce agent behavior."
+description: "QitOS writes structured trace artifacts for every run so you can replay, diff, export, and audit agent behavior."
 ---
 
-Every time you run an agent, QitOS writes a self-contained trace directory. Tracing is on by default. It gives you a complete, structured record of what the agent did, step by step, including decisions, tool calls, state diffs, and stop conditions.
+Tracing is the persistence layer behind QitOS observability.
 
-## Why traceability is a first-class feature
+Every traced run writes a self-contained directory:
 
-QitOS is designed for research and long-running agent work, so tracing is not an afterthought.
-
-The trace system exists so you can:
-
-- replay what the agent actually did instead of relying on anecdotes
-- compare runs across prompts, models, and tool configurations
-- debug parser failures, bad tool choices, and context collapse
-- export a run as an artifact for collaborators or audits
-
-This is why QitOS ships not just trace files, but also `qita` as a built-in traceability interface.
-
-## What you get per run
-
-Each run produces a directory at `<trace_logdir>/<run_id>/` containing three files:
-
-| File            | Contents                                                                              |
-| --------------- | ------------------------------------------------------------------------------------- |
-| `manifest.json` | Run metadata: `run_id`, `status`, `model_id`, `step_count`, `stop_reason`, `final_result`, timestamps, and config hashes. |
-| `events.jsonl`  | One JSON line per lifecycle event (`INIT`, `DECIDE`, `ACT`, `REDUCE`, `CHECK_STOP`, `END`, etc.), each with a `phase`, `step_id`, `ok` flag, `payload`, and `ts`. |
-| `steps.jsonl`   | One JSON line per completed step, containing the observation, decision, actions, action results, tool invocations, critic outputs, and state diff. |
-
-The `manifest.json` is written at run start with `status: "running"` and updated at the end with `status: "completed"` or `status: "failed"`.
-
-## Run IDs and directory layout
-
-By default, `agent.run()` generates a run ID from your agent's name and a UTC timestamp:
-
-```
-{agent.name}_{YYYYMMDD_HHMMSS_ffffff}
+```text
+<trace_logdir>/<run_id>/
+  manifest.json
+  events.jsonl
+  steps.jsonl
 ```
 
-For example: `research_agent_20260407_143022_819441`.
+## What each file means
 
-The trace is written to:
+| File | Purpose |
+| --- | --- |
+| `manifest.json` | Run summary, reproducibility metadata, benchmark metadata, and official-run fields |
+| `events.jsonl` | Event stream across runtime phases |
+| `steps.jsonl` | One structured record per completed step |
 
-```
-./runs/
-  research_agent_20260407_143022_819441/
-    manifest.json
-    events.jsonl
-    steps.jsonl
-```
+The raw files are the source of truth. `qita` is the human inspection surface built on top of them.
 
-You can change the base directory with `trace_logdir` and control the ID prefix with `trace_prefix`:
+## Why tracing is a first-class feature
 
-```python
-result = agent.run(
-    "summarize the dataset",
-    trace_logdir="./experiments",
-    trace_prefix="exp_42",
-)
-# writes to ./experiments/exp_42_20260407_143022_819441/
-```
+QitOS is built for agent research, not only one-off demos.
 
-## TraceWriter
+That means the framework must preserve:
 
-`TraceWriter` is the component that performs the actual I/O. You do not need to instantiate it manually — `agent.run()` creates one when `trace=True` (the default).
+- how a run stopped
+- what prompt/parser contract it used
+- what tool surface it saw
+- how context changed over time
+- which config fields matter for replay and comparison
 
-If you need to supply a pre-configured writer (for example, to set a fixed `run_id` for reproducibility), pass it directly:
+This is why tracing is enabled by default in `AgentModule.run(...)`.
 
-```python
-from qitos.trace import TraceWriter
+## Trace metadata in v0.3
 
-writer = TraceWriter(
-    output_dir="./runs",
-    run_id="fixed_run_abc123",
-    metadata={"model_id": "gpt-4o"},
-)
+The v0.3 closure adds stronger reproducibility metadata to the manifest, including:
 
-result = agent.run("compute something", trace=writer)
-```
+- `git_sha`
+- `package_version`
+- `benchmark_name`
+- `benchmark_split`
+- `model_family`
+- `prompt_protocol`
+- `parser_name`
+- `tool_manifest`
+- `run_spec`
+- `experiment_spec`
+- `official_run`
+- `replay_mode`
+- token / latency / cost summaries
 
-`TraceWriter` constructor parameters:
+These fields are what make qita compare and benchmark result normalization meaningful.
 
-| Parameter        | Type               | Description                                                            |
-| ---------------- | ------------------ | ---------------------------------------------------------------------- |
-| `output_dir`     | `str`              | Base directory. The run directory is created as `output_dir/run_id/`. |
-| `run_id`         | `str`              | Unique identifier for this run.                                        |
-| `schema_version` | `str`              | Trace schema version. Defaults to `"v1"`.                              |
-| `metadata`       | `dict \| None`     | Extra fields stored in the manifest (`model_id`, `seed`, etc.).        |
-| `strict_validate`| `bool`             | If `True`, validates artifacts against the schema on finalization. Defaults to `True`. |
+## Best-effort replay
 
-## Disabling tracing
+Tracing in QitOS supports **best-effort research replay**.
 
-Pass `trace=False` to suppress all trace output:
+That means QitOS records enough information to inspect and compare runs well, but it does not promise strict deterministic re-execution for remote models or external environments.
 
-```python
-result = agent.run("quick test", trace=False)
-```
+Use traces for:
 
-<Note>
-  When `trace=False`, no directory is created and no files are written. `EngineResult.events` and `EngineResult.records` are still populated in memory — they just are not persisted to disk.
-</Note>
+- debugging long trajectories
+- comparing prompt/parser/tool changes
+- exporting artifacts for review
+- replaying benchmark failures
 
-## Viewing traces with `qita`
+Do not assume a remote provider will always generate identical tokens forever.
 
-QitOS ships a CLI called `qita` for inspecting trace directories:
+## qita on top of traces
+
+Once traces exist, use:
 
 ```bash
-# Overview of all runs in the default ./runs directory
 qita board --logdir ./runs
-
-# Replay a specific run step by step
-qita replay --run ./runs/research_agent_20260407_143022_819441
-
-# Export a run to a standalone HTML file
-qita export --run ./runs/research_agent_20260407_143022_819441 --html run.html
+qita replay --run ./runs/<run_id>
+qita export --run ./runs/<run_id> --html ./report.html
 ```
 
-For a full walkthrough of the observability tooling, see **Guides > Observability**.
-
-## What qita adds on top of raw trace files
-
-The raw files are the source of truth. `qita` is the inspection layer on top of them.
-
-- `qita board` helps you compare many runs at once
-- `qita replay` helps you understand one run as a temporal process
-- `qita export` helps you share a run without requiring a local server
-
-In practice, this means QitOS gives you both machine-readable traces and a human-friendly review surface.
-
-Here is what that review surface looks like once a run is opened step by step:
-
-![qita trace trajectory](/images/qita-traj.png)
-
-## Reproducibility requirements
-
-The trace system is designed for research reproducibility. A valid trace must include the following fields in `manifest.json`:
-
-- `task_id` and `task_hash`
-- `model_name`
-- `config_hash`
-- `tool_manifest`
-
-These are populated automatically from the `Task` object and the `TraceWriter` metadata when `strict_validate=True`. If any required field is missing at finalization, a validation error is raised.
-
-<Tip>
-  Pass `model_id` in the `TraceWriter` metadata so it appears in `manifest.json`. When using `agent.run()` with tracing enabled, QitOS reads `agent.llm.model` automatically.
-</Tip>
+`qita` also supports run comparison so you can ask why two runs diverged instead of reading raw JSON by hand.
 
 ## Related reading
 
+- [Official runs](/concepts/official-runs)
 - [Observability](/guides/observability)
 - [CLI reference](/reference/cli)
-- [Tutorials](/tutorials)
+- [Replay and inspect a failed run](/tutorials/replay-and-inspect-failed-runs)

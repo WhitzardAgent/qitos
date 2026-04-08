@@ -1,0 +1,22 @@
+---
+title: "为什么 QitOS 如此强调 reproducible runs"
+description: "一篇简短的设计笔记：official run、统一 benchmark output 与 best-effort replay 为什么重要。"
+---
+
+在 QitOS 的设计里，一次 run 不会因为“模型吐出了一段文本”就算真正结束。
+
+真正有研究价值的 run，必须让后来的人还能继续回答这些问题：
+
+- 用的到底是什么模型与 parser？
+- 暴露了哪些 tools？
+- 这是不是同一个 benchmark split？
+- 能不能 replay？
+- 能不能和上一版 run 做 diff？
+
+因此 v0.3 补上了三件关键事：
+
+- official run contract
+- 统一的 benchmark result 结构
+- 更完整的 qita replay / diff / export 路径
+
+这不是形式主义。它的价值在于：prompt、parser、tool 与 benchmark 的调整终于可以被稳定比较，而不是只能靠印象判断“好像更好了”。

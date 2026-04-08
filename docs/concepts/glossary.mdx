@@ -1,0 +1,76 @@
+---
+title: "Glossary"
+description: "Shared language for runs, trajectories, actions, artifacts, replay, and benchmark outputs in QitOS."
+---
+
+## Core runtime terms
+
+### Run
+
+One invocation of `AgentModule.run(...)` or an equivalent benchmark execution path that produces a trace directory.
+
+### Trajectory
+
+The temporal record of one run: prompts, decisions, tool calls, observations, reductions, and stop conditions across steps.
+
+### Observation
+
+The structured data available to the agent after a step. In QitOS this usually includes action results and environment outputs.
+
+### Decision
+
+The engine-level semantic output of the agent loop. A decision may contain actions or a final answer.
+
+### Action
+
+A normalized tool invocation selected by the agent and executed by the runtime.
+
+## Reproducibility terms
+
+### Artifact
+
+Any persisted output of a run, especially `manifest.json`, `events.jsonl`, `steps.jsonl`, exported HTML, and benchmark result JSONL.
+
+### Replay
+
+Reconstructing and inspecting a previous run from its artifacts with `qita replay` or the benchmark replay path.
+
+### Official run
+
+A run that carries the official QitOS contract: structured specs, standard artifacts, and qita-compatible replay/export behavior.
+
+### Benchmark result
+
+A normalized `BenchmarkRunResult` row with fields such as `task_id`, `benchmark`, `split`, `prediction`, `success`, `stop_reason`, `steps`, `latency_seconds`, and `run_spec_ref`.
+
+## Runtime control terms
+
+### Tool manifest
+
+The serialized description of the tool surface exposed to the run. It is part of the official-run contract because tool drift changes behavior.
+
+### Prompt protocol
+
+The output/input contract expected by the model path, such as ReAct text, JSON, XML, or a model-specific harness.
+
+### Parser
+
+The component that converts raw model output into a `Decision`. The parser must match the prompt protocol.
+
+### Context compaction
+
+Any strategy used to shrink accumulated context while keeping a long-running run operational. QitOS records compaction telemetry in the trace.
+
+## Inspection terms
+
+### qita board
+
+The run index and comparison surface for multiple traces.
+
+### qita replay
+
+The single-run temporal playback view.
+
+### qita diff
+
+The summary-level comparison view for two runs, focused on stop reason, result, step/event counts, parser diagnostics, config differences, and token/latency/cost summaries.

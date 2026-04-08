@@ -31,6 +31,10 @@ pip install qitos
 
 它默认不包含 OpenAI client，也不包含 benchmark dataset loaders。
 
+<Tip>
+如果你想马上运行最小 coding-agent quickstart，直接安装 `pip install "qitos[models]"` 就可以。
+</Tip>
+
 ## 可选 extras
 
 通过 extras 按需加入模型支持、benchmark 依赖，或一次性安装全部组件。
@@ -58,7 +62,7 @@ pip install "qitos[all]"
 | `all` | 以上全部 |
 
 <Tip>
-如果你刚开始接触 QitOS，最推荐 `pip install "qitos[models]"`。这足以跑通 quickstart 和大部分 examples。
+如果你刚开始接触 QitOS，最推荐 `pip install "qitos[models]"`。这足以跑通最小 coding-agent quickstart 和大部分 examples。
 </Tip>
 
 ## 从源码安装
@@ -87,9 +91,11 @@ python -c "import qitos; print(qitos.__version__)"
 0.3.0
 ```
 
-也可以确认 `qita` CLI 已在 PATH 中：
+也可以顺手验证最小 coding agent 与两个 CLI 都已经进入 PATH：
 
 ```bash
+qit demo minimal
+qit --help
 qita --help
 ```
 

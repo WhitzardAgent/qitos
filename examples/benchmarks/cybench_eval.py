@@ -18,7 +18,10 @@ from typing import Any, Dict, List, Optional
 from qitos import (
     Action,
     AgentModule,
+    BenchmarkRunResult,
     Decision,
+    ExperimentSpec,
+    RunSpec,
     StateSchema,
     Task,
     TaskBudget,
@@ -42,6 +45,14 @@ from qitos.metric import MetricInput, MetricRegistry
 from qitos.models import OpenAICompatibleModel
 from qitos.render import ClaudeStyleHook
 from qitos.trace import TraceWriter
+
+from ._shared import (
+    build_example_specs,
+    default_output_path,
+    execute_example_jobs,
+    print_benchmark_summary,
+    print_single_result,
+)
 
 DEFAULT_MODEL_BASE_URL = "https://api.siliconflow.cn/v1/"
 DEFAULT_MODEL_NAME = "Qwen/Qwen3-8B"
@@ -247,6 +258,8 @@ def _run_objective(
     hooks: List[Any],
     model: Any,
     env: Any,
+    run_spec: RunSpec | None = None,
+    experiment_spec: ExperimentSpec | None = None,
 ) -> Dict[str, Any]:
     agent = CyBenchReactAgent(llm=model, workspace_root=str(workspace))
     trace_writer = _make_trace_writer(args, task_id)
@@ -265,12 +278,23 @@ def _run_objective(
         workspace=str(workspace),
         env=env,
         trace=trace_writer,
+        run_spec=run_spec,
+        experiment_spec=experiment_spec,
     )
     return {
         "result": result,
         "submissions": list(getattr(result.state, "submissions", []) or []),
         "stop_reason": result.state.stop_reason,
         "steps": int(result.step_count),
+        "token_usage": int(
+            (
+                (result.task_result.metrics if result.task_result is not None else {})
+                or {}
+            ).get("token_usage", 0)
+        ),
+        "trace_run_dir": (
+            str(trace_writer.run_dir) if trace_writer is not None else None
+        ),
     }
 
 
@@ -282,6 +306,8 @@ def _run_one_task(
     root: Path,
     trial: int = 0,
     docker_scheduler: Optional[DockerEnvScheduler] = None,
+    run_spec: RunSpec | None = None,
+    experiment_spec: ExperimentSpec | None = None,
 ) -> Dict[str, Any]:
     started = time.time()
     split = "guided" if not args.unguided_mode else "unguided"
@@ -342,8 +368,10 @@ def _run_one_task(
 
     predictions: List[str] = []
     total_steps = 0
+    token_usage = 0
     stop_reason = "final"
     error_msg: Optional[str] = None
+    trace_dirs: List[str] = []
 
     def _host_eval() -> None:
         nonlocal predictions, total_steps, stop_reason
@@ -357,6 +385,8 @@ def _run_one_task(
                 hooks,
                 model,
                 env,
+                run_spec,
+                experiment_spec,
             )
             predictions = out["submissions"] or (
                 [str(out["result"].state.final_result)]
@@ -364,7 +394,10 @@ def _run_one_task(
                 else []
             )
             total_steps = out["steps"]
+            token_usage = int(out.get("token_usage", 0))
             stop_reason = str(out["stop_reason"])
+            if out.get("trace_run_dir"):
+                trace_dirs.append(str(out["trace_run_dir"]))
         else:
             subtasks = list(task.inputs.get("subtasks") or [])
             for sidx, sub in enumerate(subtasks):
@@ -375,14 +408,25 @@ def _run_one_task(
                 if hint:
                     prompt += "\nHints:\n" + "\n".join(f"- {x}" for x in hint[:3])
                 out = _run_objective(
-                    args, prompt, f"{task.id}_subtask{sidx + 1}", ws, hooks, model, env
+                    args,
+                    prompt,
+                    f"{task.id}_subtask{sidx + 1}",
+                    ws,
+                    hooks,
+                    model,
+                    env,
+                    run_spec,
+                    experiment_spec,
                 )
                 cand = out["submissions"]
                 predictions.append(
                     str(cand[-1] if cand else (out["result"].state.final_result or ""))
                 )
                 total_steps += out["steps"]
+                token_usage += int(out.get("token_usage", 0))
                 stop_reason = str(out["stop_reason"])
+                if out.get("trace_run_dir"):
+                    trace_dirs.append(str(out["trace_run_dir"]))
 
     try:
         if args.use_docker_env:
@@ -403,6 +447,8 @@ def _run_one_task(
                         hooks,
                         model,
                         denv,
+                        run_spec,
+                        experiment_spec,
                     )
                     predictions = out["submissions"] or (
                         [str(out["result"].state.final_result)]
@@ -410,7 +456,10 @@ def _run_one_task(
                         else []
                     )
                     total_steps = out["steps"]
+                    token_usage = int(out.get("token_usage", 0))
                     stop_reason = str(out["stop_reason"])
+                    if out.get("trace_run_dir"):
+                        trace_dirs.append(str(out["trace_run_dir"]))
                 else:
                     subtasks = list(task.inputs.get("subtasks") or [])
                     for sidx, sub in enumerate(subtasks):
@@ -433,6 +482,8 @@ def _run_one_task(
                             hooks,
                             model,
                             denv,
+                            run_spec,
+                            experiment_spec,
                         )
                         cand = out["submissions"]
                         predictions.append(
@@ -443,7 +494,10 @@ def _run_one_task(
                             )
                         )
                         total_steps += out["steps"]
+                        token_usage += int(out.get("token_usage", 0))
                         stop_reason = str(out["stop_reason"])
+                        if out.get("trace_run_dir"):
+                            trace_dirs.append(str(out["trace_run_dir"]))
         else:
             _host_eval()
     except Exception as exc:
@@ -483,6 +537,9 @@ def _run_one_task(
         "eval_score": float(suite_out.score),
         "stop_reason": stop_reason,
         "steps": int(total_steps),
+        "token_usage": int(token_usage),
+        "cost": 0.0,
+        "trace_run_dir": trace_dirs[0] if len(trace_dirs) == 1 else None,
         "predictions": predictions,
         "references": references,
         "guided_subtask_score": float(eval_score.get("guided_subtask_score", 0.0)),
@@ -492,10 +549,64 @@ def _run_one_task(
         "prep": prep,
         "cleanup": cleanup,
         "error": error_msg,
+        "trace_run_dirs": trace_dirs,
         "started_at": datetime.fromtimestamp(started, tz=timezone.utc).isoformat(),
         "ended_at": datetime.now(timezone.utc).isoformat(),
         "latency_seconds": round(time.time() - started, 3),
     }
+
+
+def _cybench_runner(
+    *,
+    task: Task,
+    record: Dict[str, Any],
+    idx: int,
+    trial: int,
+    root: Path,
+    args: argparse.Namespace,
+    docker_scheduler: Optional[DockerEnvScheduler] = None,
+    run_spec: RunSpec,
+    experiment_spec: ExperimentSpec,
+    **_: Any,
+) -> BenchmarkRunResult:
+    row = _run_one_task(
+        args=args,
+        adapter=CyBenchAdapter(
+            cybench_root=args.cybench_root,
+            run_with_subtasks=not bool(args.unguided_mode),
+        ),
+        idx=idx,
+        record=record,
+        root=root,
+        trial=trial,
+        docker_scheduler=docker_scheduler,
+        run_spec=run_spec,
+        experiment_spec=experiment_spec,
+    )
+    return BenchmarkRunResult(
+        task_id=str(task.id),
+        benchmark="cybench",
+        split="guided" if not args.unguided_mode else "unguided",
+        prediction=row.get("predictions"),
+        success=bool(row.get("success", False)),
+        stop_reason=str(row.get("stop_reason") or ""),
+        steps=int(row.get("steps", 0)),
+        latency_seconds=float(row.get("latency_seconds", 0.0)),
+        token_usage=int(row.get("token_usage", 0)),
+        cost=float(row.get("cost", 0.0)),
+        trace_run_dir=row.get("trace_run_dir"),
+        run_spec_ref=run_spec.fingerprint(),
+        metadata={
+            "references": row.get("references"),
+            "guided_subtask_score": row.get("guided_subtask_score"),
+            "guided_final_score": row.get("guided_final_score"),
+            "unguided_success": row.get("unguided_success"),
+            "partial_matches": row.get("partial_matches"),
+            "trace_run_dirs": row.get("trace_run_dirs"),
+            "trial": trial,
+            "idx": idx,
+        },
+    )
 
 
 def _print_metrics(rows: List[Dict[str, Any]]) -> None:
@@ -631,6 +742,7 @@ def main() -> None:
     ap.add_argument("--shuffle", action="store_true")
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--resume", action="store_true")
+    ap.add_argument("--output-jsonl", default="")
     ap.add_argument("--use-docker-env", action="store_true")
     ap.add_argument("--docker-image", default="python:3.11-slim")
     ap.add_argument("--docker-network", default="")
@@ -646,17 +758,101 @@ def main() -> None:
     )
 
     if args.run_all:
-        _run_full(args, adapter, records, root)
+        split = "guided" if not args.unguided_mode else "unguided"
+        tasks = adapter.to_tasks(records, split=split)
+        run_spec, experiment_spec = build_example_specs(
+            benchmark="cybench",
+            split=split,
+            model_name=args.model_name,
+            trace_logdir=args.trace_logdir,
+            parser_name="ReActTextParser",
+            toolset_name="CodingToolSet+SubmitAnswer",
+            seed=int(args.seed),
+            limit=int(args.limit) if int(args.limit) > 0 else None,
+            workspace=str(root),
+            metadata={
+                "example_entrypoint": "examples.benchmarks.cybench_eval",
+                "run_with_subtasks": not bool(args.unguided_mode),
+            },
+        )
+        start_idx = max(0, int(args.start_index))
+        end_idx = (
+            len(records)
+            if int(args.end_index) < 0
+            else min(len(records), int(args.end_index))
+        )
+        indices = list(range(start_idx, end_idx))
+        if int(args.limit) > 0:
+            indices = indices[: int(args.limit)]
+        if bool(args.shuffle):
+            rnd = random.Random(int(args.seed))
+            rnd.shuffle(indices)
+        scheduler = (
+            DockerEnvScheduler(max_active=max(1, int(args.max_workers)))
+            if args.use_docker_env
+            else None
+        )
+        jobs = [
+            {
+                "task": tasks[i],
+                "record": records[i],
+                "idx": i,
+                "trial": 0,
+                "root": root,
+                "args": args,
+                "docker_scheduler": scheduler,
+                "job_key": str(tasks[i].id),
+            }
+            for i in indices
+        ]
+        output_path = (
+            Path(args.output_jsonl).expanduser().resolve()
+            if args.output_jsonl
+            else default_output_path(root, benchmark="cybench", split=split)
+        )
+        rows = execute_example_jobs(
+            jobs=jobs,
+            runner=_cybench_runner,
+            output_path=output_path,
+            run_spec=run_spec,
+            experiment_spec=experiment_spec,
+            concurrency=int(args.max_workers),
+            resume=bool(args.resume),
+        )
+        print(f"output_jsonl: {output_path}")
+        print_benchmark_summary(rows)
     else:
         idx = max(0, int(args.task_index))
         if idx >= len(records):
             raise IndexError(f"task_index out of range: {idx} >= {len(records)}")
         scheduler = DockerEnvScheduler(max_active=1) if args.use_docker_env else None
-        row = _run_one_task(
-            args, adapter, idx, records[idx], root, trial=0, docker_scheduler=scheduler
+        split = "guided" if not args.unguided_mode else "unguided"
+        run_spec, experiment_spec = build_example_specs(
+            benchmark="cybench",
+            split=split,
+            model_name=args.model_name,
+            trace_logdir=args.trace_logdir,
+            parser_name="ReActTextParser",
+            toolset_name="CodingToolSet+SubmitAnswer",
+            seed=int(args.seed),
+            workspace=str(root),
+            metadata={
+                "example_entrypoint": "examples.benchmarks.cybench_eval",
+                "run_with_subtasks": not bool(args.unguided_mode),
+            },
         )
-        print(json.dumps(row, ensure_ascii=False, indent=2))
-        _print_metrics([row])
+        row = _cybench_runner(
+            task=adapter.to_task(records[idx], split=split, idx=idx),
+            record=records[idx],
+            idx=idx,
+            trial=0,
+            root=root,
+            args=args,
+            docker_scheduler=scheduler,
+            run_spec=run_spec,
+            experiment_spec=experiment_spec,
+        )
+        print_single_result(row)
 
     if temp_ctx is not None:
         temp_ctx.cleanup()

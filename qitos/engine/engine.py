@@ -513,6 +513,7 @@ class Engine(Generic[StateT, ObservationT, ActionT]):
                 if state.stop_reason == StopReason.UNRECOVERABLE_ERROR.value
                 else "completed"
             )
+            task_result = self._build_task_result(state, task_obj=task_obj, started_at=started_at)
             self.trace_writer.finalize(
                 status=status,
                 summary={
@@ -520,12 +521,12 @@ class Engine(Generic[StateT, ObservationT, ActionT]):
                     "final_result": state.final_result,
                     "steps": len(self.records),
                     "token_usage": self._context_runtime.tokens_total,
+                    "latency_seconds": task_result.metrics.get("elapsed_seconds", 0.0),
+                    "cost": task_result.metrics.get("cost", 0.0),
                     "context": self._context_runtime.run_summary(),
                     "parser": self._trace_runtime.parser_summary(),
                     "task_meta": self._task_meta(task_obj),
-                    "task_result": self._build_task_result(
-                        state, task_obj=task_obj, started_at=started_at
-                    ).to_dict(),
+                    "task_result": task_result.to_dict(),
                     "run_meta": self._run_meta(),
                     "failure_report": build_failure_report(
                         self.recovery_policy, state.stop_reason

@@ -1,0 +1,66 @@
+---
+title: "术语表"
+description: "QitOS 中与 run、trajectory、artifact、replay 和 benchmark output 相关的核心术语。"
+---
+
+## Runtime 术语
+
+### Run
+
+一次 `AgentModule.run(...)` 调用，或等价的 benchmark 执行路径，并产出一组 trace artifacts。
+
+### Trajectory
+
+一次 run 的时间序列记录，包括 prompt、decision、tool call、observation、reduce 与 stop condition。
+
+### Observation
+
+每个 step 之后进入 agent 的结构化观察结果，通常包含 action results 与环境输出。
+
+### Decision
+
+Engine 层的一等语义对象。它可以包含 actions，也可以直接给出 final answer。
+
+### Action
+
+agent 选出的标准化工具调用，由 runtime 执行。
+
+## 复现术语
+
+### Artifact
+
+run 持久化下来的任何输出，尤其是 `manifest.json`、`events.jsonl`、`steps.jsonl`、导出的 HTML 与 benchmark 结果 JSONL。
+
+### Replay
+
+基于已有 artifacts 对一次 run 进行回放和审阅，通常通过 `qita replay` 完成。
+
+### Official run
+
+满足 QitOS 官方契约的 run：有 specs、有标准 artifacts，并支持 qita replay / export / compare。
+
+### Benchmark result
+
+统一的 `BenchmarkRunResult` 结果行，至少包含 `task_id`、`benchmark`、`split`、`prediction`、`success`、`stop_reason`、`steps` 与 `run_spec_ref`。
+
+## 控制与检查术语
+
+### Tool manifest
+
+本次 run 暴露出的工具面序列化结果。它是 official run 的关键字段，因为 tool drift 会直接改变行为。
+
+### Prompt protocol
+
+模型输出遵循的契约，例如 ReAct text、JSON、XML 或模型特定 harness。
+
+### Parser
+
+负责把 raw model output 转成 `Decision` 的组件。parser 必须和 prompt protocol 匹配。
+
+### Context compaction
+
+在长时运行中压缩上下文的策略。QitOS 会把 compaction telemetry 记录到 trace 里。
+
+### qita board / replay / diff
+
+分别对应多 run 总览、单 run 回放和双 run 摘要比较。

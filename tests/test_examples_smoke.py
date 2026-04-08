@@ -10,7 +10,6 @@ from examples.patterns.planact import PlanActAgent
 from examples.patterns.react import ReactAgent
 from examples.patterns.reflexion import ReflexionAgent
 from examples.patterns.tot import ToTAgent
-from examples.quickstart.minimal_agent import main as minimal_main
 from examples.real.claude_code_agent import ClaudeCodeAgent
 from examples.real.code_security_audit_agent import CodeSecurityAuditAgent
 from examples.real.coding_agent import CodingMemoryReactAgent
@@ -22,6 +21,7 @@ from examples.real.swe_agent import SWEDynamicPlanningAgent
 from examples.real.terminus_2 import Terminus2Agent
 from examples.real.whitzard_agent import WhitzardAgent
 from qitos.kit import MarkdownFileMemory, TextWebEnv, TmuxEnv
+from qitos.demo.minimal import run_minimal_demo
 
 
 VERIFY_COMMAND = "python -c 'import buggy_module; assert buggy_module.add(20, 22) == 42'"
@@ -43,8 +43,13 @@ def _react_fix_outputs() -> list[str]:
     ]
 
 
-def test_minimal_example_smoke_runs() -> None:
-    minimal_main()
+def test_minimal_example_smoke_runs(tmp_path: Path) -> None:
+    run_minimal_demo(
+        workspace=tmp_path / "playground" / "minimal_coding_agent",
+        trace_logdir=tmp_path / "runs",
+        render=False,
+        llm=SequenceModel(_react_fix_outputs()),
+    )
 
 
 def test_react_planact_coding_and_compact_examples_smoke(tmp_path: Path) -> None:

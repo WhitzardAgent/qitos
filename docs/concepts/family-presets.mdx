@@ -1,0 +1,112 @@
+---
+title: "Family presets"
+description: "Why QitOS v0.4 introduces family presets, harness policies, and transport adapters."
+---
+
+QitOS v0.4 keeps the same `AgentModule + Engine` kernel, but adds a new authoring layer:
+
+- `FamilyPreset`
+- `HarnessPolicy`
+- `ModelAdapter`
+- `ToolPolicy`
+- `ContextPolicy`
+
+This layer exists so one agent can switch model families without rewriting:
+
+- the agent state
+- the tool surface
+- the runtime loop
+- the tracing stack
+
+## The idea in one sentence
+
+A family preset is the research default for one model family.
+
+It says:
+
+- which transport to use
+- which protocol to prefer
+- which fallback protocol chain to keep
+- how to deliver tool schemas
+- what context defaults should apply
+
+## What stays stable
+
+The preset layer does **not** replace the kernel.
+
+It only resolves model-facing policy before the run starts:
+
+```text
+family preset -> harness policy -> model transport + protocol + parser
+```
+
+The rest stays the same:
+
+```text
+task -> state -> prepare -> llm -> parser -> Decision -> tools -> reduce -> trace
+```
+
+## The public v0.4 surface
+
+```python
+from qitos.harness import (
+    FamilyPreset,
+    HarnessPolicy,
+    ModelAdapter,
+    ToolPolicy,
+    ContextPolicy,
+    resolve_family_preset,
+    build_harness_policy,
+    build_model_for_preset,
+)
+```
+
+## Gold presets in v0.4
+
+The first QitOS gold presets are:
+
+- `qwen`
+- `kimi`
+- `minimax`
+- `gpt-oss`
+- `gemma-4`
+
+All five currently target OpenAI-compatible serving, but they do **not** all share the same protocol defaults.
+
+For example:
+
+- Qwen, Kimi, `gpt-oss`, and Gemma 4 default to `json_decision_v1`
+- MiniMax keeps `minimax_tool_call_v1`
+
+That difference matters because QitOS now treats "model family" and "transport" as separate concerns.
+
+## Why not just instantiate `OpenAICompatibleModel(...)` directly?
+
+You still can.
+
+That is the right choice when:
+
+- you are hand-authoring one model path
+- you do not need family-level defaults
+- you are debugging a single provider integration
+
+But for research comparisons and reusable examples, presets are better because they keep:
+
+- protocol choice explicit
+- fallback chains stable
+- tool delivery mode visible in traces
+- context defaults reproducible
+
+## Where preset metadata appears
+
+Preset resolution is recorded into trace metadata through `RunSpec.metadata`.
+
+That means `qita` can show:
+
+- family preset
+- protocol
+- parser
+- tool delivery mode
+- context policy
+
+without inventing a second trace format.

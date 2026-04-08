@@ -58,6 +58,7 @@ class TraceWriter:
     def _write_manifest(
         self, status: str, summary: Optional[Dict[str, Any]] = None
     ) -> None:
+        token_usage, latency_seconds, cost = self._summary_totals(summary or {})
         merged_summary: Dict[str, Any] = {
             "stop_reason": None,
             "final_result": None,
@@ -78,9 +79,39 @@ class TraceWriter:
             "tool_versions": self.metadata.get("tool_versions", {}),
             "seed": self.metadata.get("seed", None),
             "run_config_hash": self.metadata.get("run_config_hash", "unknown"),
+            "git_sha": self.metadata.get("git_sha"),
+            "package_version": self.metadata.get("package_version"),
+            "benchmark_name": self.metadata.get("benchmark_name"),
+            "benchmark_split": self.metadata.get("benchmark_split"),
+            "model_family": self.metadata.get("model_family"),
+            "prompt_protocol": self.metadata.get("prompt_protocol"),
+            "parser_name": self.metadata.get("parser_name"),
+            "tool_manifest": self.metadata.get("tool_manifest", []),
+            "run_spec": self.metadata.get("run_spec"),
+            "experiment_spec": self.metadata.get("experiment_spec"),
+            "official_run": bool(self.metadata.get("official_run", False)),
+            "replay_mode": self.metadata.get("replay_mode"),
+            "replay_note": self.metadata.get("replay_note"),
+            "token_usage": token_usage,
+            "latency_seconds": latency_seconds,
+            "cost": cost,
         }
         with open(self.manifest_path, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
+
+    def _summary_totals(self, summary: Dict[str, Any]) -> tuple[int, float, float]:
+        task_result = summary.get("task_result")
+        metrics = {}
+        if isinstance(task_result, dict):
+            maybe_metrics = task_result.get("metrics")
+            if isinstance(maybe_metrics, dict):
+                metrics = maybe_metrics
+        token_usage = summary.get("token_usage", metrics.get("token_usage", 0))
+        latency_seconds = summary.get(
+            "latency_seconds", metrics.get("elapsed_seconds", 0.0)
+        )
+        cost = summary.get("cost", metrics.get("cost", 0.0))
+        return int(token_usage or 0), float(latency_seconds or 0.0), float(cost or 0.0)
 
     def _validate_artifacts(self) -> None:
         validator = TraceSchemaValidator()

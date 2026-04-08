@@ -98,8 +98,51 @@ def _build_handler(root: Path):
             if route == "/":
                 self._send_html(_render_board_html())
                 return
+            if route == "/compare":
+                left_id = _slug_run_id((qs.get("left") or [""])[0])
+                right_id = _slug_run_id((qs.get("right") or [""])[0])
+                if not left_id or not right_id:
+                    self._send_html(_render_compare_prompt(), status=400)
+                    return
+                left_dir = _resolve_run(root, left_id)
+                right_dir = _resolve_run(root, right_id)
+                if left_dir is None or right_dir is None:
+                    self._send_html(_render_not_found(left_id if left_dir is None else right_id), status=404)
+                    return
+                self._send_html(
+                    _render_diff_html(
+                        _build_run_diff(
+                            _load_run_payload(left_dir),
+                            _load_run_payload(right_dir),
+                        ),
+                        embedded=False,
+                    )
+                )
+                return
             if route == "/api/runs":
                 self._send_json(_discover_runs(root))
+                return
+            if route == "/api/diff":
+                left_id = _slug_run_id((qs.get("left") or [""])[0])
+                right_id = _slug_run_id((qs.get("right") or [""])[0])
+                left_dir = _resolve_run(root, left_id)
+                right_dir = _resolve_run(root, right_id)
+                if left_dir is None or right_dir is None:
+                    self._send_json(
+                        {
+                            "error": "run not found",
+                            "left": left_id,
+                            "right": right_id,
+                        },
+                        status=404,
+                    )
+                    return
+                self._send_json(
+                    _build_run_diff(
+                        _load_run_payload(left_dir),
+                        _load_run_payload(right_dir),
+                    )
+                )
                 return
             if route.startswith("/api/run/"):
                 run_id = _slug_run_id(route.split("/", 3)[-1])
@@ -167,6 +210,40 @@ def _build_handler(root: Path):
                     content_type="text/html; charset=utf-8",
                     headers={
                         "Content-Disposition": f'attachment; filename="{run_id}.html"'
+                    },
+                )
+                return
+            if route.startswith("/export/diff/"):
+                parts = route.split("/")
+                if len(parts) < 5:
+                    self._send_json({"error": "invalid diff export route"}, status=400)
+                    return
+                left_id = _slug_run_id(parts[-2])
+                right_id = _slug_run_id(parts[-1])
+                left_dir = _resolve_run(root, left_id)
+                right_dir = _resolve_run(root, right_id)
+                if left_dir is None or right_dir is None:
+                    self._send_json(
+                        {
+                            "error": "run not found",
+                            "left": left_id,
+                            "right": right_id,
+                        },
+                        status=404,
+                    )
+                    return
+                body = _render_diff_html(
+                    _build_run_diff(
+                        _load_run_payload(left_dir),
+                        _load_run_payload(right_dir),
+                    ),
+                    embedded=True,
+                ).encode("utf-8")
+                self._send_bytes(
+                    body,
+                    content_type="text/html; charset=utf-8",
+                    headers={
+                        "Content-Disposition": f'attachment; filename="{left_id}_vs_{right_id}.html"'
                     },
                 )
                 return
@@ -246,16 +323,31 @@ def _discover_runs(logdir: Path) -> List[Dict[str, Any]]:
                 "manifest_meta": {
                     "schema_version": manifest.get("schema_version"),
                     "model_id": manifest.get("model_id"),
+                    "model_family": manifest.get("model_family"),
+                    "family_preset": (((summary.get("run_meta") or {}).get("harness") or {}).get("family_preset")),
                     "prompt_hash": manifest.get("prompt_hash"),
+                    "benchmark_name": manifest.get("benchmark_name"),
+                    "benchmark_split": manifest.get("benchmark_split"),
                     "prompt_builder": ((summary.get("run_meta") or {}).get("prompt") or {}).get("prompt_builder"),
                     "protocol": (summary.get("run_meta") or {}).get("protocol"),
                     "protocol_resolution_source": (summary.get("run_meta") or {}).get("protocol_resolution_source"),
+                    "prompt_protocol": manifest.get("prompt_protocol"),
+                    "parser_name": manifest.get("parser_name"),
                     "run_config_hash": manifest.get("run_config_hash"),
                     "seed": manifest.get("seed"),
+                    "git_sha": manifest.get("git_sha"),
+                    "package_version": manifest.get("package_version"),
+                    "official_run": manifest.get("official_run"),
+                    "replay_mode": manifest.get("replay_mode"),
+                    "replay_note": manifest.get("replay_note"),
                     "summary_steps": summary.get("steps"),
                     "token_usage": summary.get("token_usage"),
+                    "latency_seconds": manifest.get("latency_seconds"),
+                    "cost": manifest.get("cost"),
                     "context": summary.get("context"),
                     "parser": summary.get("parser"),
+                    "run_spec": manifest.get("run_spec"),
+                    "experiment_spec": manifest.get("experiment_spec"),
                 },
             }
         )
@@ -307,6 +399,139 @@ def _load_jsonl(path: Path) -> List[Dict[str, Any]]:
     return out
 
 
+def _summary_metric(manifest: Dict[str, Any], key: str, default: Any = None) -> Any:
+    if key in manifest:
+        return manifest.get(key, default)
+    summary = manifest.get("summary") or {}
+    if isinstance(summary, dict) and key in summary:
+        return summary.get(key, default)
+    task_result = summary.get("task_result") if isinstance(summary, dict) else None
+    metrics = task_result.get("metrics") if isinstance(task_result, dict) else None
+    if isinstance(metrics, dict):
+        if key in metrics:
+            return metrics.get(key, default)
+        if key == "latency_seconds":
+            return metrics.get("elapsed_seconds", default)
+    return default
+
+
+def _first_failure_step(payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    steps = payload.get("steps") or []
+    events_by_step = payload.get("events_by_step") or {}
+    for step in steps:
+        diagnostics = step.get("parser_diagnostics") or {}
+        if isinstance(diagnostics, dict) and str(diagnostics.get("severity")) == "error":
+            return {
+                "step_id": step.get("step_id"),
+                "reason": "parser_error",
+                "summary": diagnostics.get("summary"),
+                "code": diagnostics.get("code"),
+            }
+        action_results = step.get("action_results") or []
+        for result in action_results:
+            if isinstance(result, dict) and str(result.get("status")) == "error":
+                return {
+                    "step_id": step.get("step_id"),
+                    "reason": "action_error",
+                    "summary": result.get("error") or result.get("message") or str(result),
+                }
+        for event in events_by_step.get(str(step.get("step_id")), []):
+            if not bool(event.get("ok", True)) or event.get("error"):
+                return {
+                    "step_id": step.get("step_id"),
+                    "reason": "event_error",
+                    "summary": event.get("error") or (event.get("payload") or {}).get("stage") or event.get("phase"),
+                }
+    return None
+
+
+def _flatten_dict(value: Dict[str, Any], prefix: str = "") -> Dict[str, Any]:
+    out: Dict[str, Any] = {}
+    for key, item in value.items():
+        name = f"{prefix}.{key}" if prefix else str(key)
+        if isinstance(item, dict):
+            out.update(_flatten_dict(item, prefix=name))
+        else:
+            out[name] = item
+    return out
+
+
+def _config_snapshot(payload: Dict[str, Any]) -> Dict[str, Any]:
+    manifest = payload.get("manifest") or {}
+    run_spec = manifest.get("run_spec") if isinstance(manifest.get("run_spec"), dict) else {}
+    experiment_spec = (
+        manifest.get("experiment_spec")
+        if isinstance(manifest.get("experiment_spec"), dict)
+        else {}
+    )
+    run_meta = ((manifest.get("summary") or {}).get("run_meta") or {})
+    snapshot = {
+        "model_id": manifest.get("model_id"),
+        "model_family": manifest.get("model_family"),
+        "family_preset": (((run_meta.get("harness") or {}).get("family_preset")) or ((run_spec.get("metadata") or {}).get("family_preset"))),
+        "prompt_protocol": manifest.get("prompt_protocol"),
+        "parser_name": manifest.get("parser_name"),
+        "benchmark_name": manifest.get("benchmark_name"),
+        "benchmark_split": manifest.get("benchmark_split"),
+        "official_run": manifest.get("official_run"),
+        "replay_mode": manifest.get("replay_mode"),
+        "run_spec": run_spec,
+        "experiment_spec": experiment_spec,
+        "run_meta": run_meta,
+    }
+    return _flatten_dict(snapshot)
+
+
+def _build_run_diff(left: Dict[str, Any], right: Dict[str, Any]) -> Dict[str, Any]:
+    left_manifest = left.get("manifest") or {}
+    right_manifest = right.get("manifest") or {}
+    left_summary = left_manifest.get("summary") or {}
+    right_summary = right_manifest.get("summary") or {}
+    left_config = _config_snapshot(left)
+    right_config = _config_snapshot(right)
+    all_config_keys = sorted(set(left_config) | set(right_config))
+    config_diff = []
+    for key in all_config_keys:
+        left_value = left_config.get(key)
+        right_value = right_config.get(key)
+        if left_value == right_value:
+            continue
+        config_diff.append({"field": key, "left": left_value, "right": right_value})
+    return {
+        "left": {
+            "run_id": left.get("run_id"),
+            "status": left_manifest.get("status"),
+            "stop_reason": left_summary.get("stop_reason"),
+            "final_result": left_summary.get("final_result"),
+            "step_count": left_manifest.get("step_count", 0),
+            "event_count": left_manifest.get("event_count", 0),
+            "token_usage": _summary_metric(left_manifest, "token_usage", 0),
+            "latency_seconds": _summary_metric(left_manifest, "latency_seconds", 0.0),
+            "cost": _summary_metric(left_manifest, "cost", 0.0),
+            "official_run": bool(left_manifest.get("official_run", False)),
+            "replay_mode": left_manifest.get("replay_mode"),
+            "parser": left_summary.get("parser", {}),
+            "first_failure_step": _first_failure_step(left),
+        },
+        "right": {
+            "run_id": right.get("run_id"),
+            "status": right_manifest.get("status"),
+            "stop_reason": right_summary.get("stop_reason"),
+            "final_result": right_summary.get("final_result"),
+            "step_count": right_manifest.get("step_count", 0),
+            "event_count": right_manifest.get("event_count", 0),
+            "token_usage": _summary_metric(right_manifest, "token_usage", 0),
+            "latency_seconds": _summary_metric(right_manifest, "latency_seconds", 0.0),
+            "cost": _summary_metric(right_manifest, "cost", 0.0),
+            "official_run": bool(right_manifest.get("official_run", False)),
+            "replay_mode": right_manifest.get("replay_mode"),
+            "parser": right_summary.get("parser", {}),
+            "first_failure_step": _first_failure_step(right),
+        },
+        "config_diff": config_diff,
+    }
+
+
 def _render_board_html() -> str:
     return """<!doctype html>
 <html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
@@ -318,7 +543,7 @@ def _render_board_html() -> str:
 .head{display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:16px}
 .title{font-size:28px;font-weight:800;letter-spacing:.2px}.sub{color:var(--muted);font-size:13px;margin-top:4px}
 .chip{border:1px solid var(--line);background:var(--panel2);border-radius:999px;padding:8px 12px;font-size:12px;color:var(--muted)}
-.toolbar{display:grid;grid-template-columns:1.5fr 1fr 1fr auto auto;gap:10px;margin:12px 0 18px}
+.toolbar{display:grid;grid-template-columns:1.2fr .9fr .9fr 1fr 1fr auto auto;gap:10px;margin:12px 0 18px}
 .toolbar input,.toolbar select{border:1px solid var(--line);background:var(--panel2);color:var(--txt);border-radius:10px;padding:9px 10px;font-size:13px}
 .toolbar label{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--muted)}
 .toolbar .btn{justify-content:center}
@@ -359,7 +584,10 @@ def _render_board_html() -> str:
       <option value="events_desc">Sort: events desc</option>
       <option value="steps_desc">Sort: steps desc</option>
     </select>
+    <input id="cmpLeft" placeholder="Compare A: run id"/>
+    <input id="cmpRight" placeholder="Compare B: run id"/>
     <label><input type="checkbox" id="auto" checked/>Auto refresh</label>
+    <button class="btn" id="compareBtn">Compare</button>
     <button class="btn" id="refresh">Refresh</button>
   </div>
   <div id="stats" class="grid" style="grid-template-columns:repeat(auto-fill,minmax(240px,1fr));margin-bottom:12px"></div>
@@ -367,6 +595,16 @@ def _render_board_html() -> str:
 </div>
 <script>
 let allRuns = [];
+function pickCompare(side, runId){
+  if(side === 'left'){ document.getElementById('cmpLeft').value = runId; }
+  else { document.getElementById('cmpRight').value = runId; }
+}
+function openCompare(){
+  const left = (document.getElementById('cmpLeft').value || '').trim();
+  const right = (document.getElementById('cmpRight').value || '').trim();
+  if(!left || !right){ return; }
+  window.location.href = '/compare?left=' + encodeURIComponent(left) + '&right=' + encodeURIComponent(right);
+}
 function parseTime(s){
   if(!s){ return 0; }
   const v = Date.parse(s);
@@ -450,9 +688,11 @@ function paint(){
         <div class="meta">manifest meta</div>
         <div class="meta">model=${m.model_id||''}</div>
         <div class="meta">schema=${m.schema_version||''} seed=${m.seed===null?'null':(m.seed||'')}</div>
+        <div class="meta">official=${m.official_run ? 'yes' : 'no'} replay=${m.replay_mode||'-'}</div>
         <div class="meta">prompt_hash=${m.prompt_hash||''}</div>
         <div class="meta">protocol=${m.protocol||''} builder=${m.prompt_builder||''}</div>
         <div class="meta">resolution=${m.protocol_resolution_source||''}</div>
+        <div class="meta">git=${m.git_sha||''} pkg=${m.package_version||''}</div>
         <div class="meta">tokens=${(m.token_usage||0)} peak_ctx=${ctxPeak(m.context)}</div>
         <div class="meta">parser_err=${((m.parser||{}).error_count||0)} salvage=${((m.parser||{}).salvage_count||0)}</div>
         <details class="manifest-meta-tree">
@@ -463,6 +703,8 @@ function paint(){
       <div class="row">
         <a class="btn" href="/run/${encodeURIComponent(r.id)}">view</a>
         <a class="btn" href="/replay/${encodeURIComponent(r.id)}">replay</a>
+        <button class="btn" type="button" onclick="pickCompare('left', '${r.id}')">pick A</button>
+        <button class="btn" type="button" onclick="pickCompare('right', '${r.id}')">pick B</button>
         <a class="btn" href="/export/raw/${encodeURIComponent(r.id)}">export raw</a>
         <a class="btn" href="/export/html/${encodeURIComponent(r.id)}">export html</a>
       </div>`;
@@ -526,6 +768,7 @@ async function loadRuns(){
 document.getElementById('q').addEventListener('input', paint);
 document.getElementById('status').addEventListener('change', paint);
 document.getElementById('sort').addEventListener('change', paint);
+document.getElementById('compareBtn').addEventListener('click', openCompare);
 document.getElementById('refresh').addEventListener('click', ()=>loadRuns().catch((e)=>{document.getElementById('runs').innerHTML=`<div class="empty">Load failed: ${e}</div>`;}));
 setInterval(()=>{ if(document.getElementById('auto').checked){ loadRuns().catch(()=>{}); } }, 2500);
 loadRuns().catch((e)=>{document.getElementById('runs').innerHTML=`<div class="empty">Load failed: ${e}</div>`;});
@@ -538,6 +781,90 @@ def _render_not_found(run_id: str) -> str:
     return f"""<!doctype html><html><head><meta charset="utf-8"/><title>run not found</title></head>
 <body style="font-family:ui-sans-serif,system-ui;background:#101522;color:#dfe8fb;padding:24px">
 <h2>Run not found: {safe}</h2><a href="/" style="color:#83c4ff">Back to board</a></body></html>"""
+
+
+def _render_compare_prompt() -> str:
+    return """<!doctype html><html><head><meta charset="utf-8"/><title>qita compare</title></head>
+<body style="font-family:ui-sans-serif,system-ui;background:#101522;color:#dfe8fb;padding:24px">
+<h2>Missing compare target</h2><p>Provide <code>?left=RUN_A&amp;right=RUN_B</code> to compare two runs.</p>
+<a href="/" style="color:#83c4ff">Back to board</a></body></html>"""
+
+
+def _render_diff_html(diff: Dict[str, Any], embedded: bool) -> str:
+    left = diff.get("left") or {}
+    right = diff.get("right") or {}
+    config_rows = "".join(
+        f"<tr><td>{html.escape(str(item.get('field')))}</td><td>{html.escape(str(item.get('left')))}</td><td>{html.escape(str(item.get('right')))}</td></tr>"
+        for item in (diff.get("config_diff") or [])
+    )
+    if not config_rows:
+        config_rows = '<tr><td colspan="3">No config differences.</td></tr>'
+
+    def metric_rows(side: Dict[str, Any]) -> str:
+        failure = side.get("first_failure_step") or {}
+        return "".join(
+            f"<tr><td>{html.escape(label)}</td><td>{html.escape(str(value))}</td></tr>"
+            for label, value in [
+                ("status", side.get("status")),
+                ("official_run", side.get("official_run")),
+                ("replay_mode", side.get("replay_mode")),
+                ("stop_reason", side.get("stop_reason")),
+                ("final_result", side.get("final_result")),
+                ("step_count", side.get("step_count")),
+                ("event_count", side.get("event_count")),
+                ("token_usage", side.get("token_usage")),
+                ("latency_seconds", side.get("latency_seconds")),
+                ("cost", side.get("cost")),
+                ("parser", json.dumps(side.get("parser") or {}, ensure_ascii=False)),
+                (
+                    "first_failure_step",
+                    json.dumps(failure, ensure_ascii=False) if failure else "-",
+                ),
+            ]
+        )
+
+    left_id = html.escape(str(left.get("run_id", "")))
+    right_id = html.escape(str(right.get("run_id", "")))
+    buttons = ""
+    if not embedded:
+        buttons = (
+            f'<a class="btn" href="/run/{left_id}">view {left_id}</a>'
+            f'<a class="btn" href="/run/{right_id}">view {right_id}</a>'
+            f'<a class="btn" href="/export/diff/{left_id}/{right_id}">export html</a>'
+            '<a class="btn ghost" href="/">board</a>'
+        )
+    return f"""<!doctype html>
+<html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>qita diff {left_id} vs {right_id}</title>
+<style>
+:root{{--bg:#090d16;--panel:#111a2c;--line:#223352;--txt:#e7edf9;--muted:#a7b8da;--accent:#50b6ff}}
+*{{box-sizing:border-box}} body{{margin:0;background:linear-gradient(160deg,#0a0f1d,#0a152b);color:var(--txt);font-family:ui-sans-serif,system-ui}}
+.wrap{{max-width:1240px;margin:0 auto;padding:18px}} .top{{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:center}}
+.btn{{display:inline-block;border:1px solid var(--line);padding:7px 11px;border-radius:8px;text-decoration:none;color:var(--txt);background:#172643;font-size:12px}}
+.btn.ghost{{background:transparent}} .grid{{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:14px}}
+.card{{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px}} .meta{{color:var(--muted);font-size:12px}}
+table{{width:100%;border-collapse:collapse;margin-top:10px}} td,th{{border-bottom:1px solid #1c2b44;padding:8px;text-align:left;vertical-align:top;font-size:12px}}
+th{{color:#9fb2d8;font-weight:700}} .full{{margin-top:12px}} code{{background:#0b1220;padding:2px 5px;border-radius:6px}}
+@media (max-width:980px){{.grid{{grid-template-columns:1fr}}}}
+</style></head><body>
+<div class="wrap">
+  <div class="top">
+    <div><div style="font-size:24px;font-weight:800">QitOS Diff</div><div class="meta">{left_id} vs {right_id}</div></div>
+    <div>{buttons}</div>
+  </div>
+  <div class="grid">
+    <div class="card"><div style="font-size:18px;font-weight:700">{left_id}</div><table>{metric_rows(left)}</table></div>
+    <div class="card"><div style="font-size:18px;font-weight:700">{right_id}</div><table>{metric_rows(right)}</table></div>
+  </div>
+  <div class="card full">
+    <div style="font-size:18px;font-weight:700">Run Config Diff</div>
+    <table>
+      <thead><tr><th>field</th><th>{left_id}</th><th>{right_id}</th></tr></thead>
+      <tbody>{config_rows}</tbody>
+    </table>
+  </div>
+</div>
+</body></html>"""
 
 
 def _render_run_html(payload: Dict[str, Any], embedded: bool) -> str:
@@ -1119,20 +1446,31 @@ function paintOverview(items){{
   const s = m.summary || {{}};
   const c = s.context || {{}};
   const p = s.parser || {{}};
+  const rs = (m.run_spec && typeof m.run_spec === 'object') ? m.run_spec : {{}};
   const total = items.length;
   const avgEvents = total ? (items.reduce((a,it)=>a + (it.events||[]).length, 0) / total).toFixed(1) : '0.0';
   overview.innerHTML = [
     ['run', payload.run_id || '-'],
     ['status', m.status || '-'],
+    ['official run', m.official_run ? 'yes' : 'no'],
+    ['replay mode', m.replay_mode || '-'],
     ['stop', s.stop_reason || '-'],
     ['steps', String(total)],
     ['avg events/step', String(avgEvents)],
     ['model', m.model_id || '-'],
+    ['model family', m.model_family || rs.model_family || '-'],
+    ['family preset', ((rs.metadata || {{}}).family_preset) || (((s.run_meta || {{}}).harness || {{}}).family_preset) || '-'],
+    ['git SHA', m.git_sha || rs.git_sha || '-'],
+    ['package', m.package_version || rs.package_version || '-'],
+    ['seed', m.seed === null ? 'null' : (m.seed || rs.seed || '-')],
+    ['prompt protocol', m.prompt_protocol || rs.prompt_protocol || '-'],
+    ['parser', m.parser_name || rs.parser_name || '-'],
     ['tokens total', String(c.tokens_total || s.token_usage || 0)],
     ['peak ctx', c.peak_occupancy_ratio ? ((Number(c.peak_occupancy_ratio) * 100).toFixed(1) + '%') : '-'],
     ['compacts', JSON.stringify(c.compact_counts || {{}})],
     ['parser errors', String(p.error_count || 0)],
     ['parser salvage', String(p.salvage_count || 0)],
+    ['replay note', m.replay_note || '-'],
   ].map(([k,v])=>'<div class="ov"><div class="k">'+esc(k)+'</div><div class="v">'+esc(v)+'</div></div>').join('');
 }}
 function buildTimeline(items){{

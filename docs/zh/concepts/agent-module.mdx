@@ -88,7 +88,7 @@ def prepare(self, state: StateT) -> str:
 ```python
 def decide(self, state: StateT, observation: ObservationT) -> Decision[ActionT] | None:
     if state.current_step == 0:
-        return Decision.act([Action(name="add", args={"a": 40, "b": 2})])
+        return Decision.wait("先检查当前 coding context")
     return None
 ```
 
@@ -103,52 +103,64 @@ def should_stop(self, state: StateT) -> bool:
 
 ## 一个最小可运行示例
 
-下面是最小的可运行 `AgentModule`。它不会调用 LLM，而是直接硬编码决策，因此很适合作为测试模板。
+在 QitOS 里，公开的最小示例依然是一个真实 coding agent：它会配置模型、挂载 workspace，并让 Engine 驱动工具使用与验证。
 
 ```python
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
-from qitos import Action, AgentModule, Decision, StateSchema, ToolRegistry, tool
+from qitos import Action, AgentModule, Decision, StateSchema
+from qitos.kit import REACT_SYSTEM_PROMPT, ReActTextParser, format_action, render_prompt
+from qitos.kit.toolset import coding_tools
+from qitos.models import OpenAICompatibleModel
 
 
 @dataclass
-class CalcState(StateSchema):
-    pass
+class MinimalCodingState(StateSchema):
+    scratchpad: list[str] = field(default_factory=list)
+    target_file: str = "buggy_module.py"
+    test_command: str = 'python -c "import buggy_module; assert buggy_module.add(20, 22) == 42"'
 
 
-class MinimalAgent(AgentModule[CalcState, dict[str, Any], Action]):
-    def __init__(self):
-        registry = ToolRegistry()
+class MinimalCodingAgent(AgentModule[MinimalCodingState, dict[str, Any], Action]):
+    def __init__(self, llm: OpenAICompatibleModel, workspace_root: str):
+        super().__init__(
+            toolset=[coding_tools(workspace_root=workspace_root, shell_timeout=20, include_notebook=False)],
+            llm=llm,
+            model_parser=ReActTextParser(),
+        )
 
-        @tool(name="add")
-        def add(a: int, b: int) -> int:
-            """Add two integers."""
-            return a + b
+    def init_state(self, task: str, **kwargs: Any) -> MinimalCodingState:
+        return MinimalCodingState(
+            task=task,
+            max_steps=int(kwargs.get("max_steps", 8)),
+            target_file=str(kwargs.get("target_file", "buggy_module.py")),
+            test_command=str(kwargs.get("test_command")),
+        )
 
-        registry.register(add)
-        super().__init__(tool_registry=registry)
-
-    def init_state(self, task: str, **kwargs: Any) -> CalcState:
-        return CalcState(task=task, max_steps=int(kwargs.get("max_steps", 2)))
-
-    def decide(self, state: CalcState, observation: dict[str, Any]) -> Decision[Action]:
-        if state.current_step == 0:
-            return Decision.act(
-                [Action(name="add", args={"a": 40, "b": 2})],
-                rationale="compute_answer",
-            )
-        return Decision.final("42")
+    def build_system_prompt(self, state: MinimalCodingState) -> str | None:
+        _ = state
+        return render_prompt(
+            REACT_SYSTEM_PROMPT,
+            {"tool_schema": self.tool_registry.get_tool_descriptions()},
+        )
 
     def reduce(
         self,
-        state: CalcState,
+        state: MinimalCodingState,
         observation: dict[str, Any],
         decision: Decision[Action],
-    ) -> CalcState:
-        action_results = observation.get("action_results", []) if isinstance(observation, dict) else []
+    ) -> MinimalCodingState:
+        action_results = observation.get("action_results", [])
+        if decision.rationale:
+            state.scratchpad.append(f"Thought: {decision.rationale}")
+        if decision.actions:
+            state.scratchpad.append(f"Action: {format_action(decision.actions[0])}")
         if action_results:
-            state.final_result = str(action_results[0])
+            first = action_results[0]
+            state.scratchpad.append(f"Observation: {first}")
+            if isinstance(first, dict) and int(first.get("returncode", 1)) == 0:
+                state.final_result = "Patch applied and verification passed."
         return state
 ```
 
@@ -157,13 +169,25 @@ class MinimalAgent(AgentModule[CalcState, dict[str, Any], Action]):
 调用 `agent.run()` 即可执行一个任务。这是最常用入口。它会在内部创建 `Engine`、运行循环，并返回结果。
 
 ```python
-agent = MinimalAgent()
+agent = MinimalCodingAgent(
+    llm=build_model(),
+    workspace_root="./playground/minimal_coding_agent",
+)
 
 # 默认只返回 final_result 字符串
-answer = agent.run("compute 40 + 2", max_steps=2)
+answer = agent.run(
+    "Fix the bug in buggy_module.py and make the verification command pass.",
+    workspace="./playground/minimal_coding_agent",
+    max_steps=8,
+)
 
 # return_state=True 时返回完整 EngineResult
-result = agent.run("compute 40 + 2", max_steps=2, return_state=True)
+result = agent.run(
+    "Fix the bug in buggy_module.py and make the verification command pass.",
+    workspace="./playground/minimal_coding_agent",
+    max_steps=8,
+    return_state=True,
+)
 print(result.state.final_result)
 print(result.state.stop_reason)
 ```

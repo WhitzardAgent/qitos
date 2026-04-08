@@ -39,7 +39,9 @@ Workflow:
 - Only use `web_fetch` or `web_fetch_v2` when the task needs documentation.
 ```
 
-The full prompt in the example also lists preferred tool patterns and ends with the ReAct output contract:
+The full prompt in the example also lists preferred tool patterns.
+
+In v0.4, the output contract is no longer hardcoded into the example prompt. It is injected by the active protocol:
 
 ```text
 Thought: <short reasoning>
@@ -53,7 +55,7 @@ This is a major QitOS design lesson:
 - the runtime stays the same
 - the prompt can still become much more operational
 
-## The parser remains ReAct on purpose
+## The default lesson parser remains ReAct on purpose
 
 Even though the prompt is richer, the parser is still:
 
@@ -69,23 +71,35 @@ You are learning how much of an agent's behavior can be changed through:
 - better tools
 - better workflow prompting
 
-without changing the parser or protocol.
+without immediately changing the parser or protocol.
 
-## The model harness is still text-first
+## The example is now preset-first
 
-The example still uses `OpenAICompatibleModel`. That means:
+Under the hood, the example still builds an `OpenAICompatibleModel` transport for the current endpoint.
+
+But v0.4 adds one new layer before that transport is created:
+
+- resolve a `FamilyPreset`
+- build a `HarnessPolicy`
+- choose protocol, parser, tool delivery mode, and context defaults
+
+That means one example can switch across Qwen, Kimi, MiniMax, `gpt-oss`, and Gemma 4 without changing the agent implementation itself.
+
+For most of those families, the harness is still text/JSON-first:
 
 - the model returns text
-- the tool schema is injected into the prompt
+- the tool schema is either injected into the prompt or passed via tool parameters
 - the parser turns text into a `Decision`
 
-This remains a strong default for research because it is:
+MiniMax keeps its model-specific tool-call parser, but the switching path is now still driven by the same preset system.
+
+This remains a strong research default because it is:
 
 - easy to compare across providers
 - easy to inspect in traces
 - easy to adapt to local endpoints
 
-If you later need native tool-call protocols, QitOS can support them, but do not pay that coupling cost until it buys you something.
+If you later need a family-specific protocol, QitOS can support it, but the preset system makes that coupling explicit and traceable.
 
 <Steps>
   <Step title="Start from a preset tool registry">

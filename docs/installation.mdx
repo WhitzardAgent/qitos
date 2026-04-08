@@ -25,6 +25,10 @@ pip install qitos
 
 The core install includes the `AgentModule + Engine` kernel, the `qita` observability tools, and the `kit` toolkit modules. It does not include the OpenAI client or benchmark dataset loaders.
 
+<Tip>
+If you want to run the minimal coding-agent quickstart immediately, skip straight to `pip install "qitos[models]"`.
+</Tip>
+
 ## Optional extras
 
 Use extras to add support for models, benchmarks, or everything at once.
@@ -52,7 +56,7 @@ pip install "qitos[all]"
 | `all` | All of the above |
 
 <Tip>
-If you're just getting started, `pip install "qitos[models]"` is the right choice. It gives you everything you need to run the quickstart examples.
+If you're just getting started, `pip install "qitos[models]"` is the right choice. It gives you everything you need to run the minimal coding-agent quickstart.
 </Tip>
 
 ## Source install
@@ -81,9 +85,11 @@ You should see output like:
 0.3.0
 ```
 
-You can also verify the `qita` CLI is on your path:
+You can also verify the minimal coding agent and both CLIs are on your path:
 
 ```bash
+qit demo minimal
+qit --help
 qita --help
 ```
 

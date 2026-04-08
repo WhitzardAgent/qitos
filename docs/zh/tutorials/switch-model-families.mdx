@@ -1,0 +1,133 @@
+---
+title: "在同一个 example 中切换模型家族"
+description: "使用同一个 Claude Code 风格 agent，在 Qwen、Kimi、MiniMax、gpt-oss 和 Gemma 4 之间快速切换。"
+---
+
+这是 QitOS v0.4 最实用的一课。
+
+目标非常明确：
+
+- 保持同一个 agent 实现
+- 只切换模型家族配置
+- 让 traces、protocol 与 tool behavior 仍然清晰可见
+
+对应示例是：
+
+`examples/real/claude_code_agent.py`
+
+## v0.4 到底改了什么
+
+这个 example 不再把 transport 写死在代码里。
+
+它现在会先解析：
+
+1. family preset
+2. harness policy
+3. model transport
+4. parser 与 protocol
+
+因此，同一个 agent 现在可以切换：
+
+- Qwen
+- Kimi
+- MiniMax
+- `gpt-oss`
+- Gemma 4
+
+## 环境变量
+
+```bash
+export OPENAI_API_KEY="your_api_key"
+export OPENAI_BASE_URL="https://api.siliconflow.cn/v1/"
+export QITOS_MODEL_FAMILY="qwen"
+export QITOS_MODEL="Qwen/Qwen3-8B"
+```
+
+高级 override：
+
+```bash
+export QITOS_PROTOCOL="json_decision_v1"
+```
+
+## CLI override 层
+
+CLI 优先级高于环境变量。
+
+```bash
+python examples/real/claude_code_agent.py \
+  --model-family kimi \
+  --model-name kimi-k2-0905-preview \
+  --base-url https://api.moonshot.ai/v1
+```
+
+优先级顺序：
+
+1. 显式 CLI
+2. 环境变量
+3. family preset 默认值
+4. framework fallback
+
+## 五个 v0.4 切换示例
+
+### Qwen
+
+```bash
+python examples/real/claude_code_agent.py \
+  --model-family qwen \
+  --model-name Qwen/Qwen3-8B \
+  --base-url https://api.siliconflow.cn/v1/
+```
+
+### Kimi
+
+```bash
+python examples/real/claude_code_agent.py \
+  --model-family kimi \
+  --model-name kimi-k2-0905-preview \
+  --base-url https://api.moonshot.ai/v1
+```
+
+### MiniMax
+
+```bash
+python examples/real/claude_code_agent.py \
+  --model-family minimax \
+  --model-name MiniMax-M2.5 \
+  --base-url https://api.minimax.chat/v1
+```
+
+### gpt-oss
+
+```bash
+python examples/real/claude_code_agent.py \
+  --model-family gpt-oss \
+  --model-name gpt-oss-120b \
+  --base-url https://api.siliconflow.cn/v1/
+```
+
+### Gemma 4
+
+```bash
+python examples/real/claude_code_agent.py \
+  --model-family gemma-4 \
+  --model-name gemma-4-31b-it \
+  --base-url https://api.siliconflow.cn/v1/
+```
+
+## 运行后在 qita 看什么
+
+重点看这几项：
+
+- `family preset`
+- `model family`
+- `prompt protocol`
+- `parser`
+- `tool schema delivery`
+
+这些字段能帮助你确认：真正变化的是 harness policy，而不是 example 被暗中改写成另一套 agent。
+
+## 这件事为什么重要
+
+这就是 QitOS v0.4 的研究默认面。
+
+它让你在保持 agent 实现稳定的前提下，比较不同模型家族。

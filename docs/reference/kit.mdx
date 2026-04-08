@@ -875,6 +875,14 @@ from qitos.kit.critic import PassThroughCritic
 
 The models module provides concrete LLM callables compatible with `AgentModule.llm`.
 
+For v0.4 research authoring, prefer the family-preset layer when you want one agent to switch across model families:
+
+```python
+from qitos.harness import build_harness_policy, build_model_for_preset
+```
+
+Use `OpenAICompatibleModel(...)` directly when you are hand-authoring a single transport path.
+
 <AccordionGroup>
 
 <Accordion title="OpenAICompatibleModel">

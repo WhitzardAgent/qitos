@@ -70,6 +70,27 @@ tasks = load_cybench_tasks(
 
 ## 运行评测
 
+优先使用官方 CLI：
+
+```bash
+qit bench run \
+  --benchmark cybench \
+  --split guided \
+  --root references/cybench \
+  --limit 20 \
+  --output results/cybench_guided.jsonl \
+  --model-name "Qwen/Qwen3-8B"
+```
+
+然后继续做聚合与检查：
+
+```bash
+qit bench eval --input results/cybench_guided.jsonl --json
+qita board --logdir runs
+```
+
+`cybench_eval.py` 依然保留，但它现在主要承担 benchmark 专用参考 agent wrapper 的角色。
+
 运行单个 guided 任务：
 
 ```bash

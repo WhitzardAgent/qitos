@@ -4,10 +4,12 @@ import json
 from pathlib import Path
 
 from qitos.qita.cli import (
+    _build_run_diff,
     _build_handler,
     _cmd_export,
     _discover_runs,
     _render_board_html,
+    _render_diff_html,
     _render_replay_html,
     _render_run_html,
     main,
@@ -48,6 +50,46 @@ def _make_run(root: Path, run_id: str) -> Path:
                 "tool_versions": {},
                 "seed": None,
                 "run_config_hash": "z",
+                "git_sha": "abc123def456",
+                "package_version": "0.3.0",
+                "benchmark_name": "tau-bench",
+                "benchmark_split": "test",
+                "model_family": "Qwen",
+                "prompt_protocol": "react_text_v1",
+                "parser_name": "ReActTextParser",
+                "tool_manifest": [{"name": "visit_url"}],
+                "run_spec": {
+                    "model_family": "Qwen",
+                    "model_name": "x",
+                    "prompt_protocol": "react_text_v1",
+                    "parser_name": "ReActTextParser",
+                    "toolset_name": "ToolRegistry",
+                    "tool_manifest": [{"name": "visit_url"}],
+                    "environment": {"type": "host"},
+                    "seed": None,
+                    "stop_criteria": ["FinalResultCriteria"],
+                    "git_sha": "abc123def456",
+                    "package_version": "0.3.0",
+                    "trace_schema_version": "v1",
+                    "benchmark_name": "tau-bench",
+                    "benchmark_split": "test",
+                    "metadata": {},
+                },
+                "experiment_spec": {
+                    "name": "tau-bench:test",
+                    "benchmark_name": "tau-bench",
+                    "benchmark_split": "test",
+                    "judge_config": {},
+                    "benchmark_metadata": {"subset": "retail"},
+                    "run_defaults": {"run_spec": {"parser_name": "ReActTextParser"}},
+                    "metadata": {},
+                },
+                "official_run": True,
+                "replay_mode": "best_effort",
+                "replay_note": "QitOS records config, seed, git SHA, prompt/parser metadata, and trace artifacts for research-grade replay, but remote models and external systems may remain non-deterministic.",
+                "token_usage": 144,
+                "latency_seconds": 0.42,
+                "cost": 0.0,
             }
         ),
         encoding="utf-8",
@@ -107,6 +149,8 @@ def test_render_pages(tmp_path: Path):
     assert "Parser Diagnostics" in view
     assert "Context occupancy timeline" in view
     assert "compact markers" in view
+    assert "official run" in view
+    assert "best_effort" in view
     assert "missing_required_field" in view
     assert "extracted" in view
     assert "finish_reason" in view
@@ -124,6 +168,57 @@ def test_handler_routes(tmp_path: Path):
     _make_run(tmp_path, "r3")
     handler_cls = _build_handler(tmp_path)
     assert handler_cls is not None
+
+
+def test_build_run_diff_and_render(tmp_path: Path):
+    _make_run(tmp_path, "left")
+    right = _make_run(tmp_path, "right")
+    manifest = json.loads((right / "manifest.json").read_text(encoding="utf-8"))
+    manifest["summary"]["stop_reason"] = "max_steps"
+    manifest["step_count"] = 3
+    manifest["event_count"] = 8
+    manifest["token_usage"] = 512
+    manifest["run_spec"]["parser_name"] = "JsonParser"
+    (right / "manifest.json").write_text(
+        json.dumps(manifest, ensure_ascii=False), encoding="utf-8"
+    )
+    diff = _build_run_diff(
+        {
+            "run": str(tmp_path / "left"),
+            "run_id": "left",
+            "manifest": json.loads(
+                (tmp_path / "left" / "manifest.json").read_text(encoding="utf-8")
+            ),
+            "events": [],
+            "steps": [
+                json.loads(
+                    (tmp_path / "left" / "steps.jsonl").read_text(encoding="utf-8").strip()
+                )
+            ],
+            "events_by_step": {},
+        },
+        {
+            "run": str(right),
+            "run_id": "right",
+            "manifest": manifest,
+            "events": [],
+            "steps": [
+                json.loads((right / "steps.jsonl").read_text(encoding="utf-8").strip())
+            ],
+            "events_by_step": {},
+        },
+    )
+    assert diff["left"]["stop_reason"] == "final"
+    assert diff["right"]["stop_reason"] == "max_steps"
+    assert diff["left"]["official_run"] is True
+    assert diff["left"]["replay_mode"] == "best_effort"
+    assert any(item["field"].endswith("parser_name") for item in diff["config_diff"])
+
+    html = _render_diff_html(diff, embedded=False)
+    assert "QitOS Diff" in html
+    assert "Run Config Diff" in html
+    assert "official_run" in html
+    assert "max_steps" in html
 
 
 def test_main_export(tmp_path: Path):

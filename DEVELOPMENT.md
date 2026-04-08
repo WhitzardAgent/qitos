@@ -70,6 +70,12 @@ Preview docs locally:
 npx mintlify dev docs
 ```
 
+Check docs links:
+
+```bash
+npx mintlify broken-links docs
+```
+
 ## Environment Configuration
 
 Copy [.env.example](.env.example) and set only the provider variables you need.
@@ -102,6 +108,30 @@ Avoid committing:
 1. Update examples, templates, and docs in the same change.
 2. Remove long-term compatibility layers rather than introducing new ones unless migration risk is high.
 3. Record the change in [CHANGELOG.md](CHANGELOG.md).
+
+## Release Checklist
+
+When cutting a GitHub release, verify the repo-facing surfaces before you tag:
+
+1. Run `python -m pytest -q`.
+2. Run `python -m build`.
+3. Run `python -m twine check dist/*`.
+4. Run `npx mintlify broken-links docs`.
+5. Confirm `README.md`, `README.zh.md`, `CHANGELOG.md`, and the relevant `docs/` pages match the shipped behavior.
+6. Confirm `origin` points to `https://github.com/Qitor/qitos.git`.
+7. Confirm GitHub auth works with `gh auth status`.
+8. Create or update the release body from `plans/releases/v0.3.0.md`.
+9. Push the release branch and tag, then publish with:
+
+```bash
+git tag v0.3.0
+git push origin HEAD
+git push origin v0.3.0
+gh release create v0.3.0 \
+  --repo Qitor/qitos \
+  --title "QitOS v0.3.0" \
+  --notes-file plans/releases/v0.3.0.md
+```
 
 ## Troubleshooting
 

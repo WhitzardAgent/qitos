@@ -33,6 +33,7 @@ from .env import (
     CommandCapability,
     TerminalCapability,
 )
+from .spec import BenchmarkRunResult, ExperimentSpec, RunSpec
 from .task import (
     Task,
     TaskResource,
@@ -67,6 +68,9 @@ __all__ = [
     "History",
     "HistoryMessage",
     "HistoryPolicy",
+    "RunSpec",
+    "ExperimentSpec",
+    "BenchmarkRunResult",
     "Env",
     "EnvSpec",
     "EnvObservation",

@@ -12,6 +12,7 @@ from .env import EnvSpec
 from .history import History
 from .memory import Memory
 from .model_response import ModelResponse
+from .spec import ExperimentSpec, RunSpec
 from .task import Task, TaskBudget
 from ..prompting import PromptBuildResult, PromptBuilder, PromptSpec
 
@@ -259,6 +260,8 @@ class AgentModule(ABC, Generic[StateT, ObservationT, ActionT]):
         trace_logdir: str = "./runs",
         trace_prefix: str | None = None,
         theme: str = "research",
+        run_spec: RunSpec | Dict[str, Any] | None = None,
+        experiment_spec: ExperimentSpec | Dict[str, Any] | None = None,
         **state_kwargs: Any,
     ) -> Any:
         """Execute task with Engine using plain text objective or structured Task."""
@@ -289,6 +292,23 @@ class AgentModule(ABC, Generic[StateT, ObservationT, ActionT]):
         if max_steps is not None:
             state_kwargs.setdefault("max_steps", int(max_steps))
         engine = self.build_engine(**kwargs)
+        resolved_run_spec = self._resolve_run_spec(
+            run_spec=run_spec,
+            engine=engine,
+            task=task if isinstance(task, Task) else None,
+        )
+        resolved_experiment_spec = self._resolve_experiment_spec(
+            experiment_spec=experiment_spec,
+            task=task if isinstance(task, Task) else None,
+            run_spec=resolved_run_spec,
+        )
+        setattr(engine, "run_spec", resolved_run_spec)
+        setattr(engine, "experiment_spec", resolved_experiment_spec)
+        self._attach_trace_specs(
+            engine=engine,
+            run_spec=resolved_run_spec,
+            experiment_spec=resolved_experiment_spec,
+        )
         result = engine.run(task, **state_kwargs)
         if return_state:
             return result
@@ -441,6 +461,203 @@ class AgentModule(ABC, Generic[StateT, ObservationT, ActionT]):
                 Path(workspace).expanduser().resolve() / "render_events.jsonl"
             )
         return ClaudeStyleHook(output_jsonl=output_jsonl, theme=theme)
+
+    def _resolve_run_spec(
+        self, *, run_spec: RunSpec | Dict[str, Any] | None, engine: Any, task: Task | None
+    ) -> RunSpec:
+        spec = RunSpec.from_value(run_spec)
+        llm = getattr(self, "llm", None)
+        model_name = getattr(llm, "model", None) or getattr(llm, "model_name", None)
+        harness_metadata = (
+            dict(getattr(llm, "qitos_harness_metadata", {}) or {})
+            if llm is not None
+            else {}
+        )
+        if not spec.model_name and model_name:
+            spec.model_name = str(model_name)
+        if (
+            not spec.model_family
+            and isinstance(harness_metadata.get("family_preset"), str)
+            and harness_metadata.get("family_preset")
+        ):
+            spec.model_family = str(harness_metadata.get("family_preset"))
+        if not spec.model_family and spec.model_name:
+            spec.model_family = RunSpec.infer(model_name=spec.model_name).model_family
+        if not spec.trace_schema_version:
+            spec.trace_schema_version = str(
+                getattr(getattr(engine, "trace_writer", None), "schema_version", "v1")
+                or "v1"
+            )
+        if not spec.prompt_protocol:
+            try:
+                protocol = engine.resolve_protocol()
+                spec.prompt_protocol = getattr(protocol, "id", None)
+            except Exception:
+                spec.prompt_protocol = None
+        if not spec.parser_name:
+            parser = getattr(engine, "parser", None) or getattr(self, "model_parser", None)
+            spec.parser_name = parser.__class__.__name__ if parser is not None else None
+        if not spec.toolset_name and getattr(engine, "tool_registry", None) is not None:
+            spec.toolset_name = engine.tool_registry.__class__.__name__
+        if not spec.tool_manifest:
+            spec.tool_manifest = self._describe_tool_manifest(
+                getattr(engine, "tool_registry", None)
+            )
+        if not spec.environment:
+            spec.environment = self._environment_summary(
+                env=getattr(engine, "env", None), task=task
+            )
+        if spec.seed is None and isinstance(getattr(self, "config", None), dict):
+            seed = self.config.get("seed")
+            spec.seed = int(seed) if seed is not None else None
+        if not spec.stop_criteria:
+            criteria = list(getattr(engine, "stop_criteria", []) or [])
+            spec.stop_criteria = [item.__class__.__name__ for item in criteria]
+        if harness_metadata:
+            merged_metadata = dict(spec.metadata or {})
+            for key in ("family_preset", "adapter_kind", "protocol", "parser"):
+                value = harness_metadata.get(key)
+                if value and key not in merged_metadata:
+                    merged_metadata[key] = value
+            if (
+                "tool_policy" not in merged_metadata
+                and isinstance(harness_metadata.get("tool_policy"), dict)
+            ):
+                merged_metadata["tool_policy"] = dict(
+                    harness_metadata.get("tool_policy") or {}
+                )
+            if (
+                "context_policy" not in merged_metadata
+                and isinstance(harness_metadata.get("context_policy"), dict)
+            ):
+                merged_metadata["context_policy"] = dict(
+                    harness_metadata.get("context_policy") or {}
+                )
+            if (
+                "harness_policy" not in merged_metadata
+                and isinstance(harness_metadata, dict)
+            ):
+                merged_metadata["harness_policy"] = dict(harness_metadata)
+            spec.metadata = merged_metadata
+        if task is not None:
+            benchmark_name = (
+                task.metadata.get("benchmark")
+                or task.inputs.get("benchmark")
+                or task.metadata.get("benchmark_name")
+            )
+            benchmark_split = (
+                task.metadata.get("split")
+                or task.inputs.get("split")
+                or task.metadata.get("benchmark_split")
+            )
+            if not spec.benchmark_name and benchmark_name:
+                spec.benchmark_name = str(benchmark_name)
+            if not spec.benchmark_split and benchmark_split:
+                spec.benchmark_split = str(benchmark_split)
+        return spec
+
+    def _resolve_experiment_spec(
+        self,
+        *,
+        experiment_spec: ExperimentSpec | Dict[str, Any] | None,
+        task: Task | None,
+        run_spec: RunSpec,
+    ) -> ExperimentSpec | None:
+        spec = ExperimentSpec.from_value(experiment_spec)
+        if spec is None and task is None and not run_spec.benchmark_name:
+            return None
+        if spec is None:
+            spec = ExperimentSpec()
+        if not spec.benchmark_name:
+            spec.benchmark_name = run_spec.benchmark_name
+        if not spec.benchmark_split:
+            spec.benchmark_split = run_spec.benchmark_split
+        if not spec.name and spec.benchmark_name:
+            split = spec.benchmark_split or "unspecified"
+            spec.name = f"{spec.benchmark_name}:{split}"
+        if task is not None:
+            spec.run_defaults.setdefault("max_steps", task.budget.max_steps)
+            spec.run_defaults.setdefault(
+                "max_runtime_seconds", task.budget.max_runtime_seconds
+            )
+            spec.run_defaults.setdefault("max_tokens", task.budget.max_tokens)
+            benchmark_meta = dict(task.metadata or {})
+            benchmark_meta.pop("raw_record", None)
+            if benchmark_meta:
+                spec.benchmark_metadata = {
+                    **dict(spec.benchmark_metadata or {}),
+                    **benchmark_meta,
+                }
+        return spec
+
+    def _attach_trace_specs(
+        self,
+        *,
+        engine: Any,
+        run_spec: RunSpec,
+        experiment_spec: ExperimentSpec | None,
+    ) -> None:
+        trace_writer = getattr(engine, "trace_writer", None)
+        if trace_writer is None:
+            return
+        trace_writer.metadata.update(
+            {
+                "git_sha": run_spec.git_sha,
+                "package_version": run_spec.package_version,
+                "benchmark_name": run_spec.benchmark_name,
+                "benchmark_split": run_spec.benchmark_split,
+                "model_family": run_spec.model_family,
+                "prompt_protocol": run_spec.prompt_protocol,
+                "parser_name": run_spec.parser_name,
+                "tool_manifest": list(run_spec.tool_manifest or []),
+                "run_spec": run_spec.to_dict(),
+                "experiment_spec": (
+                    experiment_spec.to_dict() if experiment_spec is not None else None
+                ),
+                "official_run": run_spec.is_official_run(),
+                "replay_mode": "best_effort",
+                "replay_note": (
+                    "QitOS records config, seed, git SHA, prompt/parser metadata, "
+                    "and trace artifacts for research-grade replay, but remote "
+                    "models and external systems may remain non-deterministic."
+                ),
+            }
+        )
+
+    def _describe_tool_manifest(self, tool_registry: Any) -> List[Dict[str, Any]]:
+        if tool_registry is None or not hasattr(tool_registry, "list_tools"):
+            return []
+        out: List[Dict[str, Any]] = []
+        try:
+            for name in tool_registry.list_tools():
+                if hasattr(tool_registry, "describe_tool"):
+                    desc = tool_registry.describe_tool(name)
+                    if isinstance(desc, dict):
+                        out.append({str(k): desc[k] for k in desc})
+                        continue
+                out.append({"name": str(name)})
+        except Exception:
+            return []
+        return out
+
+    def _environment_summary(self, env: Any, task: Task | None) -> Dict[str, Any]:
+        if env is not None:
+            payload = {
+                "class": env.__class__.__name__,
+                "workspace_root": getattr(env, "workspace_root", None),
+            }
+            env_type = getattr(env, "type", None)
+            if env_type:
+                payload["type"] = env_type
+            return {k: v for k, v in payload.items() if v is not None}
+        if task is not None and task.env_spec is not None:
+            return task.env_spec.to_dict() if hasattr(task.env_spec, "to_dict") else {
+                "type": task.env_spec.type,
+                "config": dict(task.env_spec.config or {}),
+                "capabilities": list(task.env_spec.capabilities or []),
+                "metadata": dict(task.env_spec.metadata or {}),
+            }
+        return {}
 
 
 __all__ = ["AgentModule"]

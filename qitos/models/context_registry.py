@@ -15,6 +15,53 @@ class _ContextPattern:
 _PATTERNS: tuple[_ContextPattern, ...] = (
     _ContextPattern(
         prefixes=(
+            "qwen/",
+            "qwen3",
+            "qwen2.5",
+            "qwen2",
+            "qwen-max",
+            "qwen-plus",
+            "qwen-turbo",
+        ),
+        window=128_000,
+    ),
+    _ContextPattern(
+        prefixes=(
+            "kimi-k2.5",
+            "kimi-k2",
+            "kimi",
+            "moonshot-v1",
+        ),
+        window=128_000,
+    ),
+    _ContextPattern(
+        prefixes=(
+            "minimax-m2.5",
+            "minimax-m1",
+            "abab",
+            "m2.5",
+        ),
+        window=128_000,
+    ),
+    _ContextPattern(
+        prefixes=(
+            "gpt-oss-120b",
+            "gpt-oss-20b",
+            "gpt-oss",
+        ),
+        window=128_000,
+    ),
+    _ContextPattern(
+        prefixes=(
+            "gemma-4-31b",
+            "gemma-4-26b",
+            "gemma-4",
+            "gemma4",
+        ),
+        window=128_000,
+    ),
+    _ContextPattern(
+        prefixes=(
             "claude-opus-4.1",
             "claude-opus-4",
             "claude-sonnet-4",

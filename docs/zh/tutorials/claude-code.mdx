@@ -39,7 +39,7 @@ Workflow:
 - Only use `web_fetch` or `web_fetch_v2` when the task needs documentation.
 ```
 
-完整 prompt 仍然会以 ReAct 输出契约结尾：
+在 v0.4 中，输出契约已经不再被硬编码在 example prompt 里，而是由当前 protocol 自动注入：
 
 ```text
 Thought: <short reasoning>
@@ -53,7 +53,7 @@ Final Answer: <what changed + verification proof>
 - runtime 没变
 - prompt 却可以变得非常 operational
 
-## parser 依旧故意保持 ReAct
+## 本课默认 parser 依旧故意保持 ReAct
 
 尽管 prompt 复杂了很多，parser 仍然是：
 
@@ -69,21 +69,31 @@ model_parser=ReActTextParser()
 
 就可以显著改变 agent 行为，而不必立刻升级 protocol。
 
-## model harness 仍是 text-first
+## 这个 example 现在是 preset-first
 
-本课依然使用 `OpenAICompatibleModel`。这意味着：
+底层 transport 仍然可以是 `OpenAICompatibleModel`，但 v0.4 会先解析：
+
+- `FamilyPreset`
+- `HarnessPolicy`
+- protocol / parser / tool delivery / context defaults
+
+因此，同一个 example 现在可以在 Qwen、Kimi、MiniMax、`gpt-oss` 与 Gemma 4 之间切换，而不用改 agent 实现本身。
+
+对其中多数 family 来说，harness 依然是 text/JSON-first：
 
 - 模型返回文本
-- tool schema 通过 prompt 注入
+- tool schema 通过 prompt 注入，或通过 tool parameters 交付
 - parser 把文本解析成 `Decision`
 
-这种路径对研究很有价值，因为它：
+MiniMax 则继续保留自己更适合的 tool-call parser。
+
+这种路径对研究仍然很有价值，因为它：
 
 - 容易跨 provider 比较
 - 容易在 trace 中检查
 - 容易接到本地 endpoint
 
-只有当 native structured tool calls 真正带来收益时，才值得引入新的协议耦合。
+如果你确实需要 family-specific protocol，QitOS 现在会通过 preset 系统把这类耦合显式记录下来。
 
 <Steps>
   <Step title="从 preset tool registry 开始">

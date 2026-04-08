@@ -18,6 +18,20 @@ class TraceSchemaValidator:
         "tool_versions",
         "seed",
         "run_config_hash",
+        "git_sha",
+        "package_version",
+        "benchmark_name",
+        "benchmark_split",
+        "model_family",
+        "prompt_protocol",
+        "parser_name",
+        "tool_manifest",
+        "run_spec",
+        "experiment_spec",
+        "official_run",
+        "token_usage",
+        "latency_seconds",
+        "cost",
     }
     REQUIRED_EVENT_FIELDS = {"step_id", "phase", "ok", "ts"}
     REQUIRED_STEP_FIELDS = {

@@ -1,204 +1,160 @@
 ---
 title: "First Agent"
-description: "Build a working QitOS agent from scratch: state, tools, run, and inspect."
+description: "Build a working QitOS minimal coding agent from scratch: state, model, tools, run, and qita inspection."
 ---
 
-Every QitOS agent follows one execution path: `AgentModule + Engine + Trace`. You define the strategy; the Engine owns the loop. This guide walks through every piece using the minimal calculator agent from `examples/quickstart/minimal_agent.py`.
+Every QitOS agent follows one execution path: `AgentModule + Engine + Trace`. You define the strategy; the Engine owns the loop. This guide walks through that path using the minimal coding agent from `examples/quickstart/minimal_agent.py`.
 
 ## Prerequisites
 
 - Python 3.10+
-- An API key for any OpenAI-compatible endpoint (optional for the minimal example — no LLM is needed)
+- An API key for any OpenAI-compatible endpoint
 
 <Steps>
 
-<Step title="Install qitos">
-
-Install the package in development mode from the repo root, or from PyPI:
+<Step title="Install qitos and set your model config">
 
 ```bash
-pip install qitos
-# for model support and YAML config
 pip install "qitos[models]"
-```
-
-If you plan to connect to an LLM, export your key:
-
-```bash
 export OPENAI_API_KEY="sk-..."
-# or for SiliconFlow / other providers
-export QITOS_API_KEY="sf-..."
 export OPENAI_BASE_URL="https://api.siliconflow.cn/v1/"
+export QITOS_MODEL="Qwen/Qwen3-8B"
 ```
 
 </Step>
 
-<Step title="Define your state">
+<Step title="Define state around a coding task">
 
-Every agent carries a typed state object that persists across all steps. Subclass `StateSchema` and add whatever fields your agent needs:
+Every minimal QitOS coding agent still starts from a typed `StateSchema`:
 
 ```python
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
 from qitos import StateSchema
 
+
 @dataclass
-class CalcState(StateSchema):
-    pass  # base class provides: task, current_step, max_steps, final_result, stop_reason
+class MinimalCodingState(StateSchema):
+    scratchpad: list[str] = field(default_factory=list)
+    target_file: str = "buggy_module.py"
+    test_command: str = 'python -c "import buggy_module; assert buggy_module.add(20, 22) == 42"'
 ```
 
-`StateSchema` always provides these fields — you never need to redeclare them:
-
-| Field | Type | Purpose |
-|---|---|---|
-| `task` | `str` | The objective text passed to `run()` |
-| `current_step` | `int` | Step counter incremented by the Engine |
-| `max_steps` | `int` | Budget ceiling |
-| `final_result` | `str \| None` | Set this to stop the run with a result |
-| `stop_reason` | `str \| None` | Written by the Engine on exit |
-
-<Tip>
-Add domain-specific fields — scratchpads, partial plans, fetched content — as regular dataclass fields. Keep them serializable; the Engine traces the state at every step.
-</Tip>
+The key mindset is that the task, scratchpad, and verification contract all live in state, not in hidden runtime glue.
 
 </Step>
 
-<Step title="Implement init_state and reduce">
+<Step title="Attach a real model and a real coding toolset">
 
-`init_state` creates the starting state for a run. `reduce` folds the result of each action back into state:
+The minimal example is intentionally model-backed. It uses an OpenAI-compatible model plus the canonical coding tool preset:
 
 ```python
 from typing import Any
-from qitos import Action, AgentModule, Decision, StateSchema
 
-@dataclass
-class CalcState(StateSchema):
-    pass
+from qitos import Action, AgentModule, Decision
+from qitos.kit import REACT_SYSTEM_PROMPT, ReActTextParser, format_action, render_prompt
+from qitos.kit.toolset import coding_tools
+from qitos.models import OpenAICompatibleModel
 
-class MinimalAgent(AgentModule[CalcState, dict[str, Any], Action]):
 
-    def init_state(self, task: str, **kwargs: Any) -> CalcState:
-        return CalcState(task=task, max_steps=int(kwargs.get("max_steps", 2)))
+class MinimalCodingAgent(AgentModule[MinimalCodingState, dict[str, Any], Action]):
+    def __init__(self, llm: OpenAICompatibleModel, workspace_root: str) -> None:
+        super().__init__(
+            toolset=[coding_tools(workspace_root=workspace_root, shell_timeout=20, include_notebook=False)],
+            llm=llm,
+            model_parser=ReActTextParser(),
+        )
 
+    def init_state(self, task: str, **kwargs: Any) -> MinimalCodingState:
+        return MinimalCodingState(
+            task=task,
+            max_steps=int(kwargs.get("max_steps", 8)),
+            target_file=str(kwargs.get("target_file", "buggy_module.py")),
+            test_command=str(kwargs.get("test_command")),
+        )
+
+    def build_system_prompt(self, state: MinimalCodingState) -> str | None:
+        _ = state
+        return render_prompt(
+            REACT_SYSTEM_PROMPT,
+            {"tool_schema": self.tool_registry.get_tool_descriptions()},
+        )
+```
+
+</Step>
+
+<Step title="Reduce trajectory back into state">
+
+`reduce()` is where QitOS turns tool results into agent progress:
+
+```python
     def reduce(
         self,
-        state: CalcState,
+        state: MinimalCodingState,
         observation: dict[str, Any],
         decision: Decision[Action],
-    ) -> CalcState:
+    ) -> MinimalCodingState:
         action_results = observation.get("action_results", [])
+        if decision.rationale:
+            state.scratchpad.append(f"Thought: {decision.rationale}")
+        if decision.actions:
+            state.scratchpad.append(f"Action: {format_action(decision.actions[0])}")
         if action_results:
-            state.final_result = str(action_results[0])
-        return state  # always return state
+            first = action_results[0]
+            state.scratchpad.append(f"Observation: {first}")
+            if isinstance(first, dict) and int(first.get("returncode", 1)) == 0:
+                state.final_result = "Patch applied and verification passed."
+        return state
 ```
 
 <Warning>
-You must return `state` from `reduce`. Forgetting to return it is the most common mistake — the Engine will raise a validation error.
+You must return `state` from `reduce`. Forgetting to return it is still the most common mistake.
 </Warning>
 
 </Step>
 
-<Step title="Add tools">
+<Step title="Seed a workspace and run the agent">
 
-Use the `@tool` decorator and register with `ToolRegistry`:
-
-```python
-from qitos import Action, AgentModule, Decision, StateSchema, ToolRegistry, tool
-
-class MinimalAgent(AgentModule[CalcState, dict[str, Any], Action]):
-    def __init__(self):
-        registry = ToolRegistry()
-
-        @tool(name="add")
-        def add(a: int, b: int) -> int:
-            return a + b
-
-        registry.register(add)
-        super().__init__(tool_registry=registry)
-```
-
-For the minimal example there is no LLM — the agent overrides `decide()` to return a hardcoded `Decision`:
-
-```python
-    def decide(
-        self,
-        state: CalcState,
-        observation: dict[str, Any],
-    ) -> Decision[Action]:
-        if state.current_step == 0:
-            return Decision.act(
-                [Action(name="add", args={"a": 40, "b": 2})],
-                rationale="compute_answer",
-            )
-        return Decision.final("42")
-```
-
-`Decision` has four canonical modes:
-
-| Mode | Factory | When to use |
-|---|---|---|
-| `act` | `Decision.act(actions, rationale)` | Execute one or more tools |
-| `final` | `Decision.final(answer)` | Produce a result and stop |
-| `wait` | `Decision.wait(rationale)` | Skip tool execution this step |
-| `branch` | `Decision.branch(candidates)` | Tree-of-Thought branching |
-
-</Step>
-
-<Step title="Run the agent">
-
-Call `agent.run()` with `task`, `workspace`, and `max_steps`:
+The minimal example creates one tiny buggy file, then asks the agent to fix it:
 
 ```python
 from pathlib import Path
 
-WORKSPACE = Path("./playground/minimal_agent")
+WORKSPACE = Path("./playground/minimal_coding_agent")
+TARGET_FILE = "buggy_module.py"
+TASK = "Fix the bug in buggy_module.py and make the verification command pass."
+
+
+def seed_workspace() -> None:
+    WORKSPACE.mkdir(parents=True, exist_ok=True)
+    target = WORKSPACE / TARGET_FILE
+    if not target.exists():
+        target.write_text("def add(a, b):\n    return a - b\n", encoding="utf-8")
+
 
 def main() -> None:
-    WORKSPACE.mkdir(parents=True, exist_ok=True)
-    agent = MinimalAgent()
+    seed_workspace()
+    agent = MinimalCodingAgent(llm=build_model(), workspace_root=str(WORKSPACE))
     result = agent.run(
-        task="compute 40 + 2",
+        task=TASK,
         workspace=str(WORKSPACE),
-        max_steps=2,
+        max_steps=8,
+        target_file=TARGET_FILE,
         return_state=True,
     )
     print("final_result:", result.state.final_result)
     print("stop_reason:", result.state.stop_reason)
 ```
 
-When `return_state=True`, `run()` returns an `EngineResult` with:
-- `result.state` — final typed state
-- `result.records` — per-step `StepRecord` list
-- `result.step_count` — number of steps taken
-
-Without `return_state=True`, `run()` returns `result.state.final_result` directly.
-
-<Tip>
-Trace artifacts are written to `./runs/<run_id>/` automatically. Pass `trace_logdir="./my_runs"` to change the output directory.
-</Tip>
-
 </Step>
 
-<Step title="Inspect with qita board">
-
-After the run completes, open the web board to inspect the trace:
+<Step title="Inspect the run with qita">
 
 ```bash
 qita board --logdir ./runs
 ```
 
-The board starts on `http://127.0.0.1:8765`. Use the run cards to open the trace view, step navigator, and timeline.
-
-```bash
-# change host/port
-qita board --logdir ./runs --host 0.0.0.0 --port 9000
-```
-
-For a single run:
-
-```bash
-qita replay --run <run_dir>                   # step-by-step playback
-qita export --run <run_dir> --html out.html  # standalone HTML
-```
+The board starts on `http://127.0.0.1:8765`. Use it to inspect the patching trajectory, replay the run, and export the trace as HTML.
 
 </Step>
 
@@ -206,71 +162,14 @@ qita export --run <run_dir> --html out.html  # standalone HTML
 
 ## Complete example
 
-Here is the full `examples/quickstart/minimal_agent.py`:
+The full minimal coding-agent example lives here:
 
-```python
-"""Quickstart: smallest runnable AgentModule + Engine flow."""
+- [`examples/quickstart/minimal_agent.py`](https://github.com/Qitor/qitos/blob/main/examples/quickstart/minimal_agent.py)
 
-from __future__ import annotations
+You can also run the packaged version directly:
 
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Any
-
-from qitos import Action, AgentModule, Decision, StateSchema, ToolRegistry, tool
-
-TASK = "compute 40 + 2"
-WORKSPACE = Path("./playground/minimal_agent")
-MAX_STEPS = 2
-
-
-@dataclass
-class CalcState(StateSchema):
-    pass
-
-
-class MinimalAgent(AgentModule[CalcState, dict[str, Any], Action]):
-    def __init__(self):
-        registry = ToolRegistry()
-
-        @tool(name="add")
-        def add(a: int, b: int) -> int:
-            return a + b
-
-        registry.register(add)
-        super().__init__(tool_registry=registry)
-
-    def init_state(self, task: str, **kwargs: Any) -> CalcState:
-        return CalcState(task=task, max_steps=int(kwargs.get("max_steps", MAX_STEPS)))
-
-    def decide(self, state: CalcState, observation: dict[str, Any]) -> Decision[Action]:
-        if state.current_step == 0:
-            return Decision.act([Action(name="add", args={"a": 40, "b": 2})], rationale="compute_answer")
-        return Decision.final("42")
-
-    def reduce(self, state: CalcState, observation: dict[str, Any], decision: Decision[Action]) -> CalcState:
-        action_results = observation.get("action_results", []) if isinstance(observation, dict) else []
-        if action_results:
-            state.final_result = str(action_results[0])
-        return state
-
-
-def main() -> None:
-    WORKSPACE.mkdir(parents=True, exist_ok=True)
-    agent = MinimalAgent()
-    result = agent.run(
-        task=TASK,
-        workspace=str(WORKSPACE),
-        max_steps=MAX_STEPS,
-        return_state=True,
-    )
-    print("workspace:", WORKSPACE)
-    print("final_result:", result.state.final_result)
-    print("stop_reason:", result.state.stop_reason)
-
-
-if __name__ == "__main__":
-    main()
+```bash
+qit demo minimal
 ```
 
 ## Common mistakes
@@ -278,10 +177,10 @@ if __name__ == "__main__":
 | Mistake | Symptom | Fix |
 |---|---|---|
 | Forget `return state` in `reduce` | `StateValidationError` or `None` state | Always end `reduce` with `return state` |
-| Never set `state.final_result` | Run hits `max_steps` and exits with `stop_reason=budget_steps` | Set `state.final_result = "..."` when done, or return `Decision.final(answer)` |
-| Wrong prompt-parser pairing | Parse errors every step | Match your system prompt format to the parser — e.g., `REACT_SYSTEM_PROMPT` → `ReActTextParser` |
-| `max_steps` not passed to `init_state` | Agent always uses the default budget | Forward `kwargs.get("max_steps", DEFAULT)` in `init_state` |
-| Tool not registered before `super().__init__()` | `KeyError` on tool lookup | Build your `ToolRegistry` first, then call `super().__init__(tool_registry=registry)` |
+| Skip provider config | `OPENAI_API_KEY` / `QITOS_API_KEY` error before the run starts | Export the API key and base URL before running the demo |
+| Never run verification | The agent edits code but finishes without proof | Keep a concrete `test_command` in state and treat passing it as success |
+| Wrong prompt-parser pairing | Parse errors every step | Match your system prompt format to `ReActTextParser` or another explicit parser |
+| Toolset too broad for the task | The run wanders through unnecessary tools | Start with the minimal coding preset and add tools only when the task really needs them |
 
 ## Next steps
 

@@ -1,0 +1,25 @@
+---
+title: "为什么 gold presets 很重要"
+description: "QitOS v0.4 正式从一次性的 provider wiring 走向可复用的 family-level harness defaults。"
+---
+
+QitOS 一开始追求的是：
+
+一个 kernel，很多 agent。
+
+v0.4 把这件事进一步推进到了模型家族这一层。
+
+现在，我们不必每换一个 endpoint 就重写一套 example，而是先解析：
+
+- family preset
+- harness policy
+- transport adapter
+- protocol 与 parser 对
+
+这件事重要，不只是因为“代码更干净”。
+
+更关键的是：
+
+可复现的 agent 研究，不应该只记录 traces，也应该记录模型侧契约本身。
+
+这正是为什么 v0.4 的旗舰 example 现在可以在 Qwen、Kimi、MiniMax、`gpt-oss` 与 Gemma 4 之间切换，同时仍然保持同一个 agent 实现。

@@ -71,7 +71,26 @@ tasks = load_tau_bench_tasks(env_name="retail", split="test", limit=10)
 
 ## Running the evaluation
 
-The bundled `tau_bench_eval.py` runs a ReAct agent that receives the domain wiki and policy rules in its system prompt, and routes every tool call through the `TauRuntimeEnv`.
+Start with the official CLI:
+
+```bash
+qit bench run \
+  --benchmark tau-bench \
+  --split test \
+  --subset retail \
+  --limit 50 \
+  --output results/tau_retail_test.jsonl \
+  --model-name "Qwen/Qwen3-8B"
+```
+
+Then aggregate and inspect:
+
+```bash
+qit bench eval --input results/tau_retail_test.jsonl --json
+qita board --logdir runs
+```
+
+The bundled `tau_bench_eval.py` remains available as a benchmark-specific wrapper over the same official result shape and trace contract.
 
 **Run a single task:**
 

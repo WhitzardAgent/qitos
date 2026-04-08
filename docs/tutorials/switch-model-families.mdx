@@ -1,0 +1,133 @@
+---
+title: "Switch model families in one example"
+description: "Use the same Claude Code-style agent across Qwen, Kimi, MiniMax, gpt-oss, and Gemma 4."
+---
+
+This tutorial is the practical entry point for QitOS v0.4.
+
+The goal is simple:
+
+- keep one agent implementation
+- switch only model family configuration
+- preserve traces, protocols, and tool behavior visibility
+
+The example is:
+
+`examples/real/claude_code_agent.py`
+
+## What changed in v0.4
+
+The example no longer hardcodes one transport path.
+
+Instead it resolves:
+
+1. family preset
+2. harness policy
+3. model transport
+4. parser and protocol
+
+That means the same agent can now switch between:
+
+- Qwen
+- Kimi
+- MiniMax
+- `gpt-oss`
+- Gemma 4
+
+## The environment variables
+
+```bash
+export OPENAI_API_KEY="your_api_key"
+export OPENAI_BASE_URL="https://api.siliconflow.cn/v1/"
+export QITOS_MODEL_FAMILY="qwen"
+export QITOS_MODEL="Qwen/Qwen3-8B"
+```
+
+Optional advanced override:
+
+```bash
+export QITOS_PROTOCOL="json_decision_v1"
+```
+
+## The CLI override layer
+
+CLI beats environment variables.
+
+```bash
+python examples/real/claude_code_agent.py \
+  --model-family kimi \
+  --model-name kimi-k2-0905-preview \
+  --base-url https://api.moonshot.ai/v1
+```
+
+Priority order:
+
+1. explicit CLI
+2. environment variables
+3. family preset defaults
+4. framework fallback
+
+## The five v0.4 switching examples
+
+### Qwen
+
+```bash
+python examples/real/claude_code_agent.py \
+  --model-family qwen \
+  --model-name Qwen/Qwen3-8B \
+  --base-url https://api.siliconflow.cn/v1/
+```
+
+### Kimi
+
+```bash
+python examples/real/claude_code_agent.py \
+  --model-family kimi \
+  --model-name kimi-k2-0905-preview \
+  --base-url https://api.moonshot.ai/v1
+```
+
+### MiniMax
+
+```bash
+python examples/real/claude_code_agent.py \
+  --model-family minimax \
+  --model-name MiniMax-M2.5 \
+  --base-url https://api.minimax.chat/v1
+```
+
+### gpt-oss
+
+```bash
+python examples/real/claude_code_agent.py \
+  --model-family gpt-oss \
+  --model-name gpt-oss-120b \
+  --base-url https://api.siliconflow.cn/v1/
+```
+
+### Gemma 4
+
+```bash
+python examples/real/claude_code_agent.py \
+  --model-family gemma-4 \
+  --model-name gemma-4-31b-it \
+  --base-url https://api.siliconflow.cn/v1/
+```
+
+## What to inspect in qita
+
+After each run, inspect:
+
+- `family preset`
+- `model family`
+- `prompt protocol`
+- `parser`
+- `tool schema delivery`
+
+That is how you confirm the same agent code switched harness policy rather than silently changing behavior in an ad-hoc way.
+
+## Why this matters
+
+This pattern is the v0.4 research default.
+
+It lets you compare model families while keeping the agent implementation stable.

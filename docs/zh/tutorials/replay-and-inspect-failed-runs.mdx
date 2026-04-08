@@ -1,0 +1,111 @@
+---
+title: "教程：Replay 并检查失败 Run"
+description: "使用 qita board、replay、export 和 diff 来理解一次 official QitOS run 为什么会失败或发生变化。"
+---
+
+这节课从“run 已经存在”开始。
+
+问题不再是“它跑完了吗”，而是“它为什么会这样运行，以及两次 run 到底差在哪里”。
+
+## 第一步：打开 board
+
+```bash
+qita board --logdir ./runs
+```
+
+board 是最快的总览入口，你可以先看到：
+
+- stop reason
+- step count
+- event count
+- token usage
+- parser warnings
+- official-run 与 replay 元信息
+
+## 第二步：打开一个失败 run
+
+选择一个 `stop_reason=max_steps`、`exception` 或 parser 明显异常的 run，然后执行：
+
+```bash
+qita replay --run ./runs/<run_id>
+```
+
+在 run 概览里，先检查这些项：
+
+- `official run`
+- `replay mode`
+- `git SHA`
+- `package`
+- `seed`
+- `prompt protocol`
+- `parser`
+
+这一步会先告诉你：这个 run 到底是否可比较。
+
+## 第三步：检查 parser 与 context telemetry
+
+在 run 页面里优先看：
+
+- parser diagnostics
+- context occupancy timeline
+- compaction markers
+- model response summary
+
+这通常能快速判断失败来源是：
+
+- protocol 不匹配
+- tool 选择错误
+- context 饱和
+- benchmark 环境准备失败
+
+## 第四步：比较两个 runs
+
+通过 board 上的 compare 控件，或直接打开：
+
+```text
+/compare?left=RUN_A&right=RUN_B
+```
+
+v0.3 的 diff 视图聚焦在高价值字段：
+
+- stop reason
+- final result
+- step count
+- event count
+- token usage
+- latency
+- cost
+- parser diagnostics
+- first failure step
+- run config diff
+
+这正是回答“到底变了什么”的最快路径。
+
+## 第五步：导出 artifact
+
+当你要把一次失败复盘分享给协作者时：
+
+```bash
+qit bench export --run ./runs/<run_id> --html ./reports/failed_run.html
+```
+
+这样团队讨论会始终围绕同一份 trace artifact，而不是零散截图。
+
+## Best-effort replay 提醒
+
+QitOS 当前的 replay 是 **best effort**。
+
+它足够支持：
+
+- 研究调试
+- benchmark review
+- prompt / parser 回归分析
+- artifact 分享
+
+但它不承诺远程 provider 或外部环境永远给出严格一致的输出。
+
+## 继续阅读
+
+- [Official runs](/zh/concepts/official-runs)
+- [Tracing](/zh/concepts/tracing)
+- [Observability](/zh/guides/observability)

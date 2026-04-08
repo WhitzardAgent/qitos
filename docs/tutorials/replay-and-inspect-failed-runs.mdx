@@ -1,0 +1,113 @@
+---
+title: "Tutorial: Replay and Inspect a Failed Run"
+description: "Use qita board, replay, export, and diff to understand why an official QitOS run behaved differently."
+---
+
+This tutorial starts after a run already exists.
+
+The question is no longer “did it finish?” The question is “why did it behave this way, and what changed between two runs?”
+
+## Step 1: open the board
+
+```bash
+qita board --logdir ./runs
+```
+
+The board is the fastest way to see:
+
+- stop reason
+- step count
+- event count
+- token usage
+- parser warnings
+- official-run and replay metadata
+
+## Step 2: open one failed run
+
+Pick a run with `stop_reason=max_steps`, `exception`, or obvious parser trouble.
+
+Then open:
+
+```bash
+qita replay --run ./runs/<run_id>
+```
+
+In the run overview, check these first:
+
+- `official run`
+- `replay mode`
+- `git SHA`
+- `package`
+- `seed`
+- `prompt protocol`
+- `parser`
+
+That tells you whether the run is comparable before you even read step content.
+
+## Step 3: inspect parser and context telemetry
+
+In the run page, look for:
+
+- parser diagnostics
+- context occupancy timeline
+- compaction markers
+- model response summaries
+
+This usually tells you whether the failure came from:
+
+- a protocol mismatch
+- poor tool choice
+- context saturation
+- benchmark setup failure
+
+## Step 4: compare two runs
+
+Use the board compare controls or open the diff route directly:
+
+```text
+/compare?left=RUN_A&right=RUN_B
+```
+
+The v0.3 diff view focuses on the highest-signal fields:
+
+- stop reason
+- final result
+- step count
+- event count
+- token usage
+- latency
+- cost
+- parser diagnostics
+- first failure step
+- run config diff
+
+This is the fastest way to answer “what actually changed?”
+
+## Step 5: export what matters
+
+When you need to share a failure with a collaborator:
+
+```bash
+qit bench export --run ./runs/<run_id> --html ./reports/failed_run.html
+```
+
+That keeps the investigation tied to the same trace artifact instead of screenshots or hand-written notes.
+
+## Best-effort replay reminder
+
+Replay in QitOS is currently **best effort**.
+
+It is strong enough for:
+
+- research debugging
+- benchmark review
+- prompt/parser regression analysis
+- artifact sharing
+
+It is not a guarantee that a remote provider or external environment will reproduce identical tokens forever.
+
+## Next step
+
+- [Official runs](/concepts/official-runs)
+- [Tracing](/concepts/tracing)
+- [Observability](/guides/observability)

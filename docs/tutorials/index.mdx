@@ -55,14 +55,21 @@ That worksheet stays constant across all four lessons.
 
 ## How model harnesses fit into the course
 
-The first three lessons use the same simple harness on purpose:
+The first three lessons start from the same simple mental model on purpose:
 
-- `OpenAICompatibleModel`
-- text output
+- one transport
+- one parser contract
 - prompt-injected tool schema
-- `ReActTextParser`
+- a visible `LLM -> parser -> Decision` path
 
 That is the shortest path for learning the kernel.
+
+In v0.4, the flagship coding example grows one level deeper:
+
+- you still get an `OpenAICompatibleModel` transport underneath
+- but you now resolve it through a family preset and a harness policy first
+
+That keeps one example portable across Qwen, Kimi, MiniMax, `gpt-oss`, and Gemma 4.
 
 Later in the course you will also learn how to reason about protocol upgrades:
 
@@ -90,11 +97,25 @@ QitOS supports those variants, but the course starts with the most transferable 
   </Card>
 </CardGroup>
 
+## v0.3 reproducibility workshops
+
+<CardGroup cols={2}>
+  <Card title="Reproducible benchmark runs" icon="flask" href="/tutorials/reproducible-benchmark-runs">
+    Learn the official `qit bench` path, normalized result rows, and official-run metadata.
+  </Card>
+  <Card title="Replay failed runs" icon="arrow-rotate-left" href="/tutorials/replay-and-inspect-failed-runs">
+    Learn how qita board, replay, export, and diff turn traces into review-grade artifacts.
+  </Card>
+  <Card title="Switch model families" icon="shuffle" href="/tutorials/switch-model-families">
+    Use the same Claude Code-style example across Qwen, Kimi, MiniMax, `gpt-oss`, and Gemma 4.
+  </Card>
+</CardGroup>
+
 ## Before you begin
 
 - You have already run [Quickstart](/quickstart) or [First Agent](/guides/build-your-first-agent).
 - You understand the `AgentModule + Engine` split from [Agent module](/concepts/agent-module) and [Engine](/concepts/engine).
-- You can provide an OpenAI-compatible model endpoint such as `OpenAICompatibleModel`.
+- You can provide an OpenAI-compatible model endpoint, either directly or through a QitOS family preset.
 
 ## What you should know after lesson 4
 

@@ -1,0 +1,87 @@
+---
+title: "Official Runs"
+description: "What qualifies as an official QitOS run, what gets recorded, and what best-effort replay really means."
+---
+
+An official QitOS run is not just “a run that produced a trace”. It is a run with enough structure to be compared, replayed, exported, and discussed as a research artifact.
+
+## Minimum contract
+
+A run counts as an official QitOS run when its trace manifest includes:
+
+- a `RunSpec`
+- an `ExperimentSpec` for benchmark work
+- a standard `manifest.json`, `events.jsonl`, and `steps.jsonl`
+- replay and export compatibility with `qita`
+- a normalized benchmark result row when the run comes from `qit bench run` or a benchmark example wrapper
+
+In practice, that means the run records model identity, prompt protocol, parser, tool manifest, environment summary, seed, package version, git SHA, and benchmark metadata.
+
+## Why this matters
+
+Without that contract, two runs may both “finish”, but you still cannot answer the important questions:
+
+- were they using the same parser contract?
+- were they using the same tool surface?
+- was the benchmark split the same?
+- can I replay the failure later?
+- can I diff the run config instead of guessing?
+
+QitOS treats those questions as part of the runtime, not as post-hoc bookkeeping.
+
+## Best-effort replay
+
+QitOS currently provides **research-grade best-effort replay**, not strict byte-for-byte determinism.
+
+That means QitOS records enough information to make replay and comparison useful:
+
+- `seed`
+- `git_sha`
+- `package_version`
+- `prompt_protocol`
+- `parser_name`
+- `tool_manifest`
+- environment summary
+- step/event traces
+
+But QitOS does **not** promise that remote model providers, web pages, external tools, or challenge environments will behave identically forever.
+
+Use the replay contract like this:
+
+- for debugging and inspection
+- for prompt/parser/tool regressions
+- for benchmark comparison
+- for sharing runs with collaborators
+
+Do not treat it as a promise that a remote model call will always reproduce the same tokens.
+
+## Where you see this in practice
+
+Open `qita board` and `qita replay` on a trace directory:
+
+```bash
+qita board --logdir ./runs
+qita replay --run ./runs/<run_id>
+```
+
+QitOS surfaces whether a run is official, which replay mode it uses, and the key reproducibility fields that matter when comparing two runs.
+
+## Canonical path
+
+For benchmark work, the canonical path is:
+
+```bash
+qit bench run ...
+qit bench eval ...
+qit bench replay ...
+qit bench export ...
+```
+
+The scripts in `examples/benchmarks/` remain available, but they are now thin wrappers around the same official runner contract.
+
+## Related reading
+
+- [Tracing](/concepts/tracing)
+- [Benchmarks overview](/benchmarks/overview)
+- [CLI reference](/reference/cli)
+- [Reproducible benchmark runs](/tutorials/reproducible-benchmark-runs)

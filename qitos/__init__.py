@@ -16,6 +16,7 @@ from .core.memory import Memory
 from .core.model_response import ModelResponse
 from .core.history import History, HistoryPolicy
 from .core.state import StateSchema
+from .core.spec import BenchmarkRunResult, ExperimentSpec, RunSpec
 from .core.task import (
     Task,
     TaskBudget,
@@ -49,6 +50,9 @@ __all__ = [
     "ModelResponse",
     "History",
     "HistoryPolicy",
+    "RunSpec",
+    "ExperimentSpec",
+    "BenchmarkRunResult",
     "Env",
     "EnvSpec",
     "tool",

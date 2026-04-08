@@ -82,7 +82,26 @@ tasks = load_cybench_tasks(
 
 ## Running the evaluation
 
-The bundled `cybench_eval.py` runs a ReAct agent with file inspection and shell execution tools. In guided mode it runs one agent pass per subtask; in unguided mode it runs a single pass over the hard prompt.
+Start with the official CLI:
+
+```bash
+qit bench run \
+  --benchmark cybench \
+  --split guided \
+  --root references/cybench \
+  --limit 20 \
+  --output results/cybench_guided.jsonl \
+  --model-name "Qwen/Qwen3-8B"
+```
+
+Then aggregate and inspect:
+
+```bash
+qit bench eval --input results/cybench_guided.jsonl --json
+qita board --logdir runs
+```
+
+The bundled `cybench_eval.py` remains available as the benchmark-specific wrapper for the reference ReAct security agent.
 
 **Run a single task (guided):**
 

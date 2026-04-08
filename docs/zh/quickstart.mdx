@@ -1,9 +1,9 @@
 ---
 title: "快速开始"
-description: "在 2 分钟内运行你的第一个 QitOS agent。"
+description: "在 2 分钟内运行你的第一个 QitOS 最小 coding agent，并用 qita 检查它。"
 ---
 
-本页会带你从一个空环境走到可运行的 agent，再到可视化 trace，全程控制在 2 分钟左右。
+本页会带你从一个空环境走到一个模型驱动的最小 coding agent，再到可视化 trace，全程控制在 2 分钟左右。
 
 这就是 QitOS runtime 实际运行时的体验：
 
@@ -23,24 +23,16 @@ description: "在 2 分钟内运行你的第一个 QitOS agent。"
 
 <Steps>
   <Step title="安装 QitOS">
-    从 PyPI 安装。`models` extra 会加入 OpenAI client：
-
     ```bash
     pip install "qitos[models]"
     ```
-
-    如果你只需要核心框架：
-
-    ```bash
-    pip install qitos
-    ```
   </Step>
 
-  <Step title="设置 API Key">
-    把 OpenAI-compatible API key 作为环境变量导出：
-
+  <Step title="设置 provider 配置">
     ```bash
     export OPENAI_API_KEY="sk-..."
+    export OPENAI_BASE_URL="https://api.siliconflow.cn/v1/"
+    export QITOS_MODEL="Qwen/Qwen3-8B"
     ```
 
     <Tip>
@@ -48,111 +40,44 @@ description: "在 2 分钟内运行你的第一个 QitOS agent。"
     </Tip>
   </Step>
 
-  <Step title="运行最小 agent">
-    最小示例展示了最小可工作的 `AgentModule + Engine` 流程。它定义了一个 `add` 工具，用两步循环计算 `40 + 2`，并把 trace 写到 `./playground/minimal_agent/`。
-
-    ```python minimal_agent.py
-    """Quickstart: smallest runnable AgentModule + Engine flow."""
-
-    from __future__ import annotations
-
-    from dataclasses import dataclass
-    from pathlib import Path
-    from typing import Any
-
-    from qitos import Action, AgentModule, Decision, StateSchema, ToolRegistry, tool
-
-    TASK = "compute 40 + 2"
-    WORKSPACE = Path("./playground/minimal_agent")
-    MAX_STEPS = 2
-
-
-    @dataclass
-    class CalcState(StateSchema):
-        pass
-
-
-    class MinimalAgent(AgentModule[CalcState, dict[str, Any], Action]):
-        def __init__(self):
-            registry = ToolRegistry()
-
-            @tool(name="add")
-            def add(a: int, b: int) -> int:
-                return a + b
-
-            registry.register(add)
-            super().__init__(tool_registry=registry)
-
-        def init_state(self, task: str, **kwargs: Any) -> CalcState:
-            return CalcState(task=task, max_steps=int(kwargs.get("max_steps", MAX_STEPS)))
-
-        def decide(self, state: CalcState, observation: dict[str, Any]) -> Decision[Action]:
-            if state.current_step == 0:
-                return Decision.act([Action(name="add", args={"a": 40, "b": 2})], rationale="compute_answer")
-            return Decision.final("42")
-
-        def reduce(self, state: CalcState, observation: dict[str, Any], decision: Decision[Action]) -> CalcState:
-            action_results = observation.get("action_results", []) if isinstance(observation, dict) else []
-            if action_results:
-                state.final_result = str(action_results[0])
-            return state
-
-
-    def main() -> None:
-        WORKSPACE.mkdir(parents=True, exist_ok=True)
-        agent = MinimalAgent()
-        result = agent.run(
-            task=TASK,
-            workspace=str(WORKSPACE),
-            max_steps=MAX_STEPS,
-            return_state=True,
-        )
-        print("workspace:", WORKSPACE)
-        print("final_result:", result.state.final_result)
-        print("stop_reason:", result.state.stop_reason)
-
-
-    if __name__ == "__main__":
-        main()
-    ```
-
-    运行它：
-
+  <Step title="运行最小 coding agent">
     ```bash
-    python minimal_agent.py
+    qit demo minimal
     ```
 
-    你会看到类似输出：
+    这个 demo 会先种一个最小 bug workspace，配置真实模型，让最小 coding agent 修复 bug、执行验证，并写出 qita 可识别的 trace。你会看到类似输出：
 
     ```
-    workspace: playground/minimal_agent
-    final_result: 42
-    stop_reason: max_steps
+    model_name: Qwen/Qwen3-8B
+    workspace: .../playground/minimal_coding_agent
+    target_file: buggy_module.py
+    trace_run: .../runs/qitos_minimal_coding_<timestamp>
+    final_result: Patch applied and verification passed.
+    stop_reason: final
+    next_step: qita board --logdir runs
     ```
   </Step>
 
   <Step title="用 qita 查看运行轨迹">
-    QitOS 会为每次 run 写出完整 trace。启动 `qita` board：
-
     ```bash
     qita board --logdir runs
     ```
 
     在浏览器中打开 [http://127.0.0.1:8765](http://127.0.0.1:8765)。board 会列出 logdir 中的所有 run，包括 step 数、stop reason 和 final result。点击任意 run 的 **view** 查看逐步轨迹，或用 **replay** 做回放。
 
-    <Note>
-      最小示例的 trace 会写到 `./playground/minimal_agent/`。如果在 board 里看不到它，请把 `--logdir` 指向 `playground`。
-    </Note>
+    <Tip>
+      打包好的 demo 与 [`examples/quickstart/minimal_agent.py`](https://github.com/Qitor/qitos/blob/main/examples/quickstart/minimal_agent.py) 讲的是同一条最小 coding-agent 路径。想读代码或改它时，就从这个例子文件开始。
+    </Tip>
   </Step>
 </Steps>
 
 ## 接下来怎么学
 
-你已经跑起了一个 agent，也看到了它的 trace。接下来推荐继续：
+你已经跑起了一个最小 coding agent，也看到了它的 trace。接下来推荐继续：
 
 <CardGroup cols={2}>
   <Card title="构建第一个 Agent" icon="code" href="/zh/guides/build-your-first-agent">
-    系统理解 AgentModule 接口
+    从 state、model、tools、run 到 qita，系统理解最小 coding-agent 结构
   </Card>
   <Card title="教程课程" icon="graduation-cap" href="/zh/tutorials">
     通过 ReAct、PlanAct、Claude Code 风格和安全审计课程递进学习

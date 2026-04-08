@@ -1,115 +1,142 @@
 ---
 title: "CLI 参考"
-description: "QitOS 的命令行工具参考：`qita`（trace 与 observability）以及 `qit`（开发者工具）。"
+description: "QitOS 的 qita 与 qit CLI 参考，包括最小 coding-agent demo 和 v0.3 中加入的 benchmark 官方入口。"
 ---
 
-QitOS 提供两个 CLI：
+QitOS 提供两个顶层 CLI：
 
-- **`qita`**：trace 检查、web board、replay 与 HTML export
-- **`qit`**：开发者工具，目前主要用于第三方 skills 管理
+- `qita`：trace 检查与回放
+- `qit`：demo、benchmark 与开发者工作流入口
 
-如果你关心复现、调试或审阅长时运行行为，`qita` 是更重要的 CLI，它是 trace artifacts 的人类检查层。
+## qit demo
+
+当你想最快拿到一次真正的模型驱动 QitOS run 时，使用 `qit demo`。
+
+### `qit demo minimal`
+
+```bash
+qit demo minimal
+```
+
+这个命令会：
+
+- 从环境变量或 flags 读取 OpenAI-compatible 模型配置
+- 先种一个最小 bug workspace
+- 运行最小 coding agent 去修这个 bug
+- 把 qita 可识别的 trace 写到 `./runs`
+
+可选参数：
+
+- `--workspace ./playground/minimal_coding_agent`
+- `--logdir ./runs`
+- `--model-name Qwen/Qwen3-8B`
+- `--base-url https://api.siliconflow.cn/v1/`
+- `--api-key sk-...`
+- `--task "Fix the bug in buggy_module.py and make the verification command pass."`
+- `--max-steps 8`
+- `--render`
 
 ## qita
 
-```bash
-qita <command> [options]
-```
+当你要检查 traced runs 时，使用 `qita`。
 
-你会在这些场景使用 `qita`：
-
-- prompt、tools 或 model 改完之后比较多次 runs
-- 逐步检查一个长时运行轨迹
-- 回放一次 run 进行调试或演示
-- 把一次 run 导出成可分享的审阅 artifact
-
-<AccordionGroup>
-<Accordion title="qita board">
-
-启动 web board，展示一个 logdir 下的所有 runs。
+### `qita board`
 
 ```bash
-qita board [--logdir <dir>] [--host <host>] [--port <port>]
+qita board --logdir ./runs
 ```
 
-常用参数：
+打开多 run board，支持：
 
-- `--logdir`：默认 `./runs`
-- `--host`：默认 `127.0.0.1`
-- `--port`：默认 `8765`
+- runs 列表与过滤
+- compare 选择
+- 进入 run detail
+- replay
+- raw / HTML export
 
-board 会展示 stop reason、step count、event count、model ID、prompt hash 等关键元数据，并支持 view、replay 与 export。
-
-</Accordion>
-
-<Accordion title="qita replay">
-
-直接把一个 run 打开为回放视图：
+### `qita replay`
 
 ```bash
-qita replay --run <dir> [--host <host>] [--port <port>]
+qita replay --run ./runs/<run_id>
 ```
 
-适合逐步理解 agent 在时间轴上的行为。
+以时间轴方式打开一个 run。
 
-</Accordion>
-
-<Accordion title="qita export">
-
-把一个 run 导出成独立 HTML：
+### `qita export`
 
 ```bash
-qita export --run <dir> --html <output>
+qita export --run ./runs/<run_id> --html ./report.html
 ```
 
-导出文件会内联全部数据与前端资源，适合分享给团队或审稿人。
+导出独立 HTML artifact。
 
-</Accordion>
-</AccordionGroup>
+## qit bench
 
-## qit
+`qit bench` 是 v0.3 中 benchmark 的官方 CLI。
+
+### `qit bench run`
 
 ```bash
-qit <command> [options]
+qit bench run \
+  --benchmark tau-bench \
+  --split test \
+  --subset retail \
+  --limit 10 \
+  --output ./results/tau.jsonl
 ```
 
-当前主要子命令是：
+这个命令会：
 
-### `qit skill`
+- 加载 benchmark tasks
+- 构造 `RunSpec` 与 `ExperimentSpec`
+- 输出统一的 `BenchmarkRunResult`
 
-管理第三方 skills：
+### `qit bench eval`
 
 ```bash
-qit skill <subcommand> [options]
+qit bench eval --input ./results/tau.jsonl --json
 ```
 
-例如：
+聚合统一 benchmark 结果。
+
+### `qit bench replay`
 
 ```bash
-qit skill list
-qit skill install my-skill-package
+qit bench replay --run ./runs/<run_id>
 ```
 
-## Trace 目录结构
+把 benchmark run 直接桥接到 qita replay。
 
-所有启用 `TraceWriter` 的 run 默认都会在 `<trace_logdir>/<run_id>/` 下产出：
+### `qit bench export`
 
-```text
-runs/
-└── agent_20260407_120000_abcdef/
-    ├── manifest.json
-    ├── events.jsonl
-    └── steps.jsonl
+```bash
+qit bench export --run ./runs/<run_id> --html ./report.html
 ```
 
-`qita board` 与 `qita replay` 都依赖这三份文件。
+把 benchmark run 导出成独立 HTML。
 
-## 推荐工作流
+## qit skill
 
-最常见的研究与调试流程通常是：
+```bash
+qit skill <subcommand>
+```
 
-1. 跑 agent，并保留 trace。
-2. 打开 `qita board --logdir runs`。
-3. 比较不同 runs 的 stop reasons、steps 和 summaries。
-4. 打开最值得看的 run，用 detail 或 replay 逐步分析。
-5. 需要分享时导出 HTML。
+用于管理 QitOS 工作流中使用的第三方 skills。
+
+## 推荐流程
+
+第一次跑通时，推荐：
+
+1. `export OPENAI_API_KEY=...`
+2. `qit demo minimal`
+3. `qita board`
+
+做 benchmark 工作时，推荐：
+
+1. `qit bench run`
+2. `qit bench eval`
+3. `qita board`
+4. `qit bench replay`
+5. `qit bench export`
+
+如果你还想理解这条路径背后的设计，请继续阅读 [Official runs](/zh/concepts/official-runs) 与 [Tracing](/zh/concepts/tracing)。

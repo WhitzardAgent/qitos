@@ -1,0 +1,26 @@
+---
+title: "Model family matrix"
+description: "The built-in QitOS v0.4 gold presets and their default harness policies."
+---
+
+| Family | Transport | Default protocol | Fallback chain | Tool delivery | Notes |
+|---|---|---|---|---|---|
+| Qwen | OpenAI-compatible | `json_decision_v1` | `xml_decision_v1 -> react_text_v1` | `api_parameter` | Good default for OpenAI-compatible Qwen serving |
+| Kimi | OpenAI-compatible | `json_decision_v1` | `react_text_v1` | `api_parameter` | Keep the same coding-agent shape with minimal prompt churn |
+| MiniMax | OpenAI-compatible | `minimax_tool_call_v1` | `terminus_xml_v1 -> terminus_json_v1 -> json_decision_v1` | `api_parameter` | Preserves the MiniMax-specific parser advantage |
+| `gpt-oss` | OpenAI-compatible | `json_decision_v1` | `react_text_v1` | `api_parameter` | Targets open-weight or third-party compatible serving |
+| Gemma 4 | OpenAI-compatible | `json_decision_v1` | `react_text_v1` | `prompt_injection` | Served Gemma 4 path, not native Gemini SDK binding |
+
+## Use the matrix correctly
+
+This table is not a ranking.
+
+It is the default harness contract QitOS will use when you ask for a family preset.
+
+If you need to override one part, do it explicitly:
+
+- override the protocol
+- override the base URL
+- override the model name
+
+Do not silently fork the whole example.

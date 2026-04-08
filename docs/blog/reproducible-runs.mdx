@@ -1,0 +1,20 @@
+---
+title: "Why reproducible runs matter in QitOS"
+description: "A short field note on official runs, benchmark output normalization, and best-effort replay."
+---
+
+QitOS is opinionated about one thing: a run is not finished just because a model returned text.
+
+A useful research run must leave behind enough structure that another person can ask:
+
+- what model and parser were used?
+- what tool surface was exposed?
+- what benchmark split was this?
+- can I replay the trajectory?
+- can I diff this run against the previous one?
+
+That is why v0.3 adds an official-run contract, normalized benchmark result rows, and a stronger `qita` review path.
+
+The point is not bureaucracy. The point is that prompt work, parser work, tool work, and benchmark work become much easier to trust once every run is exportable, replayable, and comparable.
+
+If your team wants to move fast on agent research, reproducible runs are not a side feature. They are the memory of the project.

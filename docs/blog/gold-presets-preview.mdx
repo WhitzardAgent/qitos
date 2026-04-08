@@ -1,0 +1,23 @@
+---
+title: "Why gold presets matter"
+description: "QitOS v0.4 moves from one-off provider wiring to reusable family-level harness defaults."
+---
+
+QitOS started with a simple idea:
+
+one kernel, many agents.
+
+v0.4 extends that idea to model families.
+
+Instead of rewriting examples every time we try a new endpoint, we now resolve:
+
+- a family preset
+- a harness policy
+- a transport adapter
+- a protocol and parser pair
+
+This matters because reproducible agent research is not only about trace files.
+
+It is also about keeping the model-facing contract visible and stable.
+
+That is why the v0.4 flagship example can switch across Qwen, Kimi, MiniMax, `gpt-oss`, and Gemma 4 without changing the agent implementation itself.

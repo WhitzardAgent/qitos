@@ -50,6 +50,27 @@ tasks = load_tau_bench_tasks(env_name="retail", split="test", limit=10)
 
 ## 运行评测
 
+优先使用官方 CLI：
+
+```bash
+qit bench run \
+  --benchmark tau-bench \
+  --split test \
+  --subset retail \
+  --limit 50 \
+  --output results/tau_retail_test.jsonl \
+  --model-name "Qwen/Qwen3-8B"
+```
+
+然后继续做聚合与检查：
+
+```bash
+qit bench eval --input results/tau_retail_test.jsonl --json
+qita board --logdir runs
+```
+
+`tau_bench_eval.py` 依然保留，但它现在只是同一套官方结果结构与 trace 契约上的 benchmark wrapper。
+
 运行单个任务：
 
 ```bash

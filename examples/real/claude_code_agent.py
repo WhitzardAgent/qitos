@@ -2,20 +2,22 @@
 
 from __future__ import annotations
 
+import argparse
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
-from qitos import Action, AgentModule, Decision, HistoryPolicy, StateSchema
-from qitos.kit import ReActTextParser, format_action, render_prompt
+from qitos import Action, AgentModule, Decision, HistoryPolicy, RunSpec, StateSchema
+from qitos.harness import build_harness_policy, build_model_for_preset, resolve_family_preset
+from qitos.kit import ReActTextParser, format_action
 from qitos.kit.toolset import coding_tools
-from qitos.models import OpenAICompatibleModel
 
 TASK = "Fix buggy_module.py, keep a todo list, and verify the fix with the provided command."
 WORKSPACE = Path("./playground/claude_code_agent")
-MODEL_NAME = os.getenv("QITOS_MODEL", "Qwen/Qwen3-8B")
-MODEL_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.siliconflow.cn/v1/")
+DEFAULT_MODEL_FAMILY = "qwen"
+DEFAULT_MODEL_NAME = "Qwen/Qwen3-8B"
+DEFAULT_MODEL_BASE_URL = "https://api.siliconflow.cn/v1/"
 MAX_STEPS = 12
 TARGET_FILE = "buggy_module.py"
 TEST_COMMAND = 'python -c "import buggy_module; assert buggy_module.add(20, 22) == 42"'
@@ -37,15 +39,6 @@ Preferred tool patterns:
 - Search: `glob_files`, `grep_files`, `tool_search`
 - Execution: `run_command` or `bash_v2`
 - Planning/state: `todo_write`, `enter_plan_mode`, `exit_plan_mode`
-
-Available tools:
-{tool_schema}
-
-Return format (strict):
-Thought: <short reasoning>
-Action: <tool_name>(arg=value, ...)
-or
-Final Answer: <what changed + verification proof>
 """
 
 
@@ -60,7 +53,14 @@ class ClaudeCodeState(StateSchema):
 
 
 class ClaudeCodeAgent(AgentModule[ClaudeCodeState, dict[str, Any], Action]):
-    def __init__(self, llm: Any, workspace_root: str):
+    def __init__(
+        self,
+        llm: Any,
+        workspace_root: str,
+        *,
+        model_parser: Any | None = None,
+        model_protocol: Any | None = None,
+    ):
         super().__init__(
             toolset=[
                 coding_tools(
@@ -70,7 +70,8 @@ class ClaudeCodeAgent(AgentModule[ClaudeCodeState, dict[str, Any], Action]):
                 )
             ],
             llm=llm,
-            model_parser=ReActTextParser(),
+            model_parser=model_parser or ReActTextParser(),
+            model_protocol=model_protocol,
         )
 
     def init_state(self, task: str, **kwargs: Any) -> ClaudeCodeState:
@@ -83,9 +84,8 @@ class ClaudeCodeAgent(AgentModule[ClaudeCodeState, dict[str, Any], Action]):
         )
 
     def build_system_prompt(self, state: ClaudeCodeState) -> str | None:
-        return render_prompt(
-            SYSTEM_PROMPT, {"tool_schema": self.tool_registry.get_tool_descriptions()}
-        )
+        _ = state
+        return self.compose_system_prompt(SYSTEM_PROMPT)
 
     def prepare(self, state: ClaudeCodeState) -> str:
         lines = [
@@ -143,40 +143,179 @@ class ClaudeCodeAgent(AgentModule[ClaudeCodeState, dict[str, Any], Action]):
         return state
 
 
-def build_model() -> OpenAICompatibleModel:
-    api_key = (os.getenv("OPENAI_API_KEY") or os.getenv("QITOS_API_KEY") or "").strip()
+def _family_default_model_name(family_id: str) -> str:
+    try:
+        preset = resolve_family_preset(family_id)
+    except ValueError:
+        return DEFAULT_MODEL_NAME
+    if preset.recommended_models:
+        return str(preset.recommended_models[0])
+    return DEFAULT_MODEL_NAME
+
+
+def _family_default_base_url(family_id: str) -> str:
+    normalized = str(family_id or "").strip().lower()
+    if normalized == "kimi":
+        return "https://api.moonshot.ai/v1"
+    if normalized == "minimax":
+        return "https://api.minimax.chat/v1"
+    return DEFAULT_MODEL_BASE_URL
+
+
+def _resolve_runtime_config(
+    args: argparse.Namespace | None = None,
+    *,
+    env: Mapping[str, str] | None = None,
+) -> dict[str, str | None]:
+    env_map = env if env is not None else os.environ
+    cli_family = str(getattr(args, "model_family", "") or "").strip() or None
+    env_family = str(env_map.get("QITOS_MODEL_FAMILY", "") or "").strip() or None
+    family_id = cli_family or env_family
+
+    cli_model = str(getattr(args, "model_name", "") or "").strip() or None
+    env_model = str(env_map.get("QITOS_MODEL", "") or "").strip() or None
+    model_name = cli_model or env_model
+
+    resolved_family = family_id
+    if not resolved_family and model_name:
+        resolved_family = resolve_family_preset(model_name).id
+    if not resolved_family:
+        resolved_family = DEFAULT_MODEL_FAMILY
+    if not model_name:
+        model_name = _family_default_model_name(resolved_family)
+
+    cli_base_url = str(getattr(args, "base_url", "") or "").strip() or None
+    env_base_url = str(env_map.get("OPENAI_BASE_URL", "") or "").strip() or None
+    base_url = cli_base_url or env_base_url or _family_default_base_url(resolved_family)
+
+    cli_api_key = str(getattr(args, "api_key", "") or "").strip() or None
+    env_api_key = (
+        str(env_map.get("OPENAI_API_KEY", "") or "").strip()
+        or str(env_map.get("QITOS_API_KEY", "") or "").strip()
+        or None
+    )
+    api_key = cli_api_key or env_api_key
+
+    cli_protocol = str(getattr(args, "protocol", "") or "").strip() or None
+    env_protocol = str(env_map.get("QITOS_PROTOCOL", "") or "").strip() or None
+    protocol = cli_protocol or env_protocol or None
+
+    return {
+        "model_family": resolved_family,
+        "model_name": model_name,
+        "base_url": base_url,
+        "api_key": api_key,
+        "protocol": protocol,
+    }
+
+
+def build_model(
+    *,
+    model_family: str,
+    model_name: str,
+    base_url: str,
+    api_key: str | None,
+    protocol: str | None = None,
+) -> Any:
     if not api_key:
         raise ValueError(
             "Set OPENAI_API_KEY or QITOS_API_KEY before running this example."
         )
-    return OpenAICompatibleModel(
-        model=MODEL_NAME,
+    return build_model_for_preset(
+        family_id=model_family,
+        model_name=model_name,
         api_key=api_key,
-        base_url=MODEL_BASE_URL,
+        base_url=base_url,
+        protocol=protocol,
         temperature=0.2,
         max_tokens=2048,
     )
 
 
-def main() -> None:
-    WORKSPACE.mkdir(parents=True, exist_ok=True)
-    target = WORKSPACE / TARGET_FILE
+def _build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Claude Code-style coding agent with QitOS family presets"
+    )
+    parser.add_argument("--model-family")
+    parser.add_argument("--model-name")
+    parser.add_argument("--base-url")
+    parser.add_argument("--api-key")
+    parser.add_argument("--protocol")
+    parser.add_argument("--workspace", default=str(WORKSPACE))
+    parser.add_argument("--task", default=TASK)
+    parser.add_argument("--max-steps", type=int, default=MAX_STEPS)
+    parser.add_argument("--print-harness", action="store_true")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = _build_arg_parser().parse_args(argv)
+    config = _resolve_runtime_config(args)
+    workspace = Path(str(args.workspace)).resolve()
+    harness = build_harness_policy(
+        model_name=str(config["model_name"]),
+        family_id=str(config["model_family"]),
+        protocol=config["protocol"],
+        resolution_source="claude_code_agent",
+    )
+    llm = build_model(
+        model_family=str(config["model_family"]),
+        model_name=str(config["model_name"]),
+        base_url=str(config["base_url"]),
+        api_key=str(config["api_key"]) if config["api_key"] else None,
+        protocol=str(config["protocol"]) if config["protocol"] else None,
+    )
+    run_spec = RunSpec.infer(
+        model_name=str(config["model_name"]),
+        prompt_protocol=harness.protocol.id,
+        parser_name=harness.parser_name,
+        toolset_name="coding_tools",
+        environment={"base_url": str(config["base_url"]), "workspace": str(workspace)},
+        metadata={
+            "family_preset": harness.family_preset.id,
+            "harness_policy": harness.to_dict(),
+            "tool_policy": harness.tool_policy.to_dict(),
+            "context_policy": harness.context_policy.to_dict(),
+        },
+    )
+
+    if args.print_harness:
+        print("family_preset:", harness.family_preset.id)
+        print("model_name:", config["model_name"])
+        print("base_url:", config["base_url"])
+        print("protocol:", harness.protocol.id)
+        print("parser:", harness.parser_name)
+        print("tool_delivery:", harness.tool_policy.primary_delivery)
+        print("context_window_hint:", harness.context_policy.context_window_hint)
+
+    workspace.mkdir(parents=True, exist_ok=True)
+    target = workspace / TARGET_FILE
     if not target.exists():
         target.write_text("def add(a, b):\n    return a - b\n", encoding="utf-8")
 
-    agent = ClaudeCodeAgent(llm=build_model(), workspace_root=str(WORKSPACE))
+    agent = ClaudeCodeAgent(
+        llm=llm,
+        workspace_root=str(workspace),
+        model_parser=harness.parser,
+        model_protocol=harness.protocol,
+    )
     result = agent.run(
-        task=TASK,
-        workspace=str(WORKSPACE),
+        task=str(args.task),
+        workspace=str(workspace),
         target_file=TARGET_FILE,
         test_command=TEST_COMMAND,
         doc_url=DOC_URL,
-        max_steps=MAX_STEPS,
+        max_steps=int(args.max_steps),
         history_policy=HistoryPolicy(max_messages=16, max_tokens=2800),
+        run_spec=run_spec,
         return_state=True,
     )
 
-    print("workspace:", WORKSPACE)
+    print("workspace:", workspace)
+    print("family_preset:", harness.family_preset.id)
+    print("model_name:", config["model_name"])
+    print("protocol:", harness.protocol.id)
+    print("parser:", harness.parser_name)
     print("final_result:", result.state.final_result)
     print("todos:", result.state.todos)
     print("mode:", result.state.mode)

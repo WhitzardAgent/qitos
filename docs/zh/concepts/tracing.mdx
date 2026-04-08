@@ -1,156 +1,91 @@
 ---
 title: "Tracing"
-description: "QitOS 会自动为每次 run 写出结构化 trace，包括 manifest、event log 和 step log，以便 replay、审计和复现 agent 行为。"
+description: "QitOS 会为每次 run 写出结构化 trace artifacts，从而支持 replay、diff、export 与审计。"
 ---
 
-每次运行 agent 时，QitOS 都会写出一个自包含的 trace 目录。Tracing 默认开启。它会把 agent 做过的事情按步骤完整记录下来，包括 decisions、tool calls、state diffs 与 stop conditions。
+Tracing 是 QitOS observability 的持久化层。
 
-## 为什么 traceability 是一等特性
+每次启用 trace 的 run 都会写出一个自包含目录：
 
-QitOS 面向研究和长时运行 agent，因此 tracing 不是事后补上的调试功能。
-
-这套 trace 系统的目标是让你能够：
-
-- 回放 agent **实际**做过的事，而不是依赖事后口述
-- 比较不同 prompt、模型和工具配置下的运行差异
-- 调试 parser 失败、工具误用与 context collapse
-- 把一次 run 导出成可分享、可审计的 artifact
-
-这也是为什么 QitOS 不只提供 trace 文件，还把 `qita` 做成内建的 traceability 界面。
-
-## 每次 run 会得到什么
-
-每次 run 会在 `<trace_logdir>/<run_id>/` 下生成三个文件：
-
-| 文件 | 内容 |
-|---|---|
-| `manifest.json` | 运行元数据：`run_id`、`status`、`model_id`、`step_count`、`stop_reason`、`final_result`、时间戳与 config hashes |
-| `events.jsonl` | 每行一个 lifecycle event（如 `INIT`、`DECIDE`、`ACT`、`REDUCE`、`CHECK_STOP`、`END`），包含 `phase`、`step_id`、`ok`、`payload`、`ts` |
-| `steps.jsonl` | 每行一个已完成 step，包含 observation、decision、actions、action results、tool invocations、critic outputs 与 state diff |
-
-`manifest.json` 会在 run 开始时先以 `status: "running"` 写出，结束时再更新为 `completed` 或 `failed`。
-
-## Run ID 与目录结构
-
-默认情况下，`agent.run()` 会用 agent 名称和 UTC 时间戳生成 run ID：
-
-```
-{agent.name}_{YYYYMMDD_HHMMSS_ffffff}
+```text
+<trace_logdir>/<run_id>/
+  manifest.json
+  events.jsonl
+  steps.jsonl
 ```
 
-例如：`research_agent_20260407_143022_819441`。
+## 三个文件分别表示什么
 
-输出目录类似：
+| 文件 | 作用 |
+| --- | --- |
+| `manifest.json` | run 摘要、复现元信息、benchmark 元信息与 official-run 字段 |
+| `events.jsonl` | runtime phases 的事件流 |
+| `steps.jsonl` | 每个已完成 step 的结构化记录 |
 
-```
-./runs/
-  research_agent_20260407_143022_819441/
-    manifest.json
-    events.jsonl
-    steps.jsonl
-```
+原始文件是事实来源，`qita` 是建立在这些 artifacts 之上的人工检查层。
 
-你可以用 `trace_logdir` 更改基目录，用 `trace_prefix` 控制 run ID 前缀：
+## 为什么 tracing 是一等特性
 
-```python
-result = agent.run(
-    "summarize the dataset",
-    trace_logdir="./experiments",
-    trace_prefix="exp_42",
-)
-```
+QitOS 面向的是 agent 研究，而不仅是一次性 demo。
 
-## TraceWriter
+这意味着框架必须保留下列问题的答案：
 
-`TraceWriter` 是实际负责 I/O 的组件。多数情况下无需手动构造它；当 `agent.run(trace=True)` 时，QitOS 会自动创建一个。
+- run 是怎么停下来的
+- 它用的是什么 prompt / parser 契约
+- 它看到了哪些 tools
+- 上下文在长时运行中如何变化
+- 哪些配置字段决定了 replay 和 compare 的意义
 
-如果你需要一个预配置的 writer，例如为了固定 `run_id` 以便复现实验，可以直接传入：
+因此 `AgentModule.run(...)` 默认开启 tracing。
 
-```python
-from qitos.trace import TraceWriter
+## v0.3 中的重要 trace 元信息
 
-writer = TraceWriter(
-    output_dir="./runs",
-    run_id="fixed_run_abc123",
-    metadata={"model_id": "gpt-4o"},
-)
+v0.3 补强了 manifest 中的复现字段，包括：
 
-result = agent.run("compute something", trace=writer)
-```
+- `git_sha`
+- `package_version`
+- `benchmark_name`
+- `benchmark_split`
+- `model_family`
+- `prompt_protocol`
+- `parser_name`
+- `tool_manifest`
+- `run_spec`
+- `experiment_spec`
+- `official_run`
+- `replay_mode`
+- token / latency / cost 汇总
 
-`TraceWriter` 构造参数：
+这些字段让 qita compare 与 benchmark result normalization 真正有了稳定语义。
 
-| 参数 | 类型 | 说明 |
-|---|---|---|
-| `output_dir` | `str` | 基目录。实际 run 目录会创建为 `output_dir/run_id/`。 |
-| `run_id` | `str` | 本次运行的唯一 ID。 |
-| `schema_version` | `str` | trace schema 版本，默认 `"v1"`。 |
-| `metadata` | `dict \| None` | 写入 manifest 的附加字段，如 `model_id`、`seed`。 |
-| `strict_validate` | `bool` | 若为 `True`，在 finalize 时按 schema 校验 artifacts。默认 `True`。 |
+## Best-effort replay
 
-## 关闭 tracing
+QitOS 的 tracing 支持的是 **best-effort research replay**。
 
-传入 `trace=False` 即可关闭 trace 输出：
+也就是说，它会尽量完整记录复盘需要的信息，但不会承诺远程模型 provider 或外部环境能被严格确定性重放。
 
-```python
-result = agent.run("quick test", trace=False)
-```
+这套 trace 适合：
 
-<Note>
-  当 `trace=False` 时，不会创建目录，也不会写出文件。但 `EngineResult.events` 与 `EngineResult.records` 依然会保留在内存中，只是不持久化到磁盘。
-</Note>
+- 调试长轨迹 agent
+- 比较 prompt / parser / tool 变化
+- 导出审阅 artifact
+- replay benchmark failure
 
-## 用 `qita` 查看 traces
+但不应被理解为“远程模型永远返回完全相同的 tokens”。
 
-QitOS 内置了 `qita` CLI 用于查看 trace 目录：
+## 用 qita 检查 traces
 
 ```bash
-# 查看默认 ./runs 下的全部 runs
 qita board --logdir ./runs
-
-# 逐步 replay 一个 run
-qita replay --run ./runs/research_agent_20260407_143022_819441
-
-# 导出为独立 HTML
-qita export --run ./runs/research_agent_20260407_143022_819441 --html run.html
+qita replay --run ./runs/<run_id>
+qita export --run ./runs/<run_id> --html ./report.html
 ```
 
-关于可观测性工具的完整介绍，请继续阅读 **Guides > Observability**。
-
-## qita 在原始 trace 之上增加了什么
-
-原始文件是事实来源，`qita` 是建立在其上的人工检查层。
-
-- `qita board` 用于并排比较多次 runs
-- `qita replay` 用于把一次 run 理解成时序过程
-- `qita export` 用于分享一个无需本地服务的结果包
-
-这意味着 QitOS 同时给你：
-
-- 机器可读的结构化 traces
-- 面向人类审查的可视化界面
-
-逐步打开一次 run 时，你会看到类似这样的界面：
-
-![qita 轨迹视图](/images/qita-traj.png)
-
-## 复现性要求
-
-这套 trace 系统是为了研究复现而设计的。一个有效 trace 的 `manifest.json` 应包含：
-
-- `task_id` 与 `task_hash`
-- `model_name`
-- `config_hash`
-- `tool_manifest`
-
-当 `strict_validate=True` 时，这些字段会在 finalize 时被校验。如果缺失，QitOS 会抛出校验错误。
-
-<Tip>
-  把 `model_id` 写进 `TraceWriter.metadata`，它就会进入 `manifest.json`。如果直接用 `agent.run()`，QitOS 也会在可用时自动读取 `agent.llm.model`。
-</Tip>
+`qita` 还支持 run compare，所以你可以直接回答“两次 run 为什么不同”，而不是手工读 JSON。
 
 ## 继续阅读
 
+- [Official runs](/zh/concepts/official-runs)
 - [Observability](/zh/guides/observability)
 - [CLI 参考](/zh/reference/cli)
-- [教程课程](/zh/tutorials)
+- [Replay 并检查失败 run](/zh/tutorials/replay-and-inspect-failed-runs)
