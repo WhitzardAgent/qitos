@@ -154,6 +154,38 @@ class TerminalCapability(ABC):
         """Return a backend-specific timestamp if available."""
 
 
+class GUIObserverCapability(ABC):
+    """GUI observation capability for multimodal environments."""
+
+    @abstractmethod
+    def capture_observation(self, state: Any = None) -> Dict[str, Any]:
+        """Return a normalized GUI observation pack payload."""
+
+
+class GUIControllerCapability(ABC):
+    """GUI control capability for click/type/scroll style actions."""
+
+    @abstractmethod
+    def perform(self, action: Dict[str, Any], state: Any = None) -> Dict[str, Any]:
+        """Apply one GUI action and return a structured result."""
+
+
+class OCRCapability(ABC):
+    """OCR capability contract for multimodal environments."""
+
+    @abstractmethod
+    def extract_text(self, source: Any) -> List[Dict[str, Any]]:
+        """Extract OCR rows or spans from the provided source."""
+
+
+class GroundingCapability(ABC):
+    """Grounding capability contract for GUI element linking."""
+
+    @abstractmethod
+    def ground(self, observation: Dict[str, Any]) -> Dict[str, Any]:
+        """Return grounding metadata for a multimodal observation pack."""
+
+
 __all__ = [
     "EnvSpec",
     "EnvObservation",
@@ -162,4 +194,8 @@ __all__ = [
     "FileSystemCapability",
     "CommandCapability",
     "TerminalCapability",
+    "GUIObserverCapability",
+    "GUIControllerCapability",
+    "OCRCapability",
+    "GroundingCapability",
 ]

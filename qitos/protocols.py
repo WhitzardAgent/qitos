@@ -203,6 +203,51 @@ Rules:
 - Use one or more <invoke> blocks when calling tools.
 - Use <task_complete>true</task_complete> only when the task is done."""
 
+_DESKTOP_JSON_CONTRACT = """Output contract:
+- Ground one next desktop action from the current screenshot/accessibility state.
+- Return valid JSON only.
+
+Action mode:
+{"thought":"visible UI state and grounding","plan":"why this next action is appropriate","action":{"name":"click","args":{"x":640,"y":420}}}
+
+Wait mode:
+{"thought":"why the UI may still be changing","plan":"wait for the next observation","action":{"name":"wait","args":{"duration":1.0}}}
+
+Failure mode:
+{"thought":"why the task is blocked","plan":"stop and report the blocker","action":{"name":"fail","args":{"reason":"..."}}}
+
+Final mode:
+{"thought":"why the objective is complete","final_answer":"what was completed"}"""
+
+_DESKTOP_XML_CONTRACT = """Output contract:
+- Ground one next desktop action from the current screenshot/accessibility state.
+- Return XML only.
+
+Action mode:
+<decision mode="act">
+  <think>visible UI state and grounding</think>
+  <plan>why this next action is appropriate</plan>
+  <action name="click">
+    <arg name="x">640</arg>
+    <arg name="y">420</arg>
+  </action>
+</decision>
+
+Wait mode:
+<decision mode="act">
+  <think>why the UI may still be changing</think>
+  <plan>wait for the next observation</plan>
+  <action name="wait">
+    <arg name="duration">1.0</arg>
+  </action>
+</decision>
+
+Final mode:
+<decision mode="final">
+  <think>why the objective is complete</think>
+  <final_answer>what was completed</final_answer>
+</decision>"""
+
 
 def _compose_prompt(
     base_prompt: str, tool_registry: Any, *, contract: str, renderer: ToolSchemaRenderer
@@ -267,6 +312,24 @@ def _minimax_prompt(base_prompt: str, tool_registry: Any) -> str:
         tool_registry,
         contract=_MINIMAX_CONTRACT,
         renderer=render_minimax_tool_schema,
+    )
+
+
+def _desktop_json_prompt(base_prompt: str, tool_registry: Any) -> str:
+    return _compose_prompt(
+        base_prompt,
+        tool_registry,
+        contract=_DESKTOP_JSON_CONTRACT,
+        renderer=render_json_tool_schema,
+    )
+
+
+def _desktop_xml_prompt(base_prompt: str, tool_registry: Any) -> str:
+    return _compose_prompt(
+        base_prompt,
+        tool_registry,
+        contract=_DESKTOP_XML_CONTRACT,
+        renderer=render_xml_tool_schema,
     )
 
 
@@ -357,6 +420,34 @@ def _protocol_table() -> Dict[str, ModelProtocol]:
                 "terminus_json_v1",
                 "json_decision_v1",
             ),
+        ),
+        "desktop_actions_json_v1": ModelProtocol(
+            id="desktop_actions_json_v1",
+            display_name="Desktop Actions JSON",
+            parser_factory=JsonDecisionParser,
+            prompt_renderer=_desktop_json_prompt,
+            contract_renderer=lambda _protocol: _render_simple_contract(
+                _DESKTOP_JSON_CONTRACT
+            ),
+            tool_schema_renderer=render_json_tool_schema,
+            repair_renderer=_render_repair_message,
+            continuation_renderer=_render_continuation_message,
+            supports_multi_action=False,
+            fallback_protocols=("desktop_actions_xml_v1", "json_decision_v1"),
+        ),
+        "desktop_actions_xml_v1": ModelProtocol(
+            id="desktop_actions_xml_v1",
+            display_name="Desktop Actions XML",
+            parser_factory=XmlDecisionParser,
+            prompt_renderer=_desktop_xml_prompt,
+            contract_renderer=lambda _protocol: _render_simple_contract(
+                _DESKTOP_XML_CONTRACT
+            ),
+            tool_schema_renderer=render_xml_tool_schema,
+            repair_renderer=_render_repair_message,
+            continuation_renderer=_render_continuation_message,
+            supports_multi_action=False,
+            fallback_protocols=("desktop_actions_json_v1", "xml_decision_v1"),
         ),
     }
 

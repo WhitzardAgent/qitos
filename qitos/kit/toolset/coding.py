@@ -24,7 +24,7 @@ class FullCodingToolSet(CodingToolSet):
             enable_tasks=True,
             enable_web=True,
             expose_legacy_aliases=True,
-            expose_modern_names=True,
+            expose_modern_names=False,
             profile="full",
         )
 

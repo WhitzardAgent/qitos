@@ -178,29 +178,55 @@ class AgentModule(ABC, Generic[StateT, ObservationT, ActionT]):
                 manual_prompt = type(self).build_system_prompt(self, state)
             finally:
                 delattr(self, "_prompt_bundle_reentry_guard")
-            return PromptBuildResult(
-                system_prompt_static=str(manual_prompt or "").strip(),
+            builder = self.prompt_builder()
+            scaffold_spec = PromptSpec(
+                parser_feedback=self._state_prompt_attr(state, "parser_feedback"),
+                continuation_feedback=self._state_prompt_attr(state, "timeout_feedback"),
+                include_tool_schema=False,
+                include_contract=False,
                 metadata={
+                    "agent_name": self.name,
+                    "prompt_authoring_mode": "manual_build_system_prompt",
+                },
+            )
+            scaffold = builder.build(
+                spec=scaffold_spec,
+                protocol=self.active_protocol(),
+                tool_registry=self.tool_registry,
+                llm=self.llm,
+                state=state,
+                resolution_source="agent_override",
+            )
+            manual_text = str(manual_prompt or "").strip()
+            metadata = dict(scaffold.metadata or {})
+            metadata.update(
+                {
                     "protocol": getattr(self.active_protocol(), "id", None),
                     "protocol_resolution_source": "agent_override",
                     "prompt_builder": "manual_build_system_prompt",
                     "prompt_builder_version": "manual",
-                    "sections_used": ["manual_override"]
-                    if str(manual_prompt or "").strip()
-                    else [],
+                    "sections_used": (
+                        ["manual_override"] if manual_text else []
+                    ),
                     "tool_schema_style": getattr(
                         self.active_protocol(), "id", None
                     ),
-                    "tool_schema_delivery": str(
-                        getattr(
-                            self.active_protocol(),
-                            "tool_schema_delivery",
-                            "prompt_injection",
-                        )
+                    "prompt_hash_static": builder._hash(manual_text),
+                    "prompt_hash_full": builder._hash(manual_text),
+                    "estimated_tokens_static": builder._estimate_tokens(
+                        self.llm, manual_text
                     ),
-                    "repair_injected": False,
-                    "continuation_injected": False,
-                },
+                    "estimated_tokens_full": builder._estimate_tokens(
+                        self.llm, manual_text
+                    ),
+                }
+            )
+            return PromptBuildResult(
+                system_prompt_static=manual_text,
+                message_injections=list(scaffold.message_injections),
+                user_content_blocks=list(scaffold.user_content_blocks),
+                tool_schema_payload=scaffold.tool_schema_payload,
+                metadata=metadata,
             )
         return self._build_default_prompt_bundle(state)
 

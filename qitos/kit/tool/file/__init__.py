@@ -6,16 +6,6 @@ from qitos.kit.tool.internal.coding_impl import CodingToolSet
 from qitos.kit.tool.internal.delegating import DelegatingTool
 
 
-class FileReadV2(DelegatingTool):
-    def __init__(self, workspace_root: str = "."):
-        super().__init__(CodingToolSet(workspace_root=workspace_root).file_read_v2)
-
-
-class FileEditV2(DelegatingTool):
-    def __init__(self, workspace_root: str = "."):
-        super().__init__(CodingToolSet(workspace_root=workspace_root).file_edit_v2)
-
-
 class ReadFile(DelegatingTool):
     def __init__(self, workspace_root: str = "."):
         super().__init__(CodingToolSet(workspace_root=workspace_root).read_file)
@@ -69,8 +59,6 @@ class MakeDirectory(DelegatingTool):
 __all__ = [
     "AppendFile",
     "CreateFile",
-    "FileEditV2",
-    "FileReadV2",
     "InsertText",
     "ListFiles",
     "MakeDirectory",

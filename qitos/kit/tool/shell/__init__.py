@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from qitos.kit.tool.advanced import BashV2
 from qitos.kit.tool.internal.coding_impl import CodingToolSet
 from qitos.kit.tool.internal.delegating import DelegatingTool
 
@@ -17,4 +16,4 @@ class RunCommand(DelegatingTool):
         )
 
 
-__all__ = ["BashV2", "RunCommand"]
+__all__ = ["RunCommand"]

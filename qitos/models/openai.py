@@ -9,7 +9,78 @@ import json
 import os
 from typing import Any, Dict, List, Optional, cast
 
+from ..core.multimodal import (
+    ensure_data_url,
+    file_to_data_url,
+    has_nontext_content,
+    normalize_content_block,
+    normalize_messages,
+)
 from .base import Model
+
+
+def _to_openai_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    normalized = normalize_messages(messages)
+    out: List[Dict[str, Any]] = []
+    for message in normalized:
+        role = str(message.get("role") or "user").strip() or "user"
+        content = message.get("content")
+        payload: Dict[str, Any] = {"role": role}
+        for key, value in message.items():
+            if key in {"role", "content"}:
+                continue
+            payload[key] = value
+        if isinstance(content, list):
+            if has_nontext_content(message):
+                payload["content"] = _to_openai_content_blocks(content)
+            else:
+                text_blocks = [
+                    str(normalize_content_block(block).get("text") or "")
+                    for block in content
+                    if str(normalize_content_block(block).get("type") or "text")
+                    == "text"
+                ]
+                payload["content"] = "\n".join(part for part in text_blocks if part)
+        else:
+            payload["content"] = str(content or "")
+        out.append(payload)
+    return out
+
+
+def _to_openai_content_blocks(content: List[Any]) -> List[Dict[str, Any]]:
+    blocks: List[Dict[str, Any]] = []
+    for raw in content:
+        block = normalize_content_block(raw)
+        block_type = str(block.get("type") or "text")
+        if block_type == "text":
+            blocks.append({"type": "text", "text": str(block.get("text") or "")})
+            continue
+        detail = str(block.get("detail") or "").strip()
+        if block_type == "image_url":
+            image_url: Dict[str, Any] = {"url": str(block.get("url") or "")}
+            if detail:
+                image_url["detail"] = detail
+            blocks.append({"type": "image_url", "image_url": image_url})
+            continue
+        if block_type == "image_base64":
+            mime_type = str(block.get("mime_type") or "image/png")
+            image_url = {"url": ensure_data_url(str(block.get("data") or ""), mime_type=mime_type)}
+            if detail:
+                image_url["detail"] = detail
+            blocks.append({"type": "image_url", "image_url": image_url})
+            continue
+        if block_type == "image_file":
+            path = str(block.get("path") or "")
+            mime_type = str(block.get("mime_type") or "")
+            image_url = {
+                "url": file_to_data_url(path, mime_type=mime_type or None)
+            }
+            if detail:
+                image_url["detail"] = detail
+            blocks.append({"type": "image_url", "image_url": image_url})
+            continue
+        blocks.append({"type": "text", "text": str(block)})
+    return blocks
 
 
 class OpenAIModel(Model):
@@ -74,7 +145,7 @@ class OpenAIModel(Model):
                 "OPENAI_API_KEY not set. Please set environment variable or pass api_key parameter."
             )
 
-    def _call_api(self, messages: List[Dict[str, str]], **kwargs: Any) -> str:
+    def _call_api(self, messages: List[Dict[str, Any]], **kwargs: Any) -> str:
         """
         Call OpenAI API
 
@@ -122,10 +193,12 @@ class OpenAIModel(Model):
 
         return ""
 
-    def _chat_completion(self, client: Any, messages: List[Dict[str, str]], **kwargs: Any) -> Any:
+    def _chat_completion(
+        self, client: Any, messages: List[Dict[str, Any]], **kwargs: Any
+    ) -> Any:
         response = client.chat.completions.create(
             model=self.model,
-            messages=cast(Any, messages),
+            messages=cast(Any, _to_openai_messages(messages)),
             temperature=self.temperature,
             max_tokens=self.max_tokens,
             **kwargs,
@@ -133,7 +206,7 @@ class OpenAIModel(Model):
         self._set_last_usage(self._usage_from_response(response))
         return response
 
-    def call_raw(self, messages: List[Dict[str, str]], **kwargs: Any) -> Any:
+    def call_raw(self, messages: List[Dict[str, Any]], **kwargs: Any) -> Any:
         import openai
 
         self._last_usage = None
@@ -221,6 +294,9 @@ class OpenAIModel(Model):
             return {}
         return {"tools": tool_schema_payload}
 
+    def supports_multimodal_input(self) -> bool:
+        return True
+
 
 class OpenAICompatibleModel(Model):
     """
@@ -282,7 +358,7 @@ class OpenAICompatibleModel(Model):
                 "OPENAI_BASE_URL not set. Please set environment variable or pass base_url parameter."
             )
 
-    def _call_api(self, messages: List[Dict[str, str]], **kwargs: Any) -> str:
+    def _call_api(self, messages: List[Dict[str, Any]], **kwargs: Any) -> str:
         """
         Call OpenAI compatible API
 
@@ -346,6 +422,9 @@ class OpenAICompatibleModel(Model):
             return {}
         return {"tools": tool_schema_payload}
 
+    def supports_multimodal_input(self) -> bool:
+        return True
+
     def _format_tool_calls(self, tool_calls) -> str:
         """
         Format tool calls
@@ -378,10 +457,12 @@ class OpenAICompatibleModel(Model):
 
         return "\n".join(parts)
 
-    def _chat_completion(self, client: Any, messages: List[Dict[str, str]], **kwargs: Any) -> Any:
+    def _chat_completion(
+        self, client: Any, messages: List[Dict[str, Any]], **kwargs: Any
+    ) -> Any:
         response = client.chat.completions.create(
             model=self.model,
-            messages=cast(Any, messages),
+            messages=cast(Any, _to_openai_messages(messages)),
             temperature=self.temperature,
             max_tokens=self.max_tokens,
             **kwargs,
@@ -389,7 +470,7 @@ class OpenAICompatibleModel(Model):
         self._set_last_usage(self._usage_from_response(response))
         return response
 
-    def call_raw(self, messages: List[Dict[str, str]], **kwargs: Any) -> Any:
+    def call_raw(self, messages: List[Dict[str, Any]], **kwargs: Any) -> Any:
         import openai
 
         self._last_usage = None
@@ -490,7 +571,7 @@ class AzureOpenAIModel(OpenAICompatibleModel):
         self.deployment = deployment
         self.endpoint = endpoint
 
-    def _call_api(self, messages: List[Dict[str, str]], **kwargs: Any) -> str:
+    def _call_api(self, messages: List[Dict[str, Any]], **kwargs: Any) -> str:
         """
         Call Azure OpenAI API (adds api_version parameter)
         """
@@ -506,7 +587,7 @@ class AzureOpenAIModel(OpenAICompatibleModel):
 
             response = client.chat.completions.create(
                 model=self.deployment or "",
-                messages=cast(Any, messages),
+                messages=cast(Any, _to_openai_messages(messages)),
                 temperature=self.temperature,
                 max_tokens=self.max_tokens,
                 **kwargs,

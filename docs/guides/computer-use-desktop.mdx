@@ -1,0 +1,159 @@
+---
+title: "Computer Use and Desktop Env"
+description: "Build OSWorld-inspired desktop agents on QitOS without binding yourself to a provider-specific computer-use API."
+---
+
+QitOS now has a first provider-neutral **computer-use lane** for desktop and GUI work.
+
+This slice is inspired by the original OSWorld architecture and task loop, but it is implemented in QitOS-native pieces:
+
+- `DesktopEnv` for screenshot + accessibility + terminal observations
+- `qitos.kit.tool.gui` for atomic GUI actions
+- `ComputerUseToolSet` / `computer_use_tools()` for composition-first authoring
+- `desktop_actions_json_v1` and `desktop_actions_xml_v1` for protocol-aware scaffolding
+- OpenAI-compatible multimodal image input for the current screenshot turn
+
+## Why this lane exists
+
+The official OpenAI computer-use APIs are useful, but they are also provider-specific. QitOS takes a different default path for research:
+
+- keep the **model input** on the existing OpenAI-compatible image-input lane,
+- keep the **output contract** in QitOS protocols and parsers,
+- keep the **desktop runtime** in a provider-neutral environment adapter.
+
+That means the same computer-use harness can be used with:
+
+- OpenAI-compatible multimodal APIs,
+- open-source models that only understand JSON or XML scaffolding,
+- future benchmark adapters such as OSWorld-style desktop tasks.
+
+## Core pieces
+
+### `DesktopEnv`
+
+Use `DesktopEnv` when you want an OSWorld-style desktop environment with QitOS contracts.
+
+```python
+from qitos.kit.env import DesktopEnv
+
+env = DesktopEnv.from_mock(
+    screenshot_path="/tmp/desktop.png",
+    instruction="Click the visible Continue button.",
+    accessibility_tree={"role": "window", "name": "Demo"},
+)
+```
+
+Current provider layers:
+
+- `MockDesktopProvider` for smoke runs and deterministic examples
+- `ContainerDesktopProvider` for container-first desktop kernels
+
+### GUI tools
+
+Atomic GUI tools live under `qitos.kit.tool.gui`.
+
+```python
+from qitos.kit.tool.gui import Click, TypeText, Hotkey
+```
+
+The action vocabulary aligns with OSWorld-style desktop actions:
+
+- `move_to`
+- `click`
+- `mouse_down`
+- `mouse_up`
+- `right_click`
+- `double_click`
+- `drag_to`
+- `scroll`
+- `type_text`
+- `press_key`
+- `key_down`
+- `key_up`
+- `hotkey`
+- `wait`
+- `done`
+- `fail`
+
+### Composition-first toolset
+
+Most users should not register each GUI tool by hand. Start from the preset bundle:
+
+```python
+from qitos.kit.toolset import computer_use_tools
+
+registry = computer_use_tools()
+```
+
+Or stay on the list-first authoring path:
+
+```python
+from qitos.kit import ComputerUseToolSet
+
+agent = MyAgent(
+    toolset=[ComputerUseToolSet()],
+    llm=model,
+    model_protocol="desktop_actions_json_v1",
+)
+```
+
+## Protocol choice
+
+QitOS keeps **multimodal input** and **output scaffolding** as separate concerns.
+
+- multimodal input answers: “what can the model see?”
+- protocol/parser answers: “how should the model respond?”
+
+For desktop work, QitOS now ships two protocol presets:
+
+- `desktop_actions_json_v1`
+- `desktop_actions_xml_v1`
+
+Use JSON first when the model is comfortable with structured JSON.
+Use XML when the model tends to follow tag-based contracts more reliably.
+
+```python
+agent = MyAgent(
+    toolset=[ComputerUseToolSet()],
+    llm=model,
+    model_protocol="desktop_actions_xml_v1",
+)
+```
+
+This is the same design idea used elsewhere in QitOS: adapt the scaffolding to the model, instead of pretending one parser/prompt shape fits every family.
+
+## Example: `openai_cua_agent.py`
+
+The main reference example is:
+
+- `/Users/morinop/coding/yoga_framework/examples/real/openai_cua_agent.py`
+
+It keeps the file name close to OSWorld’s original `openai_cua_agent.py` so the lineage is easy to follow, but the implementation is intentionally QitOS-native:
+
+- current-step screenshot goes into the model via OpenAI-compatible multimodal messages
+- GUI actions are returned as QitOS JSON/XML decisions
+- GUI execution goes through `ComputerUseToolSet`
+- environment state refresh goes through `DesktopEnv`
+
+Smoke run:
+
+```bash
+python examples/real/openai_cua_agent.py
+```
+
+If you want the smallest environment-only loop, use:
+
+```bash
+python examples/real/desktop_env_smoke.py
+```
+
+## Container-first direction
+
+The desktop lane is designed to be **container-first**.
+That keeps the future OSWorld-style adapter direction aligned with:
+
+- reproducible desktop state
+- provider isolation
+- benchmark-friendly env lifecycles
+
+The current first-pass implementation does not yet ship a full benchmark harness or replay overlay. The goal of this phase is to make the **desktop substrate** real and reusable first.

@@ -3,12 +3,24 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, Generic, List, TypeVar, cast
+from pathlib import Path
+from typing import Any, Dict, Generic, List, Optional, TypeVar, cast
 
 from ..core.action import Action
 from ..core.decision import Decision
 from ..core.errors import ErrorCategory, ParseExecutionError, RuntimeErrorInfo
 from ..core.model_response import ModelResponse
+from ..core.multimodal import (
+    content_to_text,
+    image_base64_block,
+    image_file_block,
+    image_url_block,
+    normalize_content_block,
+    normalize_observation_pack,
+    observation_modalities,
+    observation_visual_assets,
+    text_block,
+)
 from ..protocols import get_protocol, resolve_protocol_chain
 from ..core.state import StateSchema
 from ._context_runtime import ContextOverflowError
@@ -149,13 +161,16 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
                 }
             )
         prompt_messages = list(getattr(prompt_bundle, "message_injections", []) or [])
+        prompt_user_content_blocks = list(
+            getattr(prompt_bundle, "user_content_blocks", []) or []
+        )
         context_runtime = engine._context_runtime
         pre_context = context_runtime.build_pre_request(
             llm=engine.agent.llm,
             system_prompt=system_prompt if isinstance(system_prompt, str) else "",
             prepared=str(prepared),
         )
-        messages: List[Dict[str, str]] = []
+        messages: List[Dict[str, Any]] = []
         if isinstance(system_prompt, str) and system_prompt.strip():
             system = system_prompt.strip()
             messages.append({"role": "system", "content": system})
@@ -164,7 +179,7 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
                     "system", system, record.step_id, metadata={"source": "engine"}
                 )
                 engine._last_system_prompt = system
-        history: List[Dict[str, str]] = []
+        history: List[Dict[str, Any]] = []
         query = engine.history_policy.build_query(
             step_id=record.step_id,
             phase=RuntimePhase.DECIDE.value,
@@ -249,10 +264,23 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
                 continue
             messages.append({"role": role, "content": content})
         current_user_content = "\n\n".join(injection_prefixes + [str(prepared)])
-        current_user = {"role": "user", "content": current_user_content}
+        current_user = self._build_current_user_message(
+            prepared_text=current_user_content,
+            prompt_user_content_blocks=prompt_user_content_blocks,
+            observation=observation,
+            record=record,
+        )
         messages.append(current_user)
+        prepared_full = content_to_text(current_user.get("content"))
+        record.prompt_metadata = dict(prompt_metadata)
+        record.prompt_metadata.update(
+            {
+                "model_input_modalities": list(record.model_input_modalities),
+                "model_input_visual_count": int(record.model_input_visual_count),
+                "observation_modalities": list(record.observation_modalities),
+            }
+        )
         record.context = context_runtime.telemetry_dict(pre_context)
-        record.prompt_metadata = prompt_metadata
         engine._last_context_telemetry = dict(record.context)
         engine._emit(
             record.step_id,
@@ -260,13 +288,13 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
             payload={
                 "stage": "model_input",
                 "prepared": str(prepared),
-                "prepared_full": current_user_content,
+                "prepared_full": prepared_full,
                 "history_message_count": len(history),
                 "history_messages_meta": history_metadata,
                 "messages": messages,
                 "context": dict(record.context),
                 "state_stats": self._state_stats(observation, record.context),
-                "prompt": prompt_metadata,
+                "prompt": dict(record.prompt_metadata),
             },
         )
         engine._history_append(
@@ -322,7 +350,7 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
         return {}
 
     def _call_llm(
-        self, llm: Any, messages: List[Dict[str, str]], request_options: Dict[str, Any]
+        self, llm: Any, messages: List[Dict[str, Any]], request_options: Dict[str, Any]
     ) -> Any:
         call_raw = getattr(llm, "call_raw", None)
         if callable(call_raw):
@@ -338,6 +366,194 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
             return llm(messages, **request_options)
         except TypeError:
             return llm(messages)
+
+    def _build_current_user_message(
+        self,
+        *,
+        prepared_text: str,
+        prompt_user_content_blocks: List[Dict[str, Any]],
+        observation: ObservationT,
+        record: StepRecord,
+    ) -> Dict[str, Any]:
+        content_blocks: List[Dict[str, Any]] = []
+        if str(prepared_text or "").strip():
+            content_blocks.append(text_block(str(prepared_text)))
+
+        task_blocks = self._task_visual_blocks()
+        observation_blocks = self._observation_visual_blocks(observation, record)
+        content_blocks.extend(
+            [normalize_content_block(block) for block in prompt_user_content_blocks]
+        )
+        content_blocks.extend(task_blocks)
+        content_blocks.extend(observation_blocks)
+
+        record.model_input_modalities = self._content_modalities(content_blocks)
+        record.model_input_visual_count = sum(
+            1 for block in content_blocks if str(block.get("type") or "text") != "text"
+        )
+        if (
+            record.model_input_visual_count > 0
+            and not self._llm_supports_multimodal(getattr(self.engine.agent, "llm", None))
+        ):
+            raise ValueError(
+                "Configured model adapter does not support multimodal input content blocks."
+            )
+        if record.model_input_visual_count > 0:
+            return {"role": "user", "content": content_blocks}
+        return {"role": "user", "content": str(prepared_text or "")}
+
+    def _content_modalities(self, content_blocks: List[Dict[str, Any]]) -> List[str]:
+        modalities: List[str] = []
+        for block in content_blocks:
+            block_type = str(block.get("type") or "text")
+            if block_type == "text":
+                if "text" not in modalities:
+                    modalities.append("text")
+                continue
+            if block_type in {"image_url", "image_base64", "image_file"}:
+                if "image" not in modalities:
+                    modalities.append("image")
+                continue
+            if block_type not in modalities:
+                modalities.append(block_type)
+        return modalities
+
+    def _llm_supports_multimodal(self, llm: Any) -> bool:
+        supports = getattr(llm, "supports_multimodal_input", None)
+        if callable(supports):
+            try:
+                return bool(supports())
+            except Exception:
+                return False
+        return True
+
+    def _task_workspace_root(self) -> Optional[Path]:
+        task_obj = getattr(self.engine, "_active_task_obj", None)
+        env_spec = getattr(task_obj, "env_spec", None)
+        config = getattr(env_spec, "config", None)
+        if isinstance(config, dict):
+            root = str(config.get("workspace_root") or "").strip()
+            if root:
+                return Path(root).expanduser().resolve()
+        return None
+
+    def _task_visual_blocks(self) -> List[Dict[str, Any]]:
+        task_obj = getattr(self.engine, "_active_task_obj", None)
+        resources = list(getattr(task_obj, "resources", []) or [])
+        workspace_root = self._task_workspace_root()
+        blocks: List[Dict[str, Any]] = []
+        for item in resources:
+            kind = str(getattr(item, "kind", "") or "").strip().lower()
+            metadata = dict(getattr(item, "metadata", {}) or {})
+            modality = str(metadata.get("modality") or "").strip().lower()
+            if kind != "image" and modality != "image":
+                continue
+            detail = str(metadata.get("detail") or "").strip() or None
+            uri = str(getattr(item, "uri", "") or "").strip()
+            path = str(getattr(item, "path", "") or "").strip()
+            if uri:
+                blocks.append(
+                    image_url_block(
+                        uri,
+                        detail=detail,
+                        metadata={"source": "task_resource", "kind": kind},
+                    )
+                )
+                continue
+            if path:
+                resolved = Path(path).expanduser()
+                if not resolved.is_absolute() and workspace_root is not None:
+                    resolved = (workspace_root / resolved).resolve()
+                blocks.append(
+                    image_file_block(
+                        str(resolved),
+                        detail=detail,
+                        metadata={"source": "task_resource", "kind": kind},
+                    )
+                )
+        return blocks
+
+    def _observation_visual_blocks(
+        self, observation: ObservationT, record: StepRecord
+    ) -> List[Dict[str, Any]]:
+        env_observation = getattr(self.engine, "_last_env_observation", None)
+        payload = self._observation_pack_payload(env_observation, observation)
+        if payload is None:
+            return []
+        record.observation_modalities = observation_modalities(payload)
+        record.visual_assets = observation_visual_assets(
+            payload, source_step=record.step_id
+        )
+        record.visual_asset_count = len(record.visual_assets)
+        record.has_screenshot = "screenshot" in record.observation_modalities
+        record.has_dom = "dom" in record.observation_modalities
+        record.has_accessibility_tree = (
+            "accessibility_tree" in record.observation_modalities
+        )
+        pack = normalize_observation_pack(payload)
+        if pack is None or not isinstance(pack.screenshot, dict):
+            return []
+        screenshot = dict(pack.screenshot)
+        detail = str(screenshot.get("detail") or "high").strip() or "high"
+        metadata: Dict[str, Any] = {"source": "env_observation"}
+        if pack.metadata:
+            metadata["observation"] = dict(pack.metadata)
+        if screenshot.get("url"):
+            return [
+                image_url_block(
+                    str(screenshot.get("url") or ""),
+                    detail=detail,
+                    mime_type=str(screenshot.get("mime_type") or ""),
+                    metadata=metadata,
+                )
+            ]
+        if screenshot.get("path"):
+            return [
+                image_file_block(
+                    str(screenshot.get("path") or ""),
+                    mime_type=str(screenshot.get("mime_type") or ""),
+                    detail=detail,
+                    metadata=metadata,
+                )
+            ]
+        data_value = screenshot.get("data_url") or screenshot.get("data") or screenshot.get(
+            "base64"
+        )
+        if data_value:
+            return [
+                image_base64_block(
+                    str(data_value),
+                    mime_type=str(screenshot.get("mime_type") or "image/png"),
+                    detail=detail,
+                    metadata=metadata,
+                )
+            ]
+        return []
+
+    def _observation_pack_payload(
+        self, env_observation: Any, observation: ObservationT
+    ) -> Dict[str, Any] | None:
+        if env_observation is not None:
+            data = getattr(env_observation, "data", None)
+            if isinstance(data, dict):
+                multimodal = data.get("multimodal")
+                if isinstance(multimodal, dict):
+                    return multimodal
+                if normalize_observation_pack(data) is not None:
+                    return data
+        if isinstance(observation, dict):
+            env_payload = observation.get("env")
+            if isinstance(env_payload, dict):
+                env_obs = env_payload.get("observation")
+                if isinstance(env_obs, dict):
+                    data = env_obs.get("data")
+                    if isinstance(data, dict):
+                        multimodal = data.get("multimodal")
+                        if isinstance(multimodal, dict):
+                            return multimodal
+                        if normalize_observation_pack(data) is not None:
+                            return data
+        return None
 
     def _state_stats(
         self, observation: ObservationT, context: Dict[str, Any]

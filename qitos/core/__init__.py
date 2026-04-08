@@ -32,6 +32,10 @@ from .env import (
     FileSystemCapability,
     CommandCapability,
     TerminalCapability,
+    GUIObserverCapability,
+    GUIControllerCapability,
+    OCRCapability,
+    GroundingCapability,
 )
 from .spec import BenchmarkRunResult, ExperimentSpec, RunSpec
 from .task import (
@@ -42,6 +46,13 @@ from .task import (
     TaskResourceBinding,
     TaskCriterionResult,
     TaskResult,
+)
+from .multimodal import (
+    ContentBlock,
+    MessageEnvelope,
+    ObservationPack,
+    GroundingMetadata,
+    VisualTraceAsset,
 )
 from .tool import BaseTool, FunctionTool, ToolPermission, ToolSpec, tool
 from .tool_registry import ToolRegistry
@@ -78,6 +89,10 @@ __all__ = [
     "FileSystemCapability",
     "CommandCapability",
     "TerminalCapability",
+    "GUIObserverCapability",
+    "GUIControllerCapability",
+    "OCRCapability",
+    "GroundingCapability",
     "Task",
     "TaskResource",
     "TaskBudget",
@@ -85,6 +100,11 @@ __all__ = [
     "TaskResourceBinding",
     "TaskCriterionResult",
     "TaskResult",
+    "ContentBlock",
+    "MessageEnvelope",
+    "ObservationPack",
+    "GroundingMetadata",
+    "VisualTraceAsset",
     "BaseTool",
     "FunctionTool",
     "ToolPermission",

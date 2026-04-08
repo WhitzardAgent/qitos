@@ -12,6 +12,7 @@ from qitos.kit.tool.toolset import BaseToolSet, StaticToolSet, ToolSet, toolset_
 from .advanced import AdvancedCodingToolSet, advanced_coding_tools
 from .builders import math_tools
 from .codebase import CodebaseToolSet, FilesToolSet, codebase_tools
+from .computer_use import ComputerUseToolSet, computer_use_tools
 from .coding import CodingToolSet, FullCodingToolSet, coding_tools
 from .editor import EditorToolSet, editor_tools
 from .epub import EpubToolSet, epub_tools
@@ -26,6 +27,7 @@ __all__ = [
     "AdvancedCodingToolSet",
     "BaseToolSet",
     "CodebaseToolSet",
+    "ComputerUseToolSet",
     "CodingToolSet",
     "EditorToolSet",
     "EpubToolSet",
@@ -42,6 +44,7 @@ __all__ = [
     "WebToolSet",
     "advanced_coding_tools",
     "codebase_tools",
+    "computer_use_tools",
     "coding_tools",
     "editor_tools",
     "epub_tools",

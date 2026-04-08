@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from qitos.core import Env, EnvObservation, EnvSpec, EnvStepResult
+from qitos.kit.env import DesktopEnv, ScreenshotEnv
 
 
 class _DummyEnv(Env):
@@ -65,3 +68,50 @@ def test_env_contract_lifecycle_and_terminal_default():
 
     env.teardown()
     assert env.closed is True
+
+
+def test_screenshot_env_exposes_multimodal_observation(tmp_path: Path):
+    png_path = tmp_path / "screen.png"
+    png_path.write_bytes(
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x04\x00\x00\x00\xb5\x1c\x0c\x02\x00\x00\x00\x0bIDATx\xdac\xfc\xff\x1f\x00\x02\xeb\x01\xf5i\xf6\x81\xb7\x00\x00\x00\x00IEND\xaeB`\x82"
+    )
+    env = ScreenshotEnv(
+        screenshot_path=str(png_path),
+        text="Observe the login button.",
+        dom={"title": "Login"},
+        accessibility_tree={"role": "window"},
+        ocr=[{"text": "Login"}],
+    )
+    obs = env.reset()
+    multimodal = obs.data["multimodal"]
+    assert multimodal["text"] == "Observe the login button."
+    assert multimodal["screenshot"]["path"] == str(png_path.resolve())
+    assert env.has_ops("gui_observer") is True
+    assert env.has_ops("gui_controller") is True
+
+
+def test_desktop_env_mock_provider_supports_gui_loop(tmp_path: Path) -> None:
+    png_path = tmp_path / "desktop.png"
+    png_path.write_bytes(
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x04\x00\x00\x00\xb5\x1c\x0c\x02\x00\x00\x00\x0bIDATx\xdac\xfc\xff\x1f\x00\x02\xeb\x01\xf5i\xf6\x81\xb7\x00\x00\x00\x00IEND\xaeB`\x82"
+    )
+    env = DesktopEnv.from_mock(
+        screenshot_path=str(png_path),
+        instruction="Click Continue",
+        accessibility_tree={"role": "window", "name": "Desktop Smoke"},
+        terminal="$ echo smoke\nsmoke\n$ ",
+        ui_candidates=[{"label": "Continue", "x": 640, "y": 420}],
+    )
+    env.setup()
+    obs = env.reset()
+    assert "multimodal" in obs.data
+    controller = env.get_ops("gui_controller")
+    assert controller is not None
+    action_result = controller.perform({"name": "click", "args": {"x": 640, "y": 420}})
+    assert action_result["status"] == "success"
+    step = env.step(
+        {"decision_mode": "act", "actions": [{"name": "click", "args": {"x": 640, "y": 420}}]}
+    )
+    assert step.observation.data["desktop"]["provider"] == "mock_desktop"
+    assert step.info["performed_actions"]
+    env.teardown()

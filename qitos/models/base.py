@@ -14,6 +14,7 @@ import re
 from abc import ABC, abstractmethod
 from typing import Any, Callable, Dict, List, Optional, Type
 
+from ..core.multimodal import content_to_text, normalize_messages
 from .context_registry import infer_context_window
 
 
@@ -74,7 +75,7 @@ class Model(ABC):
         self._last_usage: Optional[Dict[str, Any]] = None
 
     @abstractmethod
-    def _call_api(self, messages: List[Dict[str, str]], **kwargs: Any) -> str:
+    def _call_api(self, messages: List[Dict[str, Any]], **kwargs: Any) -> str:
         """
         Actually call the model API
 
@@ -88,7 +89,7 @@ class Model(ABC):
         """
         pass
 
-    def __call__(self, messages: List[Dict[str, str]], **kwargs: Any) -> str:
+    def __call__(self, messages: List[Dict[str, Any]], **kwargs: Any) -> str:
         """
         Call model to generate response
 
@@ -102,7 +103,7 @@ class Model(ABC):
         self._last_usage = None
         return self._call_api(messages, **kwargs)
 
-    def call_raw(self, messages: List[Dict[str, str]], **kwargs: Any) -> Any:
+    def call_raw(self, messages: List[Dict[str, Any]], **kwargs: Any) -> Any:
         """
         Advanced runtime entrypoint that may return a provider-native response object.
 
@@ -130,6 +131,10 @@ class Model(ABC):
         _ = protocol
         _ = delivery
         return {}
+
+    def supports_multimodal_input(self) -> bool:
+        """Whether this adapter can accept multimodal message content arrays."""
+        return False
 
     def count_tokens(self, messages_or_text: Any) -> Optional[int]:
         """
@@ -174,7 +179,7 @@ class Model(ABC):
             for item in payload:
                 if isinstance(item, dict):
                     role = item.get("role", "")
-                    content = item.get("content", "")
+                    content = content_to_text(item.get("content"))
                     parts.append(f"{role}: {content}")
                 else:
                     parts.append(str(item))
@@ -185,7 +190,7 @@ class Model(ABC):
 
     def format_messages(
         self, user_content: str, history: Optional[List[Dict[str, Any]]] = None
-    ) -> List[Dict[str, str]]:
+    ) -> List[Dict[str, Any]]:
         """
         Format messages (helper method)
 
@@ -196,11 +201,13 @@ class Model(ABC):
         Returns:
             Formatted messages list
         """
-        messages = []
+        messages: List[Dict[str, Any]] = []
 
         if self.system_prompt:
             messages.append({"role": "system", "content": self.system_prompt})
 
+        if history:
+            messages.extend(normalize_messages(history))
         messages.append({"role": "user", "content": user_content})
 
         return messages
@@ -277,7 +284,7 @@ class AsyncModel(Model):
     """
 
     @abstractmethod
-    async def _acall_api(self, messages: List[Dict[str, str]]) -> str:
+    async def _acall_api(self, messages: List[Dict[str, Any]]) -> str:
         """
         Async call to model API
 
@@ -285,13 +292,13 @@ class AsyncModel(Model):
         """
         pass
 
-    def _call_api(self, messages: List[Dict[str, str]], **kwargs: Any) -> str:
+    def _call_api(self, messages: List[Dict[str, Any]], **kwargs: Any) -> str:
         import asyncio
 
         _ = kwargs
         return asyncio.run(self._acall_api(messages))
 
-    async def acall(self, messages: List[Dict[str, str]]) -> str:
+    async def acall(self, messages: List[Dict[str, Any]]) -> str:
         """Async call to model."""
         return await self._acall_api(messages)
 

@@ -1,32 +1,23 @@
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass
-from pathlib import Path
 
-from qitos import (
-    Action,
-    StateSchema,
-    ToolPermissionContext,
-    ToolPermissionRule,
-    ToolRegistry,
-)
+from qitos import Action, StateSchema, ToolPermissionContext, ToolPermissionRule, ToolRegistry
 from qitos.core.action import ActionStatus
 from qitos.core.tool import BaseTool, ToolPermission, ToolSpec, ToolValidationResult
 from qitos.engine.action_executor import ActionExecutor
 from qitos.kit.tool.tools import advanced_coding_tools
 from qitos.kit.tool import (
     AskUserChoiceTool,
-    BashV2,
-    FileEditV2,
-    FileReadV2,
+    CodingToolSet,
     LSPQueryTool,
     MCPListResourcesTool,
     MCPReadResourceTool,
     TodoWriteTool,
     ToolSearchTool,
-    WebFetchV2,
 )
+from qitos.kit.tool.file import ReadFile, ReplaceLines, StrReplace
+from qitos.kit.tool.shell import RunCommand
 
 
 class _EchoTool(BaseTool):
@@ -100,55 +91,41 @@ def test_action_executor_applies_validation_permission_and_truncation():
     assert ask.output["status"] == "needs_user_input"
 
 
-def test_bash_v2_supports_read_only_and_background(tmp_path):
-    tool = BashV2(workspace_root=str(tmp_path))
-    valid = tool.validate_input({"command": "rg --files .", "read_only": True})
-    assert valid.valid
-
-    destructive = tool.validate_input(
-        {"command": "rm -rf tmp", "allow_destructive": False}
-    )
-    assert not destructive.valid
-
-    bg = tool.run(command="sleep 0.1; echo hi", run_in_background=True)
-    assert bg["status"] == "success"
-    assert Path(bg["stdout_path"]).exists()
-    time.sleep(0.2)
+def test_run_command_executes_in_workspace(tmp_path):
+    tool = RunCommand(workspace_root=str(tmp_path))
+    result = tool.run(command="pwd")
+    assert result["status"] == "success"
+    assert str(tmp_path) in result["stdout"]
 
 
-def test_file_read_and_edit_v2_preserve_line_endings_and_detect_conflicts(tmp_path):
+def test_read_file_and_str_replace_preserve_line_endings(tmp_path):
     path = tmp_path / "demo.txt"
     path.write_bytes(b"hello\r\nworld\r\n")
 
-    reader = FileReadV2(workspace_root=str(tmp_path))
+    reader = ReadFile(workspace_root=str(tmp_path))
     read_out = reader.run(path="demo.txt")
     assert read_out["status"] == "success"
-    assert read_out["line_ending"] == "\r\n"
+    assert "hello" in read_out["content"]
 
-    editor = FileEditV2(workspace_root=str(tmp_path))
+    editor = StrReplace(workspace_root=str(tmp_path))
     edit_out = editor.run(
         path="demo.txt",
-        action="str_replace",
-        old_text="world",
-        new_text="qitos",
-        expected_mtime=path.stat().st_mtime,
+        old_str="world",
+        new_str="qitos",
     )
     assert edit_out["status"] == "success"
     assert b"\r\n" in path.read_bytes()
 
-    stale = editor.run(
-        path="demo.txt",
-        action="str_replace",
-        old_text="qitos",
-        new_text="again",
-        expected_mtime=0.0,
+    lines = ReplaceLines(workspace_root=str(tmp_path))
+    replaced = lines.run(
+        path="demo.txt", start_line=2, end_line=2, replacement="done"
     )
-    assert stale["status"] == "error"
-    assert "modified" in stale["message"]
+    assert replaced["status"] == "success"
+    assert "done" in path.read_text(encoding="utf-8")
 
 
-def test_web_fetch_v2_handles_redirect_and_prompt_extraction(monkeypatch):
-    tool = WebFetchV2()
+def test_web_fetch_handles_redirect_and_text_extraction(monkeypatch):
+    tool = CodingToolSet()
 
     def _redirect(
         url: str,
@@ -171,8 +148,8 @@ def test_web_fetch_v2_handles_redirect_and_prompt_extraction(monkeypatch):
             "headers": {"Location": "https://redirected.example.com/doc"},
         }
 
-    monkeypatch.setattr(tool._impl.http_get, "run", _redirect)
-    redirect = tool.run(url="https://example.com/doc", prompt="summarize")
+    monkeypatch.setattr(tool, "http_get", _redirect)
+    redirect = tool.web_fetch(url="https://example.com/doc")
     assert redirect["redirect_url"] == "https://redirected.example.com/doc"
 
     def _content(
@@ -197,12 +174,10 @@ def test_web_fetch_v2_handles_redirect_and_prompt_extraction(monkeypatch):
             "headers": {},
         }
 
-    monkeypatch.setattr(tool._impl.http_get, "run", _content)
-    out = tool.run(
-        url="https://github.com/openai/example", prompt="advanced tool search"
-    )
+    monkeypatch.setattr(tool, "http_get", _content)
+    out = tool.web_fetch(url="https://github.com/openai/example")
     assert out["status"] == "success"
-    assert "tool search" in out["result"].lower()
+    assert "tool search" in out["content"].lower()
     assert out["auth_hint"]
 
 

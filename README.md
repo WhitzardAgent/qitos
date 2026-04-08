@@ -14,6 +14,11 @@ Prototype methods, run benchmarks, and inspect long-horizon trajectories on one 
 
 [Quickstart](https://qitor.mintlify.app/quickstart) · [Tutorial Track](https://qitor.mintlify.app/tutorials) · [Benchmarks](https://qitor.mintlify.app/benchmarks/overview) · [CLI Reference](https://qitor.mintlify.app/reference/cli) · [Changelog](CHANGELOG.md) · [Chinese README](README.zh.md)
 
+## Latest Progress
+
+- v0.5 multimodal core phase 1 is now in the main kernel: OpenAI-compatible image input, screenshot-first `ObservationPack` support, qita visual asset inspection, and a new `visual_inspect_agent` baseline for visual-web / GUI research.
+- v0.5 computer-use phase 1 is now live: an OSWorld-inspired `DesktopEnv`, provider-neutral GUI action protocols, `ComputerUseToolSet`, and a new `openai_cua_agent` example for desktop automation research on OpenAI-compatible multimodal models.
+
 ## What's New in v0.3.0
 
 - Official reproducible-run foundation with `RunSpec`, `ExperimentSpec`, and normalized benchmark outputs.
@@ -84,6 +89,8 @@ Then go deeper:
 - **Coding agent**: practical coding loop with editor, shell, and memory.
 - **SWE agent**: richer planning-oriented software engineering flow.
 - **Computer-use agent**: web research and computer-use style interaction.
+- **OpenAI CUA-inspired desktop agent**: OSWorld-style screenshot-first desktop control on the QitOS kernel.
+- **Visual inspect agent**: screenshot-first multimodal baseline for visual-web and GUI research.
 - **EPUB reader**: document-grounded reasoning with branching.
 
 ### Evaluation
@@ -128,6 +135,7 @@ registry = ToolRegistry().include_toolset(
 - First successful run: [Quickstart](https://qitor.mintlify.app/quickstart)
 - Install options: [Installation](https://qitor.mintlify.app/installation)
 - Build your own minimal coding agent: [First Agent](https://qitor.mintlify.app/guides/build-your-first-agent)
+- Build the first screenshot-first baseline: [Multimodal Core and Visual-Web Research](https://qitor.mintlify.app/guides/multimodal-core)
 - Learn the runtime: [AgentModule](https://qitor.mintlify.app/concepts/agent-module) / [Engine](https://qitor.mintlify.app/concepts/engine)
 - Inspect traces: [Observability](https://qitor.mintlify.app/guides/observability)
 - Follow the course: [Tutorials](https://qitor.mintlify.app/tutorials)

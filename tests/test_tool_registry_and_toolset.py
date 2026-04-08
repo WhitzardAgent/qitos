@@ -11,14 +11,17 @@ from qitos.kit.tool import (
     TaskToolSet,
     ThinkingToolSet,
 )
+from qitos.kit.tool.gui import Click
 from qitos.kit.tool.codebase import GlobFiles
 from qitos.kit.tool.file import ReadFile
 from qitos.kit.tool.shell import RunCommand
 from qitos.kit.tool.toolset import toolset_from_tools
 from qitos.kit.toolset import (
+    ComputerUseToolSet,
     CodebaseToolSet,
     StaticToolSet,
     coding_tools as coding_tools_builder,
+    computer_use_tools as computer_use_tools_builder,
 )
 from qitos.kit.toolset import editor_tools as editor_tools_builder
 from qitos.kit.toolset import report_tools as report_tools_builder
@@ -121,6 +124,7 @@ def test_curated_toolsets_register_cleanly(tmp_path):
             profile="codebase",
         ),
         CodingToolSet(workspace_root=str(tmp_path)),
+        ComputerUseToolSet(),
     ]
     for toolset in toolsets:
         registry = ToolRegistry()
@@ -158,7 +162,7 @@ def test_new_tool_domains_and_toolset_surface_are_importable(tmp_path):
     sample.write_text("hello\n", encoding="utf-8")
 
     read_file = ReadFile(workspace_root=str(tmp_path))
-    out = read_file.run(filename="demo.txt")
+    out = read_file.run(path="demo.txt")
     assert out["status"] == "success"
     assert "hello" in out["content"]
 
@@ -173,6 +177,7 @@ def test_new_tool_domains_and_toolset_surface_are_importable(tmp_path):
     assert "view" in editor_tools_builder(str(tmp_path)).list_tools()
     assert "glob_files" in coding_tools_builder(str(tmp_path)).list_tools()
     assert "audit_inventory" in security_audit_tools_builder(str(tmp_path)).list_tools()
+    assert "click" in computer_use_tools_builder().list_tools()
 
 
 def test_include_toolset_accepts_mixed_tools_toolsets_and_registries(tmp_path):
@@ -234,7 +239,7 @@ def test_agent_module_can_be_initialized_with_toolset_list(tmp_path):
         ) -> Decision[Action]:
             if state.current_step == 0:
                 return Decision.act(
-                    [Action(name="read_file", args={"filename": "demo.txt"})]
+                    [Action(name="read_file", args={"path": "demo.txt"})]
                 )
             return Decision.final("done")
 
@@ -250,3 +255,10 @@ def test_agent_module_can_be_initialized_with_toolset_list(tmp_path):
 
     result = Engine(agent=_ToolsetAgent(), budget=RuntimeBudget(max_steps=2)).run("x")
     assert result.state.stop_reason == "final"
+
+
+def test_computer_use_toolset_atomic_tools_are_callable() -> None:
+    registry = computer_use_tools_builder()
+    assert "click" in registry.list_tools()
+    tool_obj = registry.get("click")
+    assert isinstance(tool_obj, Click)

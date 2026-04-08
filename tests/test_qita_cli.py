@@ -19,6 +19,10 @@ from qitos.qita.cli import (
 def _make_run(root: Path, run_id: str) -> Path:
     run = root / run_id
     run.mkdir(parents=True, exist_ok=True)
+    asset_path = run / "screen.png"
+    asset_path.write_bytes(
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x04\x00\x00\x00\xb5\x1c\x0c\x02\x00\x00\x00\x0bIDATx\xdac\xfc\xff\x1f\x00\x02\xeb\x01\xf5i\xf6\x81\xb7\x00\x00\x00\x00IEND\xaeB`\x82"
+    )
     (run / "manifest.json").write_text(
         json.dumps(
             {
@@ -99,8 +103,83 @@ def _make_run(root: Path, run_id: str) -> Path:
         '{"step_id":0,"phase":"DECIDE","ok":true,"ts":"y","payload":{"stage":"model_output","raw_output":"Thought: inspect the run","model_response":{"text":"Thought: inspect the run","usage":{"prompt_tokens":10,"completion_tokens":4,"total_tokens":14},"finish_reason":"stop","tool_calls":[{"id":"call_1","type":"function","function":{"name":"visit_url","arguments":"{\\"url\\":\\"https://example.com\\"}"}}],"model_name":"demo-model","provider":"demo-provider","metadata":{}},"context":{"input_tokens_total":3200,"occupancy_ratio":0.74}}}\n',
         encoding="utf-8",
     )
+    step_payload = {
+        "step_id": 0,
+        "observation": {},
+        "decision": {},
+        "model_response": {
+            "text": "Thought: inspect the run",
+            "usage": {"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14},
+            "finish_reason": "stop",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "visit_url",
+                        "arguments": '{"url":"https://example.com"}',
+                    },
+                }
+            ],
+            "model_name": "demo-model",
+            "provider": "demo-provider",
+            "metadata": {},
+        },
+        "actions": [],
+        "action_results": [],
+        "tool_invocations": [],
+        "critic_outputs": [],
+        "state_diff": {},
+        "context": {
+            "context_window": 8192,
+            "input_tokens_total": 3200,
+            "history_tokens": 1800,
+            "output_tokens": 240,
+            "occupancy_ratio": 0.74,
+            "compact_events": [
+                {"stage": "warning", "before_tokens": 3200, "after_tokens": 3200, "saved_tokens": 0},
+                {"stage": "microcompact_applied", "before_tokens": 3200, "after_tokens": 2400, "saved_tokens": 800},
+            ],
+        },
+        "prompt_metadata": {
+            "tool_schema_delivery": "api_parameter",
+            "model_input_modalities": ["text", "image"],
+            "model_input_visual_count": 1,
+            "observation_modalities": ["text", "screenshot"],
+        },
+        "parser_diagnostics": {
+            "parser": "TerminusJsonParser",
+            "contract": "terminus_json_v1",
+            "severity": "error",
+            "code": "missing_required_field",
+            "summary": "Missing required field: tools",
+            "extraction_mode": "extracted",
+            "repair_instruction": "Return valid JSON with analysis, plan, and either commands, tools, or task_complete=true.",
+            "raw_output_preview": '{"analysis":"x","plan":"y"}',
+        },
+        "parser_contract": "terminus_json_v1",
+        "parser_salvage_applied": False,
+        "decision_source": "native_tool_calls",
+        "native_tool_call_used": True,
+        "native_tool_call_fallback_reason": None,
+        "visual_assets": [
+            {
+                "kind": "screenshot",
+                "path": str(asset_path),
+                "mime_type": "image/png",
+                "source_step": 0,
+            }
+        ],
+        "observation_modalities": ["text", "screenshot"],
+        "visual_asset_count": 1,
+        "has_screenshot": True,
+        "has_dom": False,
+        "has_accessibility_tree": False,
+        "model_input_modalities": ["text", "image"],
+        "model_input_visual_count": 1,
+    }
     (run / "steps.jsonl").write_text(
-        '{"step_id":0,"observation":{},"decision":{},"model_response":{"text":"Thought: inspect the run","usage":{"prompt_tokens":10,"completion_tokens":4,"total_tokens":14},"finish_reason":"stop","tool_calls":[{"id":"call_1","type":"function","function":{"name":"visit_url","arguments":"{\\"url\\":\\"https://example.com\\"}"}}],"model_name":"demo-model","provider":"demo-provider","metadata":{}},"actions":[],"action_results":[],"tool_invocations":[],"critic_outputs":[],"state_diff":{},"context":{"context_window":8192,"input_tokens_total":3200,"history_tokens":1800,"output_tokens":240,"occupancy_ratio":0.74,"compact_events":[{"stage":"warning","before_tokens":3200,"after_tokens":3200,"saved_tokens":0},{"stage":"microcompact_applied","before_tokens":3200,"after_tokens":2400,"saved_tokens":800}]},"prompt_metadata":{"tool_schema_delivery":"api_parameter"},"parser_diagnostics":{"parser":"TerminusJsonParser","contract":"terminus_json_v1","severity":"error","code":"missing_required_field","summary":"Missing required field: tools","extraction_mode":"extracted","repair_instruction":"Return valid JSON with analysis, plan, and either commands, tools, or task_complete=true.","raw_output_preview":"{\\"analysis\\":\\"x\\",\\"plan\\":\\"y\\"}"},"parser_contract":"terminus_json_v1","parser_salvage_applied":false,"decision_source":"native_tool_calls","native_tool_call_used":true,"native_tool_call_fallback_reason":null}\n',
+        json.dumps(step_payload, ensure_ascii=False) + "\n",
         encoding="utf-8",
     )
     return run
@@ -158,6 +237,9 @@ def test_render_pages(tmp_path: Path):
     assert "decision_source" in view
     assert "native_tool_call_used" in view
     assert "tool_delivery" in view
+    assert "Visual Assets" in view
+    assert "model input images" in view
+    assert "screen.png" in view
     marker = '<script id="payload" type="application/json">'
     start = view.index(marker) + len(marker)
     end = view.index("</script>", start)

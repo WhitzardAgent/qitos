@@ -54,7 +54,7 @@ class TaskResult:
 class TaskResource:
     """One resource entry required by a task."""
 
-    kind: str  # file | dir | url | artifact
+    kind: str  # file | dir | url | artifact | image
     path: Optional[str] = None
     uri: Optional[str] = None
     mount_to: Optional[str] = None
@@ -184,7 +184,7 @@ class Task:
 
         root = Path(workspace).resolve() if workspace else None
         for idx, item in enumerate(self.resources):
-            if item.kind not in {"file", "dir", "url", "artifact"}:
+            if item.kind not in {"file", "dir", "url", "artifact", "image"}:
                 issues.append(
                     TaskValidationIssue(
                         code="TASK_RESOURCE_KIND_INVALID",

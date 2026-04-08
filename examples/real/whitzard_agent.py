@@ -2,21 +2,24 @@
 
 from __future__ import annotations
 
+import argparse
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Mapping
 
-from qitos import AgentModule, Decision, StateSchema, StopReason, ToolRegistry
+from qitos import AgentModule, Decision, RunSpec, StateSchema, StopReason, ToolRegistry
+from qitos.harness import build_harness_policy, build_model_for_preset, resolve_family_preset
 from qitos.kit import (
+    CompactHistory,
     CodingToolSet,
     ReportToolSet,
     SecurityAuditToolSet,
     SendTerminalKeys,
-    TokenBudgetSummaryHistory,
     TmuxEnv,
 )
-from qitos.models import OpenAICompatibleModel
+
+from ._whitzard_memory import AuditBoardMemory
 
 # TASK = (
 #     "Review this repository for evidence-backed high-severity security risks "
@@ -32,11 +35,9 @@ TASK = "Somebody told me in this repository there is an RCE 0-day when you open 
 WORKSPACE = Path("/Users/morinop/coding/yoga_framework/playground/vim")
 SESSION_NAME = "qitos_whitzard"
 PARSER_FORMAT = os.getenv("QITOS_TERMINUS_FORMAT", "").strip().lower()
+DEFAULT_MODEL_FAMILY = "minimax"
 MODEL_NAME = os.getenv("QITOS_MODEL", "MiniMax-M2.5")
-MODEL_BASE_URL = os.getenv(
-    "OPENAI_BASE_URL",
-    "https://dashscope.aliyuncs.com/compatible-mode/v1",
-)
+MODEL_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.minimax.chat/v1")
 MAX_STEPS = 300
 MAX_TERMINAL_BYTES = 10000
 
@@ -232,12 +233,21 @@ class WhitzardState(StateSchema):
     hotspots: list[dict[str, Any]] = field(default_factory=list)
     reviewed_files: list[str] = field(default_factory=list)
     final_report_path: str = ""
+    audit_board_snapshot: dict[str, Any] = field(default_factory=dict)
 
 
 class WhitzardAgent(AgentModule[WhitzardState, dict[str, Any], dict[str, Any]]):
     name = "whitzard"
 
-    def __init__(self, llm: Any, workspace_root: str):
+    def __init__(
+        self,
+        llm: Any,
+        workspace_root: str,
+        *,
+        model_protocol: Any | None = None,
+        history: Any | None = None,
+        memory: AuditBoardMemory | None = None,
+    ):
         registry = ToolRegistry()
         registry.register(SendTerminalKeys())
 
@@ -256,7 +266,6 @@ class WhitzardAgent(AgentModule[WhitzardState, dict[str, Any], dict[str, Any]]):
             coding.grep_files,
             coding.read_file_range,
             coding.read_file,
-            coding.list_files,
         ):
             registry.register(item)
 
@@ -272,19 +281,20 @@ class WhitzardAgent(AgentModule[WhitzardState, dict[str, Any], dict[str, Any]]):
             ReportToolSet(workspace_root=workspace_root), namespace=""
         )
 
-        protocol_override = None
-        if PARSER_FORMAT == "json":
-            protocol_override = "terminus_json_v1"
-        elif PARSER_FORMAT == "xml":
-            protocol_override = "terminus_xml_v1"
-        history = TokenBudgetSummaryHistory(
-            llm=llm, max_tokens=14000, keep_last=8, hard_window=64
+        history_impl = history or CompactHistory(
+            llm=llm,
+            max_tokens=14000,
+            keep_last_rounds=3,
+            keep_last_messages=10,
+            hard_window=72,
         )
+        self.audit_memory = memory or AuditBoardMemory()
         super().__init__(
             tool_registry=registry,
             llm=llm,
-            model_protocol=protocol_override,
-            history=history,
+            model_protocol=model_protocol,
+            memory=self.audit_memory,
+            history=history_impl,
         )
         self.workspace_root = workspace_root
 
@@ -305,11 +315,13 @@ class WhitzardAgent(AgentModule[WhitzardState, dict[str, Any], dict[str, Any]]):
         _ = state
         return (
             "Audit flow:\n"
-            "1. inventory repository structure\n"
-            "2. identify entrypoints and trust boundaries\n"
-            "3. inspect hotspots with focused code reads\n"
+            "1. start with audit_inventory to inventory repository structure once\n"
+            "2. move to audit_entrypoints and audit_hotspots to map trust boundaries\n"
+            "3. use grep_files to narrow candidates, then immediately switch to read_file_range or read_file on the best core-file hit\n"
             "4. only record evidence-backed findings with file and line references\n"
-            "5. write the final markdown report before requesting completion"
+            "5. write the final markdown report before requesting completion\n"
+            "6. do not repeat reconnaissance actions when structured audit tools already returned coverage\n"
+            "7. treat repeated broad grep without a focused follow-up read as a workflow mistake"
         )
 
     def extra_instructions_prompt(self, state: WhitzardState) -> str:
@@ -318,6 +330,12 @@ class WhitzardAgent(AgentModule[WhitzardState, dict[str, Any], dict[str, Any]]):
             "Repository-local audit constraints:\n"
             "- Stay inside the workspace root unless the user explicitly broadens scope\n"
             "- Prefer repo-local codebase and audit tools over terminal wandering\n"
+            "- Use audit_inventory for reconnaissance, then advance to audit_entrypoints or audit_hotspots instead of repeating directory inspection\n"
+            "- If the previous action returned structured fields such as entrypoint_candidates, hotspots, or findings, use them to advance the next phase\n"
+            "- Do not loop on low-value reconnaissance; after inventory, move into mapping and focused code inspection\n"
+            "- grep_files uses regex by default; for literals like system(, eval(, modeline, or :execute, prefer regex=false unless you intentionally need regex\n"
+            "- When grep_files returns a strong core-file hit, the next action should usually be read_file_range on that file rather than another broad search\n"
+            "- Down-rank tests, testdir, fixtures, and sample corpora unless they are the only remaining leads\n"
             "- Use terminal commands mainly for repository inspection, build checks, grep, or git history\n"
             "- When a shell command should execute immediately, call send_terminal_keys with submit=true\n"
             "- Keep analysis and plan concrete: say what evidence was found, what phase is covered, and why the next step is justified"
@@ -366,6 +384,7 @@ class WhitzardAgent(AgentModule[WhitzardState, dict[str, Any], dict[str, Any]]):
 
         # phase progress tracker
         lines.extend(["", self._render_phase_progress(state)])
+        lines.extend(["", self._render_audit_board(state)])
 
         if state.findings:
             lines.extend(
@@ -436,6 +455,11 @@ class WhitzardAgent(AgentModule[WhitzardState, dict[str, Any], dict[str, Any]]):
             meta.get("analysis") or decision.rationale or state.last_analysis
         )
         state.last_plan = str(meta.get("plan") or state.last_plan)
+        self.audit_memory.remember_hypothesis(
+            analysis=state.last_analysis,
+            plan=state.last_plan,
+            step_id=state.current_step,
+        )
 
         parser_feedback = str(meta.get("parser_feedback") or "").strip()
         parser_warning = str(meta.get("parser_warning") or "").strip()
@@ -448,6 +472,7 @@ class WhitzardAgent(AgentModule[WhitzardState, dict[str, Any], dict[str, Any]]):
             state.parser_feedback = parser_warning
 
         self._consume_action_results(state, observation)
+        self._refresh_audit_board(state)
 
         if meta.get("task_complete_requested"):
             if not state.final_report_path:
@@ -480,6 +505,11 @@ class WhitzardAgent(AgentModule[WhitzardState, dict[str, Any], dict[str, Any]]):
                 "plan": state.last_plan,
                 "finding_count": len(state.findings),
                 "report_path": state.final_report_path,
+                "audit_targets": len(
+                    state.audit_board_snapshot.get("repo_targets", [])
+                    if isinstance(state.audit_board_snapshot, dict)
+                    else []
+                ),
             }
         )
 
@@ -514,26 +544,45 @@ class WhitzardAgent(AgentModule[WhitzardState, dict[str, Any], dict[str, Any]]):
                 for finding in findings:
                     if isinstance(finding, dict):
                         self._add_finding(state, finding)
+                self.audit_memory.ingest_finding_batch(findings, state.current_step)
 
             hotspot_rows = data.get("hotspots")
             if isinstance(hotspot_rows, list):
                 state.hotspots = [r for r in hotspot_rows if isinstance(r, dict)][:10]
+                self.audit_memory.ingest_hotspots(state.hotspots, state.current_step)
 
-            entrypoints = data.get("entrypoints")
-            if isinstance(entrypoints, list):
-                for row in entrypoints[:10]:
+            entrypoint_rows = []
+            for key in ("entrypoints", "entrypoint_candidates"):
+                value = data.get(key)
+                if isinstance(value, list):
+                    entrypoint_rows.extend(value[:10])
+            if entrypoint_rows:
+                for row in entrypoint_rows[:10]:
                     if isinstance(row, dict) and isinstance(row.get("file"), str):
                         state.reviewed_files.append(str(row["file"]))
+                if "entrypoints" in data:
+                    self.audit_memory.ingest_entrypoints(
+                        [row for row in entrypoint_rows if isinstance(row, dict)],
+                        state.current_step,
+                    )
+                else:
+                    self.audit_memory.ingest_inventory(
+                        [row for row in entrypoint_rows if isinstance(row, dict)],
+                        state.current_step,
+                    )
 
             finding = data.get("finding")
             if isinstance(finding, dict):
                 self._add_finding(state, finding)
+                self.audit_memory.ingest_finding(finding, state.current_step)
 
             output_file = data.get("output_file")
             if isinstance(output_file, str) and output_file.strip():
                 state.final_report_path = output_file.strip()
+                self.audit_memory.ingest_report(output_file)
 
             self._capture_reviewed_files(state, item)
+            self._ingest_tool_specific_result(state, item)
 
     def _capture_reviewed_files(
         self, state: WhitzardState, result: dict[str, Any]
@@ -584,6 +633,48 @@ class WhitzardAgent(AgentModule[WhitzardState, dict[str, Any], dict[str, Any]]):
             state.findings.append(dict(finding))
         if file_path:
             state.reviewed_files.append(file_path)
+
+    def _ingest_tool_specific_result(
+        self, state: WhitzardState, result: dict[str, Any]
+    ) -> None:
+        tool_name = str(result.get("tool") or result.get("name") or "").strip()
+        data = result.get("data")
+        payload = data if isinstance(data, dict) else result
+        if tool_name == "grep_files":
+            self.audit_memory.ingest_grep_result(result, state.current_step)
+            return
+        if tool_name == "read_file_range":
+            path = str(payload.get("path") or "").strip()
+            if path:
+                self.audit_memory.ingest_read(
+                    path=path,
+                    offset=int(payload.get("offset") or 0),
+                    limit=int(payload.get("limit") or 0),
+                    content=str(payload.get("content") or ""),
+                    step_id=state.current_step,
+                )
+            return
+        if tool_name == "read_file":
+            path = str(payload.get("path") or "").strip()
+            if path:
+                self.audit_memory.ingest_read(
+                    path=path,
+                    offset=0,
+                    limit=max(1, len(str(payload.get("content") or "").splitlines())),
+                    content=str(payload.get("content") or ""),
+                    step_id=state.current_step,
+                )
+
+    def _refresh_audit_board(self, state: WhitzardState) -> None:
+        phase_status = {
+            "inventory_done": bool(state.reviewed_files),
+            "mapping_done": bool(state.hotspots)
+            or bool(self.audit_memory.snapshot().get("entrypoints")),
+            "finding_count": len(state.findings),
+            "report_ready": bool(state.final_report_path),
+        }
+        self.audit_memory.update_phase_status(phase_status)
+        state.audit_board_snapshot = self.audit_memory.snapshot()
 
     def _extract_terminal_payload(self, observation: Any) -> Dict[str, Any]:
         if not isinstance(observation, dict):
@@ -690,48 +781,251 @@ class WhitzardAgent(AgentModule[WhitzardState, dict[str, Any], dict[str, Any]]):
             lines.append(f"  {marker} {label}")
         return "\n".join(lines)
 
+    def _render_audit_board(self, state: WhitzardState) -> str:
+        board = (
+            state.audit_board_snapshot
+            if isinstance(state.audit_board_snapshot, dict)
+            else self.audit_memory.snapshot()
+        )
+        lines = ["Audit board:"]
+
+        targets = board.get("repo_targets", [])[:4]
+        if targets:
+            lines.append("Top targets:")
+            for item in targets:
+                path = str(item.get("path") or "?")
+                score = item.get("score")
+                status = str(item.get("status") or "candidate")
+                reasons = ", ".join(item.get("reasons", [])[:3])
+                lines.append(f"- {path} (score={score}, status={status}, reasons={reasons})")
+
+        failed = board.get("failed_searches", [])[-2:]
+        if failed:
+            lines.append("Recent failed searches:")
+            for item in failed:
+                pattern = str(item.get("pattern") or "")[:80]
+                message = str(item.get("message") or "")[:120]
+                lines.append(f"- pattern={pattern!r} -> {message}")
+
+        reads = board.get("focused_reads", [])[-3:]
+        if reads:
+            lines.append("Recent focused reads:")
+            for item in reads:
+                lines.append(
+                    f"- {item.get('path')} @ offset={item.get('offset')} limit={item.get('limit')}"
+                )
+
+        guidance = self.audit_memory.guidance()
+        if guidance:
+            lines.append("Convergence guidance:")
+            for item in guidance[:3]:
+                lines.append(f"- {item}")
+
+        return "\n".join(lines)
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Model builder & bootstrap
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def build_model() -> OpenAICompatibleModel:
-    api_key = (os.getenv("OPENAI_API_KEY") or os.getenv("QITOS_API_KEY") or "").strip()
+def _family_default_model_name(family_id: str) -> str:
+    try:
+        preset = resolve_family_preset(family_id)
+    except ValueError:
+        return MODEL_NAME
+    if preset.recommended_models:
+        return str(preset.recommended_models[0])
+    return MODEL_NAME
+
+
+def _family_default_base_url(family_id: str) -> str:
+    normalized = str(family_id or "").strip().lower()
+    if normalized == "qwen":
+        return "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    if normalized == "kimi":
+        return "https://api.moonshot.ai/v1"
+    if normalized == "minimax":
+        return "https://api.minimax.chat/v1"
+    return MODEL_BASE_URL
+
+
+def _resolve_runtime_config(
+    args: argparse.Namespace | None = None,
+    *,
+    env: Mapping[str, str] | None = None,
+) -> dict[str, str | None]:
+    env_map = env if env is not None else os.environ
+    cli_family = str(getattr(args, "model_family", "") or "").strip() or None
+    env_family = str(env_map.get("QITOS_MODEL_FAMILY", "") or "").strip() or None
+    family_id = cli_family or env_family
+
+    cli_model = str(getattr(args, "model_name", "") or "").strip() or None
+    env_model = str(env_map.get("QITOS_MODEL", "") or "").strip() or None
+    model_name = cli_model or env_model
+
+    resolved_family = family_id
+    if not resolved_family and model_name:
+        resolved_family = resolve_family_preset(model_name).id
+    if not resolved_family:
+        resolved_family = DEFAULT_MODEL_FAMILY
+    if not model_name:
+        model_name = _family_default_model_name(resolved_family)
+
+    cli_base_url = str(getattr(args, "base_url", "") or "").strip() or None
+    env_base_url = str(env_map.get("OPENAI_BASE_URL", "") or "").strip() or None
+    base_url = cli_base_url or env_base_url or _family_default_base_url(resolved_family)
+
+    cli_api_key = str(getattr(args, "api_key", "") or "").strip() or None
+    env_api_key = (
+        str(env_map.get("OPENAI_API_KEY", "") or "").strip()
+        or str(env_map.get("QITOS_API_KEY", "") or "").strip()
+        or None
+    )
+    api_key = cli_api_key or env_api_key
+
+    cli_protocol = str(getattr(args, "protocol", "") or "").strip() or None
+    env_protocol = str(env_map.get("QITOS_PROTOCOL", "") or "").strip() or None
+
+    cli_parser_format = str(getattr(args, "parser_format", "") or "").strip() or None
+    env_parser_format = (
+        str(env_map.get("QITOS_TERMINUS_FORMAT", "") or "").strip() or None
+    )
+    parser_format = cli_parser_format or env_parser_format or PARSER_FORMAT or None
+    protocol = cli_protocol or env_protocol
+
+    return {
+        "model_family": resolved_family,
+        "model_name": model_name,
+        "base_url": base_url,
+        "api_key": api_key,
+        "protocol": protocol,
+        "parser_format": parser_format,
+    }
+
+
+def build_model(
+    *,
+    model_family: str,
+    model_name: str,
+    base_url: str,
+    api_key: str | None,
+    protocol: str | None = None,
+) -> Any:
     if not api_key:
         raise ValueError(
             "Set OPENAI_API_KEY or QITOS_API_KEY before running this example."
         )
-    return OpenAICompatibleModel(
-        model=MODEL_NAME,
+    return build_model_for_preset(
+        family_id=model_family,
+        model_name=model_name,
         api_key=api_key,
-        base_url=MODEL_BASE_URL,
+        base_url=base_url,
+        protocol=protocol,
         temperature=0.2,
         max_tokens=2048,
     )
 
 
-def main() -> None:
+def _build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Whitzard defensive audit agent with QitOS family presets"
+    )
+    parser.add_argument("--model-family")
+    parser.add_argument("--model-name")
+    parser.add_argument("--base-url")
+    parser.add_argument("--api-key")
+    parser.add_argument("--protocol")
+    parser.add_argument("--parser-format", choices=["json", "xml"])
+    parser.add_argument("--workspace", default=str(WORKSPACE))
+    parser.add_argument("--session-name", default=SESSION_NAME)
+    parser.add_argument("--task", default=TASK)
+    parser.add_argument("--max-steps", type=int, default=MAX_STEPS)
+    parser.add_argument("--print-harness", action="store_true")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = _build_arg_parser().parse_args(argv)
+    config = _resolve_runtime_config(args)
+    workspace = Path(str(args.workspace)).resolve()
+    harness = build_harness_policy(
+        model_name=str(config["model_name"]),
+        family_id=str(config["model_family"]),
+        protocol=config["protocol"],
+        resolution_source="whitzard_agent",
+    )
+    llm = build_model(
+        model_family=str(config["model_family"]),
+        model_name=str(config["model_name"]),
+        base_url=str(config["base_url"]),
+        api_key=str(config["api_key"]) if config["api_key"] else None,
+        protocol=str(config["protocol"]) if config["protocol"] else None,
+    )
+    run_spec = RunSpec.infer(
+        model_name=str(config["model_name"]),
+        prompt_protocol=harness.protocol.id,
+        parser_name=harness.parser_name,
+        toolset_name="whitzard_audit_tools",
+        environment={"base_url": str(config["base_url"]), "workspace": str(workspace)},
+        metadata={
+            "agent_name": "whitzard",
+            "agent_harness_profile": "family_first_audit",
+            "family_preset": harness.family_preset.id,
+            "harness_policy": harness.to_dict(),
+            "tool_policy": harness.tool_policy.to_dict(),
+            "context_policy": harness.context_policy.to_dict(),
+            "parser_format": config["parser_format"],
+            "resolved_protocol_source": "user_override"
+            if config["protocol"]
+            else "family_preset",
+        },
+    )
+
+    if args.print_harness:
+        print("family_preset:", harness.family_preset.id)
+        print("model_name:", config["model_name"])
+        print("base_url:", config["base_url"])
+        print("protocol:", harness.protocol.id)
+        print("parser:", harness.parser_name)
+        print("tool_delivery:", harness.tool_policy.primary_delivery)
+        print("native_tool_call_preferred:", harness.tool_policy.native_tool_call_preferred)
+        print(
+            "decision_lane_preference:",
+            "native_tool_calls"
+            if harness.tool_policy.native_tool_call_preferred
+            else "parser",
+        )
+        print("context_window_hint:", harness.context_policy.context_window_hint)
+
     env = TmuxEnv(
-        workspace_root=str(WORKSPACE),
-        session_name=SESSION_NAME,
+        workspace_root=str(workspace),
+        session_name=str(args.session_name),
         auto_kill=True,
     )
-    agent = WhitzardAgent(llm=build_model(), workspace_root=str(WORKSPACE))
+    agent = WhitzardAgent(
+        llm=llm,
+        workspace_root=str(workspace),
+        model_protocol=harness.protocol,
+    )
 
     result = agent.run(
-        task=TASK,
-        workspace=str(WORKSPACE),
+        task=str(args.task),
+        workspace=str(workspace),
         env=env,
-        max_steps=MAX_STEPS,
-        parser_format=PARSER_FORMAT,
+        max_steps=int(args.max_steps),
+        parser_format=str(config["parser_format"] or ""),
+        run_spec=run_spec,
         return_state=True,
     )
 
     print("=" * 60)
     print("WHITZARD AUDIT COMPLETE")
     print("=" * 60)
-    print(f"  workspace:    {WORKSPACE}")
+    print(f"  workspace:    {workspace}")
+    print(f"  family:       {config['model_family']}")
+    print(f"  model:        {config['model_name']}")
+    print(f"  protocol:     {harness.protocol.id}")
     print(f"  stop_reason:  {result.state.stop_reason}")
     print(f"  final_result: {result.state.final_result}")
     print(f"  report:       {result.state.final_report_path}")

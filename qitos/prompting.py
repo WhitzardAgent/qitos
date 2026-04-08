@@ -65,6 +65,7 @@ class PromptBuildResult:
     system_prompt_static: str = ""
     system_prompt_dynamic: str = ""
     message_injections: List[Dict[str, str]] = field(default_factory=list)
+    user_content_blocks: List[Dict[str, Any]] = field(default_factory=list)
     tool_schema_payload: Optional[List[Dict[str, Any]]] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
 
@@ -181,6 +182,7 @@ class PromptBuilder:
             "estimated_tokens_static": self._estimate_tokens(llm, system_prompt_static),
             "estimated_tokens_full": self._estimate_tokens(llm, full_prompt),
             "message_injection_count": len(message_injections),
+            "user_content_block_count": len(getattr(spec, "metadata", {}).get("user_content_blocks", []) or []),
             "state_kind": state.__class__.__name__ if state is not None else None,
         }
         if spec.metadata:
@@ -189,6 +191,9 @@ class PromptBuilder:
             system_prompt_static=system_prompt_static,
             system_prompt_dynamic=system_prompt_dynamic,
             message_injections=message_injections,
+            user_content_blocks=list(
+                getattr(spec, "metadata", {}).get("user_content_blocks", []) or []
+            ),
             tool_schema_payload=tool_schema_payload,
             metadata=metadata,
         )

@@ -47,7 +47,7 @@ class LiteLLMModel(Model):
         self.custom_llm_provider = custom_llm_provider or os.getenv("LITELLM_PROVIDER")
         self.timeout = timeout
 
-    def _call_api(self, messages: List[Dict[str, str]], **call_kwargs: Any) -> str:
+    def _call_api(self, messages: List[Dict[str, Any]], **call_kwargs: Any) -> str:
         try:
             import litellm
         except ImportError:

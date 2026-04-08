@@ -31,13 +31,13 @@ Workflow:
 - Read before you edit.
 - Make the smallest correct change.
 - Run verification immediately after editing.
-- Only use `web_fetch` or `web_fetch_v2` when the task needs documentation.
+- Only use `web_fetch` when the task needs documentation.
 
 Preferred tool patterns:
-- Inspection: `view`, `read_file`, `file_read_v2`
-- Editing: `str_replace`, `replace_lines`, `file_edit_v2`
+- Inspection: `view`, `read_file`
+- Editing: `str_replace`, `replace_lines`, `write_file`, `create`
 - Search: `glob_files`, `grep_files`, `tool_search`
-- Execution: `run_command` or `bash_v2`
+- Execution: `run_command`
 - Planning/state: `todo_write`, `enter_plan_mode`, `exit_plan_mode`
 """
 

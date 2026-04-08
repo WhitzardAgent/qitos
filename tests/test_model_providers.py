@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import os
+import base64
 import sys
 from types import SimpleNamespace
 
@@ -10,6 +10,7 @@ from qitos.models import (
     LiteLLMModel,
     LMStudioModel,
     ModelFactory,
+    OpenAICompatibleModel,
     OllamaModel,
     infer_context_window,
 )
@@ -227,6 +228,66 @@ def test_local_openai_compatible_like_parsing_supports_tool_calls() -> None:
 def test_context_registry_infers_anthropic_and_gemini_windows() -> None:
     assert infer_context_window("claude-3-5-sonnet-latest") == 200_000
     assert infer_context_window("gemini-2.5-flash") == 1_048_576
+
+
+def test_openai_compatible_model_formats_multimodal_chat_messages(tmp_path, monkeypatch) -> None:
+    captured = {}
+    png_path = tmp_path / "shot.png"
+    png_path.write_bytes(
+        base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wn2gbcAAAAASUVORK5CYII="
+        )
+    )
+
+    class _FakeCompletions:
+        def create(self, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(
+                            content="Final Answer: visual ok", tool_calls=None
+                        )
+                    )
+                ],
+                usage=SimpleNamespace(
+                    prompt_tokens=11, completion_tokens=5, total_tokens=16
+                ),
+            )
+
+    class _FakeClient:
+        def __init__(self, **kwargs):
+            captured["client_kwargs"] = kwargs
+            self.chat = SimpleNamespace(completions=_FakeCompletions())
+
+    fake_openai = SimpleNamespace(OpenAI=lambda **kwargs: _FakeClient(**kwargs), APIError=Exception)
+    monkeypatch.setitem(sys.modules, "openai", fake_openai)
+    llm = OpenAICompatibleModel(
+        model="gpt-4.1-mini",
+        api_key="test-key",
+        base_url="https://example.test/v1",
+    )
+    out = llm(
+        [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Inspect this screenshot."},
+                    {"type": "image_file", "path": str(png_path), "detail": "high"},
+                ],
+            }
+        ]
+    )
+
+    assert out == "Final Answer: visual ok"
+    message = captured["messages"][0]
+    assert message["role"] == "user"
+    assert isinstance(message["content"], list)
+    assert message["content"][0] == {"type": "text", "text": "Inspect this screenshot."}
+    image_block = message["content"][1]
+    assert image_block["type"] == "image_url"
+    assert image_block["image_url"]["detail"] == "high"
+    assert image_block["image_url"]["url"].startswith("data:image/png;base64,")
 
 
 def test_explicit_provider_override_wins(monkeypatch) -> None:

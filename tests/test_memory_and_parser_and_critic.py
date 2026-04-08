@@ -145,7 +145,7 @@ def test_parser_custom_keywords_and_reflection():
     assert d2.meta.get("reflection") == "self-check"
     assert d2.actions[0]["name"] == "run_command"
 
-    js = '{"thinking":"ponder", "reflection":"double check", "action":"write_file(filename=\\"x.md\\", content=\\"ok\\")"}'
+    js = '{"thinking":"ponder", "reflection":"double check", "action":"write_file(path=\\"x.md\\", content=\\"ok\\")"}'
     d3 = JsonDecisionParser(
         thought_keys=("thinking",),
         reflection_keys=("reflection",),

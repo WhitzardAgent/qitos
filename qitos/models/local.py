@@ -81,7 +81,7 @@ class OllamaModel(Model):
         if not self.host:
             raise ValueError("Ollama host 未设置。请设置环境变量或传入 host 参数。")
 
-    def _call_api(self, messages: List[Dict[str, str]], **kwargs: Any) -> str:
+    def _call_api(self, messages: List[Dict[str, Any]], **kwargs: Any) -> str:
         """
         调用 Ollama API
 
@@ -247,7 +247,7 @@ class OllamaGenerateModel(Model):
         )
         self.timeout = timeout
 
-    def _call_api(self, messages: List[Dict[str, str]], **kwargs: Any) -> str:
+    def _call_api(self, messages: List[Dict[str, Any]], **kwargs: Any) -> str:
         """
         调用 Ollama Generate API
 
@@ -291,7 +291,7 @@ class OllamaGenerateModel(Model):
         except Exception as e:
             return f"Error: {str(e)}"
 
-    def _build_prompt(self, messages: List[Dict[str, str]]) -> str:
+    def _build_prompt(self, messages: List[Dict[str, Any]]) -> str:
         """
         构建 Ollama 提示词
 
@@ -375,7 +375,7 @@ class LMStudioModel(Model):
                 "LM Studio base_url 未设置。请设置环境变量或传入 base_url 参数。"
             )
 
-    def _call_api(self, messages: List[Dict[str, str]], **kwargs: Any) -> str:
+    def _call_api(self, messages: List[Dict[str, Any]], **kwargs: Any) -> str:
         """
         调用 LM Studio API (OpenAI 兼容格式)
         """
@@ -518,7 +518,7 @@ class VLLMModel(Model):
         )
         self.timeout = timeout
 
-    def _call_api(self, messages: List[Dict[str, str]], **kwargs: Any) -> str:
+    def _call_api(self, messages: List[Dict[str, Any]], **kwargs: Any) -> str:
         """
         调用 vLLM API (OpenAI 兼容格式)
         """

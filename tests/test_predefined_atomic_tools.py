@@ -53,12 +53,12 @@ def test_codebase_toolset_glob_grep_read_append(tmp_path):
     assert grep_out["num_matches"] == 2
     assert grep_out["matches"][0]["path"] == "src/b.md"
 
-    read_out = toolset.read_file_range(filename="src/a.py", offset=1, limit=1)
+    read_out = toolset.read_file_range(path="src/a.py", offset=1, limit=1)
     assert read_out["status"] == "success"
     assert read_out["lines"][0]["line"] == 2
     assert "return a + b" in read_out["content"]
 
-    append_out = toolset.append_file(filename="src/b.md", content="extra\n")
+    append_out = toolset.append_file(path="src/b.md", content="extra\n")
     assert append_out["status"] == "success"
     assert (root / "src" / "b.md").read_text(encoding="utf-8").endswith("extra\n")
 
@@ -160,10 +160,10 @@ def test_predefined_registry_builders_expose_atomic_tools(tmp_path):
     assert "run_command" in coding_registry.list_tools()
     assert "todo_write" in coding_registry.list_tools()
     assert "tool_search" in coding_registry.list_tools()
-    assert "bash_v2" in coding_registry.list_tools()
-    assert "bash_v2" in advanced_registry.list_tools()
-    assert "file_read_v2" in advanced_registry.list_tools()
-    assert "file_edit_v2" in advanced_registry.list_tools()
+    assert "bash_v2" not in coding_registry.list_tools()
+    assert "bash_v2" not in advanced_registry.list_tools()
+    assert "file_read_v2" not in advanced_registry.list_tools()
+    assert "file_edit_v2" not in advanced_registry.list_tools()
     assert "tool_search" in advanced_registry.list_tools()
     assert "task_create" in task_registry.list_tools()
     assert "task_update" in task_registry.list_tools()
@@ -210,14 +210,14 @@ def test_advanced_coding_toolset_registers_cleanly(tmp_path):
     toolset = AdvancedCodingToolSet(workspace_root=str(tmp_path))
     registry = ToolRegistry()
     registry.register_toolset(toolset, namespace="")
-    assert "web_fetch_v2" in registry.list_tools()
+    assert "web_fetch" in registry.list_tools()
     assert "todo_write" in registry.list_tools()
 
 
 def test_tool_descriptions_come_from_docstrings():
     write_file = coding_tools(".").describe_tool("write_file")
     assert "Write text content to a workspace file." in write_file["description"]
-    assert ":param filename:" in write_file["description"]
+    assert ":param path:" in write_file["description"]
 
     registry = web_tools()
     spec = next(
@@ -231,6 +231,29 @@ def test_tool_descriptions_come_from_docstrings():
     math_spec = math_tools().describe_tool("add")
     assert "Return the sum of two integers." in math_spec["description"]
     assert ":param a:" in math_spec["description"]
+
+
+def test_coding_toolset_uses_one_canonical_schema_surface():
+    registry = coding_tools(".")
+    names = set(registry.list_tools())
+    assert "file_read_v2" not in names
+    assert "file_edit_v2" not in names
+    assert "bash_v2" not in names
+    assert "glob_v2" not in names
+    assert "grep_v2" not in names
+    assert "web_fetch_v2" not in names
+
+    read_schema = registry.describe_tool("read_file")["input_schema"]["properties"]
+    write_schema = registry.describe_tool("write_file")["input_schema"]["properties"]
+    append_schema = registry.describe_tool("append_file")["input_schema"]["properties"]
+    create_schema = registry.describe_tool("create")["input_schema"]["properties"]
+    range_schema = registry.describe_tool("read_file_range")["input_schema"]["properties"]
+
+    assert set(read_schema) == {"path"}
+    assert set(write_schema) == {"path", "content"}
+    assert set(append_schema) == {"path", "content"}
+    assert set(create_schema) == {"path", "content"}
+    assert set(range_schema) == {"path", "offset", "limit"}
 
 
 def test_tool_package_only_exposes_canonical_toolsets():

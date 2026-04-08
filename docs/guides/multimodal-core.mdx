@@ -1,0 +1,172 @@
+---
+title: "Multimodal Core and Visual-Web Research"
+description: "How QitOS v0.5 phase 1 adds screenshot-first multimodal input without breaking the existing parser and protocol model."
+---
+
+# Multimodal Core and Visual-Web Research
+
+QitOS v0.5 starts with a narrow but important goal:
+
+- support screenshot-first multimodal input cleanly
+- keep the same `AgentModule + Engine` kernel
+- keep existing parser/protocol/tool-schema design intact
+- prepare the framework for GUI environments such as OSWorld without hard-coding the abstraction to one benchmark
+
+This phase is intentionally **not** “just add image input”.
+
+The point is to make multimodal input fit the same runtime story as text, tools, traces, and qita.
+
+## The first wire target: OpenAI-compatible chat completions
+
+The first multimodal request shape QitOS now supports is the OpenAI-compatible `chat.completions` content-array format:
+
+```json
+{
+  "role": "user",
+  "content": [
+    {"type": "text", "text": "Inspect this screenshot."},
+    {"type": "image_url", "image_url": {"url": "https://..."}}
+  ]
+}
+```
+
+QitOS also supports the same shape with:
+
+- local image files
+- base64 / data URLs
+- multiple images in one user turn
+
+Pure-text requests still keep the previous text-only path.
+
+## The new core vocabulary
+
+Instead of teaching each model adapter and environment its own image schema, QitOS now normalizes multimodal input and observations through a small set of shared types:
+
+- `ContentBlock`
+- `MessageEnvelope`
+- `ObservationPack`
+- `GroundingMetadata`
+- `VisualTraceAsset`
+
+This gives us one place to define:
+
+- what counts as an image input
+- how screenshot observations are represented
+- what qita should record and display
+
+## Multimodal input does not replace parsers or protocols
+
+This is the most important design point.
+
+In QitOS:
+
+- **multimodal input** answers: what did the model see?
+- **protocol + parser** answer: how must the model respond?
+- **tool schema** answers: what can the model call?
+
+So visual input works with the protocols you already know:
+
+- `react_text_v1`
+- `json_decision_v1`
+- `xml_decision_v1`
+- `terminus_*`
+- `minimax_tool_call_v1`
+
+That means we can combine:
+
+- screenshot input
+- OpenAI-compatible multimodal wire format
+- existing JSON/XML/native-tool-call parsers
+
+without inventing a separate “vision-only runtime”.
+
+## Screenshot-first environment support
+
+The first built-in multimodal environment is `ScreenshotEnv`.
+
+It provides a minimal, benchmark-agnostic path for:
+
+- a screenshot observation
+- optional DOM / OCR / accessibility hints
+- mock GUI control hooks
+
+This gives us a stable SDK surface before we plug in heavier GUI environments.
+
+```python
+from qitos.kit import ScreenshotEnv
+
+env = ScreenshotEnv(
+    screenshot_path="screen.png",
+    text="This screenshot shows a login page.",
+    dom={"title": "Login"},
+    accessibility_tree={"role": "window"},
+)
+```
+
+## Example: `visual_inspect_agent.py`
+
+The first baseline example is:
+
+- `/Users/morinop/coding/yoga_framework/examples/real/visual_inspect_agent.py`
+
+It demonstrates a very small but complete path:
+
+1. create a screenshot-backed task
+2. expose a screenshot-first env
+3. call an OpenAI-compatible multimodal model
+4. keep the response on the existing JSON decision lane
+5. inspect the run in qita with visual assets visible
+
+This example is a better starting point for visual-web / GUI research than jumping straight into a benchmark runner.
+
+## qita support in phase 1
+
+qita now records and shows:
+
+- whether a step had screenshot-backed observations
+- visual asset metadata
+- the current step's observation modalities
+- whether the model input included images
+
+Phase 1 does **not** yet include:
+
+- screenshot timeline replay
+- click overlays
+- grounding visualizations
+
+Those belong to the next phase.
+
+## Why this matters for OSWorld-style work
+
+OSWorld and similar GUI benchmarks need more than image input:
+
+- screenshot observations
+- structured actions
+- grounding metadata
+- traceable visual state
+
+The current phase gives QitOS a clean foundation for that work:
+
+- multimodal messages are now first-class
+- screenshot observations now fit the Engine/trace/qita model
+- GUI capability hooks now exist in the environment contract
+
+That means the next OSWorld adapter can be built **on top of** the kernel instead of beside it.
+
+## Current boundary
+
+This phase intentionally stops at:
+
+- screenshot-first observation
+- OpenAI-compatible multimodal requests
+- minimal GUI SDK primitives
+- first-pass qita visibility
+
+It does not yet promise:
+
+- full OSWorld integration
+- provider-wide multimodal parity
+- complete GUI action execution
+- full visual replay
+
+That boundary is deliberate. We want a clean core first, then richer computer-use support.

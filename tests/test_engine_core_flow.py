@@ -14,6 +14,7 @@ from qitos import (
 )
 from qitos.core.history import History, HistoryMessage
 from qitos.kit.memory import WindowMemory
+from qitos.kit.env import ScreenshotEnv
 from qitos.kit.history import WindowHistory
 from qitos.kit.parser import ReActTextParser
 from qitos.core.memory import Memory, MemoryRecord
@@ -156,6 +157,61 @@ def test_engine_default_model_decide_with_prepare():
     assert len(seen_messages) == 2
     assert seen_messages[0]["role"] == "system"
     assert seen_messages[1]["role"] == "user"
+
+
+def test_engine_includes_current_step_visual_input_in_user_message(tmp_path):
+    png_path = tmp_path / "screen.png"
+    png_path.write_bytes(
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x04\x00\x00\x00\xb5\x1c\x0c\x02\x00\x00\x00\x0bIDATx\xdac\xfc\xff\x1f\x00\x02\xeb\x01\xf5i\xf6\x81\xb7\x00\x00\x00\x00IEND\xaeB`\x82"
+    )
+    seen_messages: list[dict[str, Any]] = []
+
+    class _VisualModel:
+        model = "gpt-4.1-mini"
+
+        def __call__(self, messages, **kwargs):
+            _ = kwargs
+            seen_messages.extend(messages)
+            return "Final Answer: visual complete"
+
+        def supports_multimodal_input(self) -> bool:
+            return True
+
+    class VisualDemo(DemoAgent):
+        def __init__(self):
+            super().__init__()
+            self.llm = _VisualModel()
+            self.model_parser = ReActTextParser()
+
+        def build_system_prompt(self, state: DemoState) -> str | None:
+            return "Inspect the screenshot and answer."
+
+        def prepare(self, state: DemoState) -> str:
+            return "What is visible in the current screenshot?"
+
+        def decide(self, state: DemoState, observation: dict[str, Any]):
+            _ = observation
+            if state.current_step == 0:
+                return None
+            return Decision.final("done")
+
+    env = ScreenshotEnv(
+        screenshot_path=str(png_path),
+        text="The screenshot shows a login page.",
+    )
+    result = Engine(agent=VisualDemo(), env=env, budget=RuntimeBudget(max_steps=2)).run(
+        "inspect"
+    )
+    assert result.state.final_result == "visual complete"
+    user_message = seen_messages[-1]
+    assert user_message["role"] == "user"
+    assert isinstance(user_message["content"], list)
+    assert user_message["content"][0]["type"] == "text"
+    assert user_message["content"][1]["type"] == "image_file"
+    record = result.records[0]
+    assert record.model_input_visual_count == 1
+    assert record.has_screenshot is True
+    assert record.observation_modalities == ["text", "screenshot"]
 
 
 def test_engine_uses_history_messages_for_next_llm_call():

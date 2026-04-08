@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import base64
 import http.server
 import socketserver
 import tempfile
@@ -33,6 +34,9 @@ class SequenceModel:
             return "Final Answer: smoke complete"
         item = self.outputs.pop(0)
         return item(messages) if callable(item) else str(item)
+
+    def supports_multimodal_input(self) -> bool:
+        return True
 
 
 class FakeTerminal(TerminalCapability):
@@ -171,4 +175,19 @@ def write_minimal_epub(path: Path) -> None:
         )
 
 
-__all__ = ["FakeTerminal", "SequenceModel", "local_html_server", "write_minimal_epub"]
+def write_tiny_png(path: Path) -> None:
+    """Write a tiny 1x1 PNG for multimodal smoke tests."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wn2gbcAAAAASUVORK5CYII="
+    )
+    path.write_bytes(payload)
+
+
+__all__ = [
+    "FakeTerminal",
+    "SequenceModel",
+    "local_html_server",
+    "write_minimal_epub",
+    "write_tiny_png",
+]

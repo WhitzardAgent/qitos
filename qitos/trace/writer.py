@@ -189,6 +189,22 @@ def runtime_step_to_trace(step: Any) -> TraceStep:
         native_tool_call_fallback_reason=getattr(
             step, "native_tool_call_fallback_reason", None
         ),
+        visual_assets=_normalize(list(getattr(step, "visual_assets", []) or [])),
+        observation_modalities=_normalize(
+            list(getattr(step, "observation_modalities", []) or [])
+        ),
+        visual_asset_count=int(getattr(step, "visual_asset_count", 0) or 0),
+        has_screenshot=bool(getattr(step, "has_screenshot", False)),
+        has_dom=bool(getattr(step, "has_dom", False)),
+        has_accessibility_tree=bool(
+            getattr(step, "has_accessibility_tree", False)
+        ),
+        model_input_modalities=_normalize(
+            list(getattr(step, "model_input_modalities", []) or [])
+        ),
+        model_input_visual_count=int(
+            getattr(step, "model_input_visual_count", 0) or 0
+        ),
     )
 
 

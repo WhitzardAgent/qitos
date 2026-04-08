@@ -144,6 +144,15 @@ def test_get_protocol_returns_builtin_protocol() -> None:
     assert protocol.supports_native_tool_call_markup is True
 
 
+def test_get_protocol_returns_desktop_builtin_protocols() -> None:
+    json_protocol = get_protocol("desktop_actions_json_v1")
+    xml_protocol = get_protocol("desktop_actions_xml_v1")
+    assert json_protocol is not None
+    assert xml_protocol is not None
+    assert json_protocol.id == "desktop_actions_json_v1"
+    assert xml_protocol.id == "desktop_actions_xml_v1"
+
+
 def test_default_prompt_builder_supplies_contract_and_tool_schema() -> None:
     registry = ToolRegistry()
 
@@ -277,6 +286,123 @@ def test_api_parameter_tool_schema_delivery_reaches_supported_model() -> None:
     result = Engine(agent=_ApiAgent(llm=llm)).run("help")
     assert result.state.final_result == "ok"
     _messages, kwargs = llm.calls[0]
+    assert kwargs["tool_choice"] == "auto"
+    assert kwargs["delivery"] == "api_parameter"
+    assert kwargs["tools"][0]["function"]["name"] == "lookup"
+
+
+def test_desktop_json_protocol_prompt_and_parser_roundtrip() -> None:
+    protocol = get_protocol("desktop_actions_json_v1")
+    assert protocol is not None
+    rendered = protocol.contract_renderer(protocol)
+    assert "wait" in rendered.lower()
+    parser = protocol.parser_factory()
+    decision = parser.parse(
+        '{"thought":"The Continue button is centered and visible.","plan":"Click the CTA.","action":{"name":"click","args":{"x":640,"y":420}}}'
+    )
+    assert decision.mode == "act"
+    assert decision.actions[0]["name"] == "click"
+
+
+def test_desktop_xml_protocol_parser_roundtrip() -> None:
+    protocol = get_protocol("desktop_actions_xml_v1")
+    assert protocol is not None
+    parser = protocol.parser_factory()
+    decision = parser.parse(
+        "<decision mode=\"act\"><think>The button is clearly visible.</think><plan>Click the CTA.</plan><action name=\"click\"><arg name=\"x\">640</arg><arg name=\"y\">420</arg></action></decision>"
+    )
+    assert decision.mode == "act"
+    assert decision.actions[0]["name"] == "click"
+
+
+def test_manual_build_system_prompt_keeps_api_parameter_tool_schema() -> None:
+    registry = ToolRegistry()
+
+    @tool(name="lookup")
+    def lookup(query: str) -> dict[str, Any]:
+        """
+        Look up a string.
+
+        :param query: Query text.
+        """
+
+        return {"ok": True}
+
+    registry.register(lookup)
+
+    custom_protocol = ModelProtocol(
+        id="manual_api_tool_protocol_v1",
+        display_name="Manual API Tool Protocol",
+        parser_factory=ReActTextParser,
+        prompt_renderer=lambda base_prompt, _tools: str(base_prompt or ""),
+        contract_renderer=lambda _protocol: "Output contract:\nFinal Answer: <answer>",
+        tool_schema_renderer=lambda _registry: "",
+        tool_schema_delivery="api_parameter",
+        repair_renderer=lambda text: text,
+        continuation_renderer=lambda text: text,
+    )
+
+    class _ApiModel:
+        model = "custom-api-model"
+
+        def __init__(self) -> None:
+            self.calls: list[tuple[list[dict[str, str]], dict[str, Any]]] = []
+
+        def supports_tool_schema_delivery(
+            self, delivery: str, protocol: Any = None
+        ) -> bool:
+            _ = protocol
+            return delivery == "api_parameter"
+
+        def build_tool_schema_request_options(
+            self,
+            tool_schema_payload: list[dict[str, Any]] | None,
+            *,
+            protocol: Any = None,
+            delivery: str = "prompt_injection",
+        ) -> dict[str, Any]:
+            _ = protocol
+            return {
+                "tools": list(tool_schema_payload or []),
+                "tool_choice": "auto",
+                "delivery": delivery,
+            }
+
+        def __call__(self, messages, **kwargs):
+            self.calls.append((list(messages), dict(kwargs)))
+            return "Final Answer: ok"
+
+    class _ManualPromptAgent(AgentModule[_ProtocolState, dict[str, Any], dict[str, Any]]):
+        name = "manual_prompt_agent"
+
+        def __init__(self, llm: Any) -> None:
+            super().__init__(
+                tool_registry=registry, llm=llm, model_protocol=custom_protocol
+            )
+
+        def init_state(self, task: str, **kwargs: Any) -> _ProtocolState:
+            return _ProtocolState(task=task, max_steps=int(kwargs.get("max_steps", 2)))
+
+        def build_system_prompt(self, state: _ProtocolState) -> str | None:
+            _ = state
+            return self.compose_system_prompt("Use the handwritten system prompt.")
+
+        def reduce(
+            self,
+            state: _ProtocolState,
+            observation: dict[str, Any],
+            decision: Decision[dict[str, Any]],
+        ) -> _ProtocolState:
+            _ = observation
+            state.final_result = decision.final_answer or "ok"
+            state.stop_reason = "success"
+            return state
+
+    llm = _ApiModel()
+    result = Engine(agent=_ManualPromptAgent(llm=llm)).run("help")
+    assert result.state.final_result == "ok"
+    messages, kwargs = llm.calls[0]
+    assert messages[0]["content"].startswith("Use the handwritten system prompt.")
     assert kwargs["tool_choice"] == "auto"
     assert kwargs["delivery"] == "api_parameter"
     assert kwargs["tools"][0]["function"]["name"] == "lookup"

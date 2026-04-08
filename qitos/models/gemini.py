@@ -55,7 +55,7 @@ class GeminiModel(Model):
                 "GEMINI_API_KEY or GOOGLE_API_KEY not set. Please set one or pass api_key."
             )
 
-    def _call_api(self, messages: List[Dict[str, str]], **kwargs: Any) -> str:
+    def _call_api(self, messages: List[Dict[str, Any]], **kwargs: Any) -> str:
         payload: Dict[str, Any] = {
             "contents": self._gemini_contents(messages),
             "generationConfig": {
@@ -87,7 +87,7 @@ class GeminiModel(Model):
         except Exception as exc:
             return f"Error: {str(exc)}"
 
-    def _system_text(self, messages: List[Dict[str, str]]) -> str:
+    def _system_text(self, messages: List[Dict[str, Any]]) -> str:
         parts: List[str] = []
         if self.system_prompt:
             parts.append(str(self.system_prompt))
@@ -98,7 +98,7 @@ class GeminiModel(Model):
                     parts.append(content)
         return "\n\n".join(parts).strip()
 
-    def _gemini_contents(self, messages: List[Dict[str, str]]) -> List[Dict[str, Any]]:
+    def _gemini_contents(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         contents: List[Dict[str, Any]] = []
         for msg in messages:
             role = str(msg.get("role", ""))

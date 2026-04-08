@@ -20,6 +20,8 @@ def test_canonical_examples_exist_and_parse() -> None:
         "examples/real/claude_code_agent.py",
         "examples/real/swe_agent.py",
         "examples/real/computer_use_agent.py",
+        "examples/real/openai_cua_agent.py",
+        "examples/real/desktop_env_smoke.py",
         "examples/real/epub_reader_agent.py",
         "examples/real/code_security_audit_agent.py",
         "examples/real/react_compact_agent.py",

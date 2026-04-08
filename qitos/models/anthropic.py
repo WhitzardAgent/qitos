@@ -58,7 +58,7 @@ class AnthropicModel(Model):
                 "ANTHROPIC_API_KEY not set. Please set it or pass api_key."
             )
 
-    def _call_api(self, messages: List[Dict[str, str]], **kwargs: Any) -> str:
+    def _call_api(self, messages: List[Dict[str, Any]], **kwargs: Any) -> str:
         headers = {
             "x-api-key": self.api_key,
             "anthropic-version": self.api_version,
@@ -94,7 +94,7 @@ class AnthropicModel(Model):
         except Exception as exc:
             return f"Error: {str(exc)}"
 
-    def _system_text(self, messages: List[Dict[str, str]]) -> str:
+    def _system_text(self, messages: List[Dict[str, Any]]) -> str:
         parts: List[str] = []
         if self.system_prompt:
             parts.append(str(self.system_prompt))
@@ -106,7 +106,7 @@ class AnthropicModel(Model):
         return "\n\n".join(parts).strip()
 
     def _anthropic_messages(
-        self, messages: List[Dict[str, str]]
+        self, messages: List[Dict[str, Any]]
     ) -> List[Dict[str, Any]]:
         converted: List[Dict[str, Any]] = []
         for msg in messages:

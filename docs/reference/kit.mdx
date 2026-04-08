@@ -20,6 +20,8 @@ Use this page as a capability map for QitOS authoring.
 | Which tools to expose | Tool sets |
 | Which ready-made registries to start from | Preset builders |
 | How to add planning or search structure | Planning |
+| How to start screenshot-first multimodal work | `ScreenshotEnv` and the visual guide |
+| How to build desktop / computer-use agents | `DesktopEnv`, `ComputerUseToolSet`, and the desktop guide |
 
 ## Capability map
 
@@ -34,12 +36,24 @@ Use this page as a capability map for QitOS authoring.
 ### Tool presets
 
 - `coding_tools(...)` for the canonical coding workspace
+- `computer_use_tools()` for provider-neutral desktop / GUI action workflows
 - `advanced_coding_tools(...)` for a Claude-style coding preset
 - `web_tools()` for web research and extraction
 - `task_tools(...)` for persistent task-board workflows
 - `security_audit_tools(...)` for defensive repository review
 - `thinking_tools()` for explicit thought-recording flows
 - `notebook_tools(...)`, `report_tools(...)`, and `epub_tools(...)` for narrower scenarios
+
+### Environments
+
+- `ScreenshotEnv` for screenshot-first multimodal and GUI-adjacent workflows
+- `DesktopEnv` for OSWorld-inspired desktop and computer-use loops
+- `TextWebEnv` for text-browser-style web observation
+- `TmuxEnv` for interactive terminal workflows
+
+`ScreenshotEnv` is the first built-in multimodal environment. Use it when you want to test screenshot-based reasoning, visual-web prompting, or the new qita visual-asset path without committing to a full benchmark adapter.
+
+`DesktopEnv` builds on the same multimodal core but adds an OSWorld-style desktop lane: screenshot + accessibility + terminal observation, GUI controller ops, and container-first provider boundaries.
 
 ### Long-running context blocks
 

@@ -6,6 +6,7 @@ import argparse
 import html
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import mimetypes
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import parse_qs, urlparse
@@ -153,6 +154,22 @@ def _build_handler(root: Path):
                     )
                     return
                 self._send_json(_load_run_payload(run_dir))
+                return
+            if route == "/asset":
+                path = str((qs.get("path") or [""])[0]).strip()
+                if not path:
+                    self._send_json({"error": "missing asset path"}, status=400)
+                    return
+                asset_path = Path(path).expanduser().resolve()
+                if not asset_path.exists() or not asset_path.is_file():
+                    self._send_json(
+                        {"error": "asset not found", "path": str(asset_path)},
+                        status=404,
+                    )
+                    return
+                body = asset_path.read_bytes()
+                guessed = mimetypes.guess_type(str(asset_path))[0] or "application/octet-stream"
+                self._send_bytes(body, content_type=guessed)
                 return
             if route.startswith("/run/"):
                 run_id = _slug_run_id(route.split("/", 2)[-1])
@@ -1011,6 +1028,7 @@ pre{{margin:0;background:#0b1220;border:1px solid #1c2b44;padding:10px;border-ra
 </div>
 <script id="payload" type="application/json">{payload_json}</script>
 <script>
+const embedded = {str(bool(embedded)).lower()};
 const payload = JSON.parse(document.getElementById('payload').textContent || '{{}}');
 const steps = Array.isArray(payload.steps) ? payload.steps : [];
 const eventsByStep = payload.events_by_step || {{}};
@@ -1262,6 +1280,52 @@ function renderDirectObservation(actionResults){{
   blocks.push(renderObservationBlock(picked.primary, picked.primary_kind.startsWith('terminal_') ? 'Terminal Observation' : 'Direct Observation'));
   if(picked.secondary) blocks.push(renderObservationBlock(picked.secondary, 'Tool Observation'));
   return blocks.join('');
+}}
+function assetHref(path){{
+  if(!path) return '';
+  if(embedded) return '';
+  return '/asset?path=' + encodeURIComponent(String(path));
+}}
+function renderVisualAssets(step){{
+  const st = (step && typeof step === 'object') ? step : {{}};
+  const assets = Array.isArray(st.visual_assets) ? st.visual_assets : [];
+  const modalities = Array.isArray(st.observation_modalities) ? st.observation_modalities : [];
+  const inputModalities = Array.isArray(st.model_input_modalities) ? st.model_input_modalities : [];
+  const headerRows = [];
+  if(modalities.length) headerRows.push(kvRow('observation modalities', modalities.join(', ')));
+  if(inputModalities.length) headerRows.push(kvRow('model input modalities', inputModalities.join(', ')));
+  if(st.model_input_visual_count !== undefined) headerRows.push(kvRow('model input images', st.model_input_visual_count));
+  if(st.visual_asset_count !== undefined) headerRows.push(kvRow('visual assets', st.visual_asset_count));
+  let htmlBlocks = headerRows.length ? kvBlock(headerRows) : '';
+  if(!assets.length){{
+    return htmlBlocks || '<div class="muted">No visual assets recorded.</div>';
+  }}
+  const cards = [];
+  for(const asset of assets){{
+    if(!asset || typeof asset !== 'object') continue;
+    const path = asset.path || '';
+    const mime = String(asset.mime_type || '');
+    const imageLike = mime.startsWith('image/');
+    let preview = '';
+    if(imageLike && !embedded && path){{
+      preview = '<div style="margin-top:8px"><img src="' + esc(assetHref(path)) + '" alt="visual asset" style="max-width:100%;border:1px solid #1c2b44;border-radius:8px;background:#0b1220"/></div>';
+    }} else if(path) {{
+      preview = '<div style="margin-top:8px"><pre>' + esc(String(path)) + '</pre></div>';
+    }}
+    cards.push(
+      '<div class="item">' +
+      kvBlock([
+        kvRow('kind', asset.kind || '-'),
+        kvRow('path', path || '-'),
+        kvRow('mime_type', mime || '-'),
+        kvRow('size', ((asset.width || '-') + ' × ' + (asset.height || '-'))),
+        kvRow('source_step', asset.source_step !== undefined ? asset.source_step : '-'),
+      ]) +
+      preview +
+      '</div>'
+    );
+  }}
+  return htmlBlocks + '<div class="list" style="margin-top:8px">' + cards.join('') + '</div>';
 }}
 function renderThought(decision, events, step){{
   const thought = extractThought(decision, events);
@@ -1634,6 +1698,9 @@ function renderPromptMetadata(meta){{
   if(meta.protocol_resolution_source) rows.push(kvRow('resolution', meta.protocol_resolution_source));
   if(meta.prompt_builder) rows.push(kvRow('builder', meta.prompt_builder));
   if(meta.tool_schema_delivery) rows.push(kvRow('tool schema delivery', meta.tool_schema_delivery));
+  if(Array.isArray(meta.model_input_modalities) && meta.model_input_modalities.length) rows.push(kvRow('model input modalities', meta.model_input_modalities.join(', ')));
+  if(meta.model_input_visual_count !== undefined) rows.push(kvRow('model input images', meta.model_input_visual_count));
+  if(Array.isArray(meta.observation_modalities) && meta.observation_modalities.length) rows.push(kvRow('observation modalities', meta.observation_modalities.join(', ')));
   if(Array.isArray(meta.sections_used) && meta.sections_used.length) rows.push(kvRow('sections', meta.sections_used.join(', ')));
   if(meta.prompt_hash_static) rows.push(kvRow('static hash', meta.prompt_hash_static));
   if(meta.prompt_hash_full) rows.push(kvRow('full hash', meta.prompt_hash_full));
@@ -1669,6 +1736,7 @@ function render(){{
     let h = '<div class="card-head"><div class="step">STEP ' + it.sid + '</div><div class="muted">events ' + it.events.length + '</div></div>';
     if(showObs) h += sectionHtml('State', renderState(obsInput), obsInput, 'state', collapsedAll);
     h += sectionHtml('Prompt', renderPromptMetadata(it.step.prompt_metadata || {{}}), it.step.prompt_metadata || {{}}, 'prompt', collapsedAll);
+    h += sectionHtml('Visual Assets', renderVisualAssets(it.step), {{visual_assets: it.step.visual_assets || [], observation_modalities: it.step.observation_modalities || [], model_input_modalities: it.step.model_input_modalities || [], model_input_visual_count: it.step.model_input_visual_count || 0}}, 'visual_assets', collapsedAll);
     h += sectionHtml('Thought', renderThought(d, it.events, it.step), d, 'thought', collapsedAll);
     h += sectionHtml('Parser Diagnostics', renderParserDiagnostics(it.step.parser_diagnostics || {{}}), it.step.parser_diagnostics || {{}}, 'parser', collapsedAll);
     h += sectionHtml('Action', renderAction(it.step.actions||[]), it.step.actions||[], 'action', collapsedAll);

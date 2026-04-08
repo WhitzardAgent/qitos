@@ -1,5 +1,12 @@
 """Reusable prompt templates."""
 
+from .computer_use import (
+    COMPUTER_USE_A11Y_SYSTEM_PROMPT,
+    COMPUTER_USE_SCREENSHOT_A11Y_SYSTEM_PROMPT,
+    COMPUTER_USE_SCREENSHOT_SYSTEM_PROMPT,
+    computer_use_persona_prompt,
+    computer_use_task_policy,
+)
 from .template import render_prompt
 
 REACT_SYSTEM_PROMPT = """You are a reliable ReAct agent.
@@ -269,6 +276,11 @@ Here is the current terminal state:
 """
 
 __all__ = [
+    "COMPUTER_USE_A11Y_SYSTEM_PROMPT",
+    "COMPUTER_USE_SCREENSHOT_A11Y_SYSTEM_PROMPT",
+    "COMPUTER_USE_SCREENSHOT_SYSTEM_PROMPT",
+    "computer_use_persona_prompt",
+    "computer_use_task_policy",
     "render_prompt",
     "REACT_SYSTEM_PROMPT",
     "XML_DECISION_SYSTEM_PROMPT",

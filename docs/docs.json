@@ -67,9 +67,11 @@
               },
               {
                 "group": "Guides",
-                "pages": [
-                  "guides/build-your-first-agent",
-                  "guides/agent-patterns",
+              "pages": [
+                "guides/build-your-first-agent",
+                "guides/computer-use-desktop",
+                "guides/multimodal-core",
+                "guides/agent-patterns",
                   "guides/add-a-family-preset",
                   "guides/qwen-family-best-practice",
                   "guides/memory-and-history",

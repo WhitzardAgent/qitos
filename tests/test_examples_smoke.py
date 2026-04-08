@@ -14,12 +14,15 @@ from examples.real.claude_code_agent import ClaudeCodeAgent
 from examples.real.code_security_audit_agent import CodeSecurityAuditAgent
 from examples.real.coding_agent import CodingMemoryReactAgent
 from examples.real.computer_use_agent import ComputerUseReActAgent
+from examples.real.desktop_env_smoke import main as desktop_env_smoke_main
 from examples.real.epub_reader_agent import EpubTreeOfThoughtAgent
+from examples.real.openai_cua_agent import main as openai_cua_main
 from examples.real.react_compact_agent import CompactReactAgent
 from examples.real.research_harness_agent import ResearchHarnessAgent
 from examples.real.skillhub_github_agent import GitHubSkillAgent
 from examples.real.swe_agent import SWEDynamicPlanningAgent
 from examples.real.terminus_2 import Terminus2Agent
+from examples.real.visual_inspect_agent import main as visual_inspect_main
 from examples.real.whitzard_agent import WhitzardAgent
 from qitos.kit import MarkdownFileMemory, TextWebEnv, TmuxEnv
 from qitos.demo.minimal import run_minimal_demo
@@ -125,7 +128,7 @@ def test_reflexion_and_computer_use_examples_smoke(tmp_path: Path) -> None:
     agent = ComputerUseReActAgent(
         llm=SequenceModel(
             [
-                '```json\n{"mode":"act","rationale":"write a local smoke report","actions":[{"name":"write_file","args":{"filename":"report.md","content":"Smoke report\\n\\nLocal smoke content."}}]}\n```',
+                '```json\n{"mode":"act","rationale":"write a local smoke report","actions":[{"name":"write_file","args":{"path":"report.md","content":"Smoke report\\n\\nLocal smoke content."}}]}\n```',
                 '{"mode":"final","rationale":"report written","final_answer":"report.md created"}',
             ]
         ),
@@ -191,6 +194,17 @@ def test_epub_examples_smoke(tmp_path: Path) -> None:
         return_state=True,
     )
     assert reader_result.state.stop_reason == "final"
+
+
+def test_visual_inspect_example_smoke_runs(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    visual_inspect_main(smoke=True)
+
+
+def test_openai_cua_and_desktop_env_examples_smoke_runs(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    openai_cua_main(smoke=True)
+    desktop_env_smoke_main(smoke=True)
 
 
 def test_swe_claude_security_and_skill_examples_smoke(tmp_path: Path) -> None:

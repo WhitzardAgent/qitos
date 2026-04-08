@@ -15,7 +15,16 @@ from . import (
     toolset,
 )
 from .critic import ReActSelfReflectionCritic
-from .env import HostEnv, RepoEnv, TextWebEnv, TmuxEnv
+from .env import (
+    ContainerDesktopProvider,
+    DesktopEnv,
+    HostEnv,
+    MockDesktopProvider,
+    RepoEnv,
+    ScreenshotEnv,
+    TextWebEnv,
+    TmuxEnv,
+)
 from .history import (
     CompactConfig,
     CompactHistory,
@@ -34,6 +43,9 @@ from .parser import (
 )
 from .planning import DynamicTreeSearch, NumberedPlanBuilder, format_action
 from .prompts import (
+    COMPUTER_USE_A11Y_SYSTEM_PROMPT,
+    COMPUTER_USE_SCREENSHOT_A11Y_SYSTEM_PROMPT,
+    COMPUTER_USE_SCREENSHOT_SYSTEM_PROMPT,
     JSON_DECISION_SYSTEM_PROMPT,
     MINIMAX_TOOL_CALL_SYSTEM_PROMPT,
     PLAN_DRAFT_PROMPT,
@@ -45,6 +57,8 @@ from .prompts import (
     TERMINUS_TIMEOUT_PROMPT,
     TERMINUS_XML_SYSTEM_PROMPT,
     XML_DECISION_SYSTEM_PROMPT,
+    computer_use_persona_prompt,
+    computer_use_task_policy,
     render_prompt,
 )
 from .tool import (
@@ -59,6 +73,7 @@ from .tool import (
     security_audit_tools,
 )
 from .toolset import codebase_tools, coding_tools, editor_tools, report_tools, toolset_from_tools
+from .toolset import ComputerUseToolSet, computer_use_tools
 
 __all__ = [
     "critic",
@@ -85,13 +100,19 @@ __all__ = [
     "XML_DECISION_SYSTEM_PROMPT",
     "JSON_DECISION_SYSTEM_PROMPT",
     "MINIMAX_TOOL_CALL_SYSTEM_PROMPT",
+    "COMPUTER_USE_SCREENSHOT_SYSTEM_PROMPT",
+    "COMPUTER_USE_A11Y_SYSTEM_PROMPT",
+    "COMPUTER_USE_SCREENSHOT_A11Y_SYSTEM_PROMPT",
     "SWE_AGENT_SYSTEM_PROMPT",
     "SECURITY_AUDIT_SYSTEM_PROMPT",
     "TERMINUS_JSON_SYSTEM_PROMPT",
     "TERMINUS_XML_SYSTEM_PROMPT",
     "TERMINUS_TIMEOUT_PROMPT",
     "render_prompt",
+    "computer_use_persona_prompt",
+    "computer_use_task_policy",
     "CodingToolSet",
+    "ComputerUseToolSet",
     "SendTerminalKeys",
     "SecurityAuditToolSet",
     "HTTPGet",
@@ -101,6 +122,7 @@ __all__ = [
     "TaskToolSet",
     "toolset_from_tools",
     "coding_tools",
+    "computer_use_tools",
     "editor_tools",
     "codebase_tools",
     "report_tools",
@@ -117,7 +139,11 @@ __all__ = [
     "format_action",
     "ReActSelfReflectionCritic",
     "HostEnv",
+    "DesktopEnv",
+    "ContainerDesktopProvider",
+    "MockDesktopProvider",
     "RepoEnv",
+    "ScreenshotEnv",
     "TextWebEnv",
     "TmuxEnv",
 ]

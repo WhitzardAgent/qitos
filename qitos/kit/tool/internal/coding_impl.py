@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import fnmatch
-import json
 import os
 import re
 import subprocess
@@ -59,7 +58,7 @@ def _default_rule_scope(args: Dict[str, Any]) -> Optional[str]:
 
 
 class CodingToolSet:
-    """Canonical coding toolset with legacy aliases and Claude-style tools."""
+    """Canonical coding toolset with one stable, traditional tool surface."""
 
     name = "coding"
     version = "2"
@@ -74,7 +73,7 @@ class CodingToolSet:
         enable_tasks: bool = True,
         enable_web: bool = True,
         expose_legacy_aliases: bool = True,
-        expose_modern_names: bool = True,
+        expose_modern_names: bool = False,
         profile: str = "full",
         include_http_tools: bool = False,
     ):
@@ -142,28 +141,7 @@ class CodingToolSet:
                         self.extract_web_text,
                     ]
                 )
-        if self.expose_modern_names and self.profile in {
-            "full",
-            "editor",
-            "codebase",
-            "shell",
-        }:
-            items.extend(
-                [
-                    self.bash_v2,
-                    self.file_read_v2,
-                    self.file_edit_v2,
-                    self.glob_v2,
-                    self.grep_v2,
-                ]
-            )
-        if (
-            self.expose_modern_names
-            and self.enable_web
-            and self.profile in {"full", "web"}
-        ):
-            items.append(self.web_fetch_v2)
-        if self.expose_modern_names and self.profile == "full":
+        if self.profile == "full":
             items.extend(
                 [
                     self.ask_user_choice,
@@ -577,16 +555,16 @@ class CodingToolSet:
         rule_scope_builder=_default_rule_scope,
     )
     def read_file(
-        self, filename: str, runtime_context: Optional[Dict[str, Any]] = None
+        self, path: str, runtime_context: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
         Read the full text content of a workspace file.
 
-        :param filename: Path relative to the workspace root.
+        :param path: Path relative to the workspace root.
         :param runtime_context: Optional runtime context injected by the executor.
         """
         result = self.file_read_v2(
-            path=filename,
+            path=path,
             offset=0,
             limit=100_000,
             max_chars=200_000,
@@ -596,7 +574,7 @@ class CodingToolSet:
             return result
         return {
             "status": "success",
-            "path": filename,
+            "path": path,
             "content": result.get("content", ""),
             "size": len(result.get("content", "")),
         }
@@ -702,45 +680,45 @@ class CodingToolSet:
     )
     def write_file(
         self,
-        filename: str,
+        path: str,
         content: str,
         runtime_context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Write text content to a workspace file.
 
-        :param filename: Path relative to the workspace root.
+        :param path: Path relative to the workspace root.
         :param content: Full text content to write into the file.
         :param runtime_context: Optional runtime context injected by the executor.
         """
         _ = runtime_context
         try:
-            resolved = _resolve_workspace_path(self.workspace_root, filename)
+            resolved = _resolve_workspace_path(self.workspace_root, path)
             self._write_text_file(resolved, str(content), "\n")
-            return {"status": "success", "path": filename, "size": len(content)}
+            return {"status": "success", "path": path, "size": len(content)}
         except Exception as e:
-            return {"status": "error", "message": str(e), "path": filename}
+            return {"status": "error", "message": str(e), "path": path}
 
     @tool(
         name="create",
         permissions=ToolPermission(filesystem_write=True),
         rule_scope_builder=_default_rule_scope,
     )
-    def create(self, path: str, file_text: str = "") -> Dict[str, Any]:
+    def create(self, path: str, content: str = "") -> Dict[str, Any]:
         """
         Create a new file with the given content.
 
         :param path: Path relative to the workspace root (e.g., `new_file.py`).
-        :param file_text: Content to write to the new file.
+        :param content: Content to write to the new file.
         """
-        result = self.write_file(filename=path, content=file_text)
+        result = self.write_file(path=path, content=content)
         if result.get("status") != "success":
             return result
         return {
             "status": "success",
             "path": path,
             "message": f"Created file: {path}",
-            "size": len(file_text),
+            "size": len(content),
         }
 
     @tool(
@@ -926,31 +904,31 @@ class CodingToolSet:
     )
     def append_file(
         self,
-        filename: str,
+        path: str,
         content: str,
         runtime_context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Append text to the end of a workspace file.
 
-        :param filename: File path relative to the workspace root.
+        :param path: File path relative to the workspace root.
         :param content: Text to append.
         :param runtime_context: Optional runtime context injected by the executor.
         """
         _ = runtime_context
         try:
-            resolved = _resolve_workspace_path(self.workspace_root, filename)
+            resolved = _resolve_workspace_path(self.workspace_root, path)
             resolved.parent.mkdir(parents=True, exist_ok=True)
             with resolved.open("a", encoding="utf-8") as handle:
                 handle.write(content)
             return {
                 "status": "success",
-                "path": filename,
+                "path": path,
                 "appended_size": len(content),
                 "size": resolved.stat().st_size,
             }
         except Exception as e:
-            return {"status": "error", "message": str(e), "path": filename}
+            return {"status": "error", "message": str(e), "path": path}
 
     @tool(
         name="make_directory",
@@ -1194,7 +1172,7 @@ class CodingToolSet:
     )
     def read_file_range(
         self,
-        filename: str,
+        path: str,
         offset: int = 0,
         limit: int = 200,
         runtime_context: Optional[Dict[str, Any]] = None,
@@ -1202,19 +1180,19 @@ class CodingToolSet:
         """
         Read a bounded line range from one workspace file.
 
-        :param filename: File path relative to the workspace root.
+        :param path: File path relative to the workspace root.
         :param offset: Zero-based starting line offset.
         :param limit: Maximum number of lines to return.
         :param runtime_context: Optional runtime context injected by the executor.
         """
         result = self.file_read_v2(
-            path=filename, offset=offset, limit=limit, runtime_context=runtime_context
+            path=path, offset=offset, limit=limit, runtime_context=runtime_context
         )
         if result.get("status") != "success":
             return result
         return {
             "status": "success",
-            "path": filename,
+            "path": path,
             "offset": result.get("offset", offset),
             "limit": result.get("limit", limit),
             "total_lines": result.get("total_lines", 0),
@@ -1474,6 +1452,7 @@ class CodingToolSet:
         return {
             "status": "success",
             "url": payload.get("url", url),
+            "redirect_url": payload.get("redirect_url"),
             "title": payload.get("title", ""),
             "content": payload.get("result", ""),
             "auth_hint": payload.get("auth_hint", ""),

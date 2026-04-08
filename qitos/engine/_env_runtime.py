@@ -254,6 +254,91 @@ class _EnvRuntime(Generic[StateT, ObservationT, ActionT]):
                 )
             except Exception:
                 return None
+        if env_type in {"screenshot", "gui", "multimodal"}:
+            try:
+                from ..kit.env import ScreenshotEnv
+
+                screenshot_path = str(config.get("screenshot_path") or "").strip()
+                if not screenshot_path:
+                    return None
+                return ScreenshotEnv(
+                    screenshot_path=screenshot_path,
+                    text=str(config.get("text") or ""),
+                    detail=str(config.get("detail") or "high"),
+                    dom=config.get("dom"),
+                    accessibility_tree=config.get("accessibility_tree"),
+                    ocr=list(config.get("ocr") or []),
+                    ui_candidates=list(config.get("ui_candidates") or []),
+                    metadata=dict(config.get("metadata") or {}),
+                )
+            except Exception:
+                return None
+        if env_type in {"desktop", "computer_use", "gui_desktop"}:
+            try:
+                from ..kit.env import DesktopEnv
+
+                provider = str(config.get("provider") or "mock").strip().lower()
+                screenshot_path = str(config.get("screenshot_path") or "").strip()
+                if not screenshot_path:
+                    return None
+                instruction = str(
+                    config.get("instruction")
+                    or config.get("task")
+                    or config.get("objective")
+                    or ""
+                )
+                accessibility_tree = config.get("accessibility_tree")
+                terminal = str(config.get("terminal") or "")
+                dom = config.get("dom")
+                ocr = list(config.get("ocr") or [])
+                ui_candidates = list(config.get("ui_candidates") or [])
+                raw_screen_size = config.get("screen_size") or (1920, 1080)
+                if (
+                    isinstance(raw_screen_size, (list, tuple))
+                    and len(raw_screen_size) >= 2
+                ):
+                    screen_size = (
+                        int(raw_screen_size[0]),
+                        int(raw_screen_size[1]),
+                    )
+                else:
+                    screen_size = (1920, 1080)
+                metadata = dict(config.get("metadata") or {})
+                if provider == "container":
+                    container = str(config.get("container") or "").strip()
+                    if not container:
+                        return None
+                    return DesktopEnv.from_container(
+                        container=container,
+                        workspace_root=str(
+                            config.get("workspace_root")
+                            or config.get("container_workspace")
+                            or workspace_root
+                            or "/workspace"
+                        ),
+                        screenshot_path=screenshot_path,
+                        instruction=instruction,
+                        accessibility_tree=accessibility_tree,
+                        terminal=terminal,
+                        dom=dom,
+                        ocr=ocr,
+                        ui_candidates=ui_candidates,
+                        screen_size=screen_size,
+                        metadata=metadata,
+                    )
+                return DesktopEnv.from_mock(
+                    screenshot_path=screenshot_path,
+                    instruction=instruction,
+                    accessibility_tree=accessibility_tree,
+                    terminal=terminal,
+                    dom=dom,
+                    ocr=ocr,
+                    ui_candidates=ui_candidates,
+                    screen_size=screen_size,
+                    metadata=metadata,
+                )
+            except Exception:
+                return None
         return None
 
     def teardown_env(self) -> None:

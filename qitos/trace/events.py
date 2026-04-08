@@ -44,6 +44,14 @@ class TraceStep:
     decision_source: Optional[str] = None
     native_tool_call_used: bool = False
     native_tool_call_fallback_reason: Optional[str] = None
+    visual_assets: List[Dict[str, Any]] = field(default_factory=list)
+    observation_modalities: List[str] = field(default_factory=list)
+    visual_asset_count: int = 0
+    has_screenshot: bool = False
+    has_dom: bool = False
+    has_accessibility_tree: bool = False
+    model_input_modalities: List[str] = field(default_factory=list)
+    model_input_visual_count: int = 0
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)

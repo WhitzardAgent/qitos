@@ -3,8 +3,15 @@ from __future__ import annotations
 from pathlib import Path
 from typing import List
 
-from examples.real.whitzard_agent import WhitzardAgent
+from examples.real._whitzard_memory import AuditBoardMemory
+from examples.real.whitzard_agent import (
+    WhitzardAgent,
+    WhitzardState,
+    _resolve_runtime_config,
+)
 from qitos.core import TerminalCapability
+from qitos.harness import build_harness_policy
+from qitos.kit import CompactHistory
 from qitos.core.tool_registry import ToolRegistry
 from qitos.kit import SecurityAuditToolSet, TmuxEnv
 
@@ -165,3 +172,175 @@ def test_whitzard_agent_roundtrip_collects_findings_and_requires_double_completi
         "Are you sure you want to mark the task as complete?"
         in llm.calls[6][-1]["content"]
     )
+
+
+def test_whitzard_runtime_config_supports_family_switching() -> None:
+    config = _resolve_runtime_config(
+        env={
+            "QITOS_MODEL_FAMILY": "qwen",
+            "QITOS_MODEL": "qwen-plus",
+            "OPENAI_BASE_URL": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            "OPENAI_API_KEY": "demo-key",
+            "QITOS_PROTOCOL": "",
+            "QITOS_TERMINUS_FORMAT": "json",
+        }
+    )
+    assert config["model_family"] == "qwen"
+    assert config["model_name"] == "qwen-plus"
+    assert config["base_url"] == "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    assert config["protocol"] is None
+    assert config["parser_format"] == "json"
+
+
+def test_whitzard_consumes_inventory_entrypoint_candidates(tmp_path: Path) -> None:
+    agent = WhitzardAgent(llm=DummyModel(outputs=[]), workspace_root=str(tmp_path))
+    state = WhitzardState(task="Audit repository", max_steps=8)
+
+    agent._consume_action_results(
+        state,
+        {
+            "action_results": [
+                {
+                    "data": {
+                        "entrypoint_candidates": [
+                            {"file": "src/main.py"},
+                            {"file": "plugin/loader.py"},
+                        ]
+                    }
+                }
+            ]
+        },
+    )
+
+    assert "src/main.py" in state.reviewed_files
+    assert "plugin/loader.py" in state.reviewed_files
+    assert "✅ Phase 1: Reconnaissance" in agent._render_phase_progress(state)
+
+
+def test_whitzard_tool_surface_omits_list_files(tmp_path: Path) -> None:
+    agent = WhitzardAgent(llm=DummyModel(outputs=[]), workspace_root=str(tmp_path))
+    names = set(agent.tool_registry.list_tools())
+
+    assert "list_files" not in names
+    assert "audit_inventory" in names
+    assert "audit_entrypoints" in names
+    assert "audit_hotspots" in names
+    assert "grep_files" in names
+    assert "read_file_range" in names
+
+
+def test_whitzard_uses_compact_history_and_audit_board_memory(tmp_path: Path) -> None:
+    agent = WhitzardAgent(llm=DummyModel(outputs=[]), workspace_root=str(tmp_path))
+
+    assert isinstance(agent.history, CompactHistory)
+    assert isinstance(agent.audit_memory, AuditBoardMemory)
+
+
+def test_audit_board_ranks_core_targets_above_test_noise() -> None:
+    memory = AuditBoardMemory()
+    memory.ingest_inventory(
+        [
+            {"file": "runtime/syntax/testdir/input/python_strings_bytes.py"},
+            {"file": "src/buffer.c"},
+        ],
+        step_id=1,
+    )
+    memory.ingest_hotspots(
+        [
+            {"file": "src/buffer.c", "score": 91, "categories": ["modeline"]},
+            {
+                "file": "runtime/syntax/testdir/input/python_strings_bytes.py",
+                "score": 10,
+                "categories": ["fixture"],
+            },
+        ],
+        step_id=2,
+    )
+
+    top = memory.top_targets(limit=2)
+    assert top[0]["path"] == "src/buffer.c"
+    assert top[1]["path"] == "runtime/syntax/testdir/input/python_strings_bytes.py"
+
+
+def test_whitzard_prepare_surfaces_regex_retry_guidance(tmp_path: Path) -> None:
+    agent = WhitzardAgent(llm=DummyModel(outputs=[]), workspace_root=str(tmp_path))
+    state = WhitzardState(task="Audit repository", max_steps=8)
+    agent.audit_memory.ingest_grep_result(
+        {
+            "status": "error",
+            "pattern": "system(",
+            "message": "Invalid regex: missing ), unterminated subpattern",
+            "context": {"regex": True},
+        },
+        step_id=2,
+    )
+    agent._refresh_audit_board(state)
+
+    prompt = agent.prepare(state)
+    assert "regex=false" in prompt
+    assert "system(" in prompt
+
+
+def test_whitzard_prepare_prefers_focused_read_after_core_hit(tmp_path: Path) -> None:
+    agent = WhitzardAgent(llm=DummyModel(outputs=[]), workspace_root=str(tmp_path))
+    state = WhitzardState(task="Audit repository", max_steps=8)
+    agent.audit_memory.ingest_grep_result(
+        {
+            "status": "success",
+            "pattern": "modeline",
+            "matches": [
+                {"path": "runtime/syntax/testdir/input/sample.vim", "line": 5},
+                {"path": "src/buffer.c", "line": 5950},
+            ],
+            "context": {"regex": False},
+        },
+        step_id=3,
+    )
+    agent._refresh_audit_board(state)
+
+    prompt = agent.prepare(state)
+    assert "read_file_range on src/buffer.c" in prompt
+
+
+def test_whitzard_records_findings_and_report_in_audit_board(tmp_path: Path) -> None:
+    agent = WhitzardAgent(llm=DummyModel(outputs=[]), workspace_root=str(tmp_path))
+    state = WhitzardState(task="Audit repository", max_steps=8)
+    agent._consume_action_results(
+        state,
+        {
+            "action_results": [
+                {
+                    "tool": "finding_add",
+                    "data": {
+                        "finding": {
+                            "title": "Modeline command execution",
+                            "severity": "critical",
+                            "file": "src/buffer.c",
+                            "line": 6032,
+                            "evidence": "unsafe modeline execution path",
+                        }
+                    },
+                },
+                {
+                    "tool": "generate_report",
+                    "data": {"output_file": "security_report.md"},
+                },
+            ]
+        },
+    )
+    agent._refresh_audit_board(state)
+
+    board = state.audit_board_snapshot
+    assert board["confirmed_findings"][0]["file"] == "src/buffer.c"
+    assert board["report_path"] == "security_report.md"
+
+
+def test_whitzard_minimax_family_keeps_special_harness() -> None:
+    harness = build_harness_policy(
+        family_id="minimax",
+        model_name="MiniMax-M2.5",
+        protocol=None,
+        resolution_source="test",
+    )
+    assert harness.family_preset.id == "minimax"
+    assert harness.protocol.id == "minimax_tool_call_v1"

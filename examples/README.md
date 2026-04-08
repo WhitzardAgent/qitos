@@ -69,6 +69,7 @@ python examples/patterns/reflexion.py
 python examples/patterns/tot.py
 python examples/real/swe_agent.py
 python examples/real/computer_use_agent.py
+python examples/real/openai_cua_agent.py
 python examples/real/epub_reader_agent.py
 ```
 
@@ -130,7 +131,10 @@ python examples/real/claude_code_agent.py \
 - `examples/real/epub_reader_agent.py` expects a local EPUB at `./playground/epub_reader_agent/book.epub`.
 - `examples/real/code_security_audit_agent.py` shows the new composition-first path: pass `toolset=[...]` and let QiTOS flatten `SecurityAuditToolSet + CodingToolSet + TaskToolSet` automatically.
 - `examples/real/react_compact_agent.py` shows the smallest opt-in path for `CompactHistory`: keep the same agent shape and only swap the history preset.
+- `examples/real/openai_cua_agent.py` is the OSWorld-inspired desktop/computer-use reference path on the QitOS kernel: OpenAI-compatible multimodal screenshots in, provider-neutral GUI actions out.
+- `examples/real/desktop_env_smoke.py` is the smallest deterministic loop for `DesktopEnv + computer_use_tools()`.
 - `examples/real/research_harness_agent.py` is the bare research-first authoring path: handwritten system prompt, parser, protocol, transport, and manual tool surface.
 - `examples/real/claude_code_agent.py` is the fuller Claude Code-style coding example and now doubles as the v0.4 multi-family preset showcase, including the Qwen native tool-call lane.
+- `examples/real/whitzard_agent.py` is the long-running defensive audit example and now supports the same family-preset switching path, so you can keep the Whitzard workflow while changing the model family and harness.
 - `examples/real/skillhub_github_agent.py` is an advanced third-party skill example. Read it after the core canonical path.
 - benchmark runners may require dataset download or local benchmark assets before full runs.
