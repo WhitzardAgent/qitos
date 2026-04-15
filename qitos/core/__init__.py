@@ -24,6 +24,7 @@ from .state import (
 from .memory import Memory, MemoryRecord
 from .model_response import ModelResponse
 from .history import History, HistoryMessage, HistoryPolicy
+from .observation import Observation
 from .env import (
     Env,
     EnvSpec,
@@ -56,6 +57,7 @@ from .multimodal import (
     ActionSpace,
     EnvironmentAdapter,
 )
+from .tool_result import ToolResult
 from .tool import BaseTool, FunctionTool, ToolPermission, ToolSpec, tool
 from .tool_registry import ToolRegistry
 
@@ -81,6 +83,7 @@ __all__ = [
     "History",
     "HistoryMessage",
     "HistoryPolicy",
+    "Observation",
     "RunSpec",
     "ExperimentSpec",
     "BenchmarkRunResult",
@@ -109,6 +112,7 @@ __all__ = [
     "VisualTraceAsset",
     "ActionSpace",
     "EnvironmentAdapter",
+    "ToolResult",
     "BaseTool",
     "FunctionTool",
     "ToolPermission",

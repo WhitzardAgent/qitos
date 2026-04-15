@@ -33,12 +33,28 @@ class ContextConfig:
     enabled: bool = True
     warning_ratio: float = 0.80
     compact_ratio: float = 0.85
+    target_utilization: float = 0.85
     safety_reserve_tokens: Optional[int] = None
     safety_reserve_ratio: float = 0.05
     min_safety_reserve_tokens: int = 1024
     default_context_window: int = 128000
+    tool_result_max_chars: int = 4000
+    conversation_max_rounds: int = 10
+    loop_max_repeats: int = 3
     strict_overflow: bool = True
     show_ui: bool = True
+
+
+@dataclass
+class ContextBudget:
+    max_input_tokens: int
+    target_utilization: float = 0.85
+    tool_result_max_chars: int = 4000
+    conversation_max_rounds: int = 10
+
+    @property
+    def target_tokens(self) -> int:
+        return int(self.max_input_tokens * self.target_utilization)
 
 
 @dataclass

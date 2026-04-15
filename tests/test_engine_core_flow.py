@@ -69,7 +69,13 @@ def test_engine_happy_path():
     result = Engine(agent=DemoAgent(), budget=RuntimeBudget(max_steps=3)).run("compute")
     assert result.state.final_result == "42"
     assert result.state.stop_reason == "final"
-    assert result.records[0].action_results == [42]
+    assert len(result.records[0].action_results) == 1
+    first_result = result.records[0].action_results[0]
+    assert first_result.status == "success"
+    assert first_result.output == 42
+    assert result.step_summaries
+    assert result.step_summaries[0].tool_name == "add"
+    assert result.to_dict()["tool_calls_by_name"]["add"] == 1
 
 
 def test_agent_run_shortcut():

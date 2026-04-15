@@ -10,8 +10,11 @@ from typing import Any, Dict, List, Optional
 @dataclass
 class HistoryMessage:
     role: str
-    content: str
     step_id: int
+    content: Any = ""
+    tool_calls: List[Dict[str, Any]] = field(default_factory=list)
+    tool_call_id: Optional[str] = None
+    name: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -19,7 +22,7 @@ class HistoryMessage:
 class HistoryPolicy:
     """Engine-side policy for selecting/assembling history messages."""
 
-    roles: List[str] = field(default_factory=lambda: ["user", "assistant"])
+    roles: List[str] = field(default_factory=lambda: ["user", "assistant", "tool"])
     max_messages: int = 24
     step_window: Optional[int] = None
     max_tokens: Optional[int] = None

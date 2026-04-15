@@ -1,6 +1,7 @@
 """Curated practical building blocks for common QiTOS agent authoring."""
 
 import importlib
+from .agent import SecurityAuditAgent, SecurityAuditState, default_security_audit_phase_engine
 from .critic import ReActSelfReflectionCritic
 from .env import (
     ContainerDesktopProvider,
@@ -19,7 +20,7 @@ from .history import (
     WindowHistory,
     compact_history,
 )
-from .memory import MarkdownFileMemory, WindowMemory
+from .memory import MarkdownFileMemory, MemdirMemory, WindowMemory
 from .parser import (
     JsonDecisionParser,
     MiniMaxToolCallParser,
@@ -28,7 +29,14 @@ from .parser import (
     TerminusXmlParser,
     XmlDecisionParser,
 )
-from .planning import DynamicTreeSearch, NumberedPlanBuilder, format_action
+from .planning import (
+    DynamicTreeSearch,
+    NumberedPlanBuilder,
+    PhaseEngine,
+    PhaseSpec,
+    TransitionRule,
+    format_action,
+)
 from .prompts import (
     COMPUTER_USE_A11Y_SYSTEM_PROMPT,
     COMPUTER_USE_SCREENSHOT_A11Y_SYSTEM_PROMPT,
@@ -57,12 +65,14 @@ from .tool import (
     SendTerminalKeys,
     SecurityAuditToolSet,
     TaskToolSet,
+    WorkspaceAwareMixin,
     security_audit_tools,
 )
 from .toolset import codebase_tools, coding_tools, editor_tools, report_tools, toolset_from_tools
 from .toolset import ComputerUseToolSet, computer_use_tools
 
 _LAZY_MODULE_EXPORTS = {
+    "agent",
     "critic",
     "env",
     "evaluate",
@@ -99,6 +109,7 @@ __all__ = [
     "state",
     "tool",
     "toolset",
+    "agent",
     "ReActTextParser",
     "JsonDecisionParser",
     "MiniMaxToolCallParser",
@@ -126,11 +137,15 @@ __all__ = [
     "ComputerUseToolSet",
     "SendTerminalKeys",
     "SecurityAuditToolSet",
+    "SecurityAuditAgent",
+    "SecurityAuditState",
+    "default_security_audit_phase_engine",
     "HTTPGet",
     "HTMLExtractText",
     "ReportToolSet",
     "EpubToolSet",
     "TaskToolSet",
+    "WorkspaceAwareMixin",
     "toolset_from_tools",
     "coding_tools",
     "computer_use_tools",
@@ -140,6 +155,7 @@ __all__ = [
     "security_audit_tools",
     "MarkdownFileMemory",
     "WindowMemory",
+    "MemdirMemory",
     "WindowHistory",
     "TokenBudgetSummaryHistory",
     "CompactConfig",
@@ -147,6 +163,9 @@ __all__ = [
     "compact_history",
     "NumberedPlanBuilder",
     "DynamicTreeSearch",
+    "PhaseEngine",
+    "PhaseSpec",
+    "TransitionRule",
     "format_action",
     "ReActSelfReflectionCritic",
     "HostEnv",

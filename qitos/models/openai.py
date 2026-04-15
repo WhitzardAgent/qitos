@@ -41,6 +41,8 @@ def _to_openai_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                     == "text"
                 ]
                 payload["content"] = "\n".join(part for part in text_blocks if part)
+        elif content is None and role == "assistant" and payload.get("tool_calls"):
+            payload["content"] = None
         else:
             payload["content"] = str(content or "")
         out.append(payload)

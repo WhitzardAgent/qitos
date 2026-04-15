@@ -15,6 +15,8 @@ from .core.errors import QitosRuntimeError, StopReason
 from .core.memory import Memory
 from .core.model_response import ModelResponse
 from .core.history import History, HistoryPolicy
+from .core.observation import Observation
+from .core.tool_result import ToolResult
 from .core.state import StateSchema
 from .core.spec import BenchmarkRunResult, ExperimentSpec, RunSpec
 from .core.task import (
@@ -31,13 +33,14 @@ from .core.tool import (
     tool,
 )
 from .core.tool_registry import ToolRegistry
-from .engine.engine import Engine, EngineResult
+from .engine.engine import Engine, EngineResult, StepSummary
 from .engine.states import ContextConfig
 
 __all__ = [
     "AgentModule",
     "Engine",
     "EngineResult",
+    "StepSummary",
     "ContextConfig",
     "Task",
     "TaskResource",
@@ -50,6 +53,8 @@ __all__ = [
     "ModelResponse",
     "History",
     "HistoryPolicy",
+    "Observation",
+    "ToolResult",
     "RunSpec",
     "ExperimentSpec",
     "BenchmarkRunResult",

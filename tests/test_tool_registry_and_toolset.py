@@ -1,4 +1,7 @@
+import ast
 from typing import Any
+
+import pytest
 
 from qitos import Action, AgentModule, Decision, Engine, StateSchema, ToolRegistry, tool
 from qitos.engine import RuntimeBudget
@@ -262,3 +265,29 @@ def test_computer_use_toolset_atomic_tools_are_callable() -> None:
     assert "click" in registry.list_tools()
     tool_obj = registry.get("click")
     assert isinstance(tool_obj, Click)
+
+
+def test_tool_registry_resolves_alias_separator_variants_and_suggestions() -> None:
+    registry = ToolRegistry()
+
+    @tool(name="coding.run_command")
+    def run_command(command: str) -> str:
+        return command
+
+    @tool(name="coding.list_files")
+    def list_files(path: str = ".") -> list[str]:
+        return [path]
+
+    registry.register(run_command)
+    registry.register(list_files)
+
+    assert registry.resolve_name("coding.run_command") == "coding.run_command"
+    assert registry.resolve_name("run_command") == "coding.run_command"
+    assert registry.resolve_name("coding=run_command") == "coding.run_command"
+    assert registry.resolve_name("coding-run_command") == "coding.run_command"
+
+    with pytest.raises(ValueError) as exc_info:
+        registry.call("coding=list_filez")
+    payload = ast.literal_eval(str(exc_info.value))
+    assert payload["error_category"] == "tool_not_found"
+    assert "coding.list_files" in payload["suggestions"]

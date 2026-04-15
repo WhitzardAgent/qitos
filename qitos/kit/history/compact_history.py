@@ -116,6 +116,9 @@ class MicroCompactor:
             role=message.role,
             content=compacted,
             step_id=message.step_id,
+            tool_calls=[dict(x) for x in list(message.tool_calls or [])],
+            tool_call_id=message.tool_call_id,
+            name=message.name,
             metadata=metadata,
         )
 
@@ -494,6 +497,12 @@ class CompactionController:
         meta.setdefault("role", message.role)
         meta.setdefault("step_id", message.step_id)
         meta.setdefault("content_chars", len(str(message.content or "")))
+        if message.tool_call_id:
+            meta.setdefault("tool_call_id", message.tool_call_id)
+        if message.tool_calls:
+            meta.setdefault("tool_calls_count", len(message.tool_calls))
+        if message.name:
+            meta.setdefault("name", message.name)
         return meta
 
     def _estimate_tokens(self, messages: Iterable[HistoryMessage]) -> int:

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import difflib
+import re
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -18,11 +20,14 @@ class ToolOrigin:
 class ToolRegistry:
     """Registry for function tools, bound methods, tool objects, and ToolSets."""
 
-    def __init__(self):
+    def __init__(self, *, auto_short_aliases: bool = True):
         self._tools: Dict[str, BaseTool] = {}
         self._origins: Dict[str, ToolOrigin] = {}
         self._toolsets: List[Any] = []
         self._setup_done: bool = False
+        self._aliases: Dict[str, str] = {}
+        self._normalized_map: Dict[str, str] = {}
+        self.auto_short_aliases = bool(auto_short_aliases)
 
     def register(
         self, item: Any, name: Optional[str] = None, meta: Optional[ToolMeta] = None
@@ -103,7 +108,76 @@ class ToolRegistry:
         return self
 
     def get(self, name: str) -> Optional[BaseTool]:
-        return self._tools.get(name)
+        resolved = self.resolve_name(name)
+        if not resolved:
+            return None
+        return self._tools.get(resolved)
+
+    def resolve_name(self, name: str) -> Optional[str]:
+        key = str(name or "").strip()
+        if not key:
+            return None
+        if key in self._tools:
+            return key
+        alias = self._aliases.get(key)
+        if alias and alias in self._tools:
+            return alias
+        normalized = self._normalize_tool_key(key)
+        if not normalized:
+            return None
+        resolved = self._normalized_map.get(normalized)
+        if resolved and resolved in self._tools:
+            return resolved
+        return None
+
+    def resolve(self, name: str) -> Optional[BaseTool]:
+        resolved = self.resolve_name(name)
+        return self._tools.get(resolved) if resolved else None
+
+    def register_alias(self, alias: str, canonical_name: str) -> None:
+        alias_name = str(alias or "").strip()
+        canonical = str(canonical_name or "").strip()
+        if not alias_name:
+            raise ValueError("Alias cannot be empty")
+        if canonical not in self._tools:
+            raise ValueError(f"Cannot alias unknown tool: '{canonical}'")
+        if alias_name in self._tools and alias_name != canonical:
+            raise ValueError(f"Alias collides with existing tool name: '{alias_name}'")
+        existing = self._aliases.get(alias_name)
+        if existing and existing != canonical:
+            raise ValueError(
+                f"Alias '{alias_name}' is already bound to canonical tool '{existing}'"
+            )
+        self._aliases[alias_name] = canonical
+        normalized_alias = self._normalize_tool_key(alias_name)
+        if normalized_alias:
+            self._normalized_map.setdefault(normalized_alias, canonical)
+
+    def suggest(self, name: str, limit: int = 3) -> List[str]:
+        needle = str(name or "").strip()
+        if not needle:
+            return []
+        candidates = self.list_tools()
+        normalized_candidates = {self._normalize_tool_key(x): x for x in candidates}
+        normalized_needle = self._normalize_tool_key(needle)
+        ordered: List[str] = []
+        if normalized_needle in normalized_candidates:
+            ordered.append(normalized_candidates[normalized_needle])
+        close = difflib.get_close_matches(needle, candidates, n=max(1, int(limit)), cutoff=0.5)
+        for item in close:
+            if item not in ordered:
+                ordered.append(item)
+        close_norm = difflib.get_close_matches(
+            normalized_needle,
+            list(normalized_candidates.keys()),
+            n=max(1, int(limit)),
+            cutoff=0.5,
+        )
+        for key in close_norm:
+            name_item = normalized_candidates.get(key)
+            if name_item and name_item not in ordered:
+                ordered.append(name_item)
+        return ordered[: max(1, int(limit))]
 
     def list_tools(self) -> List[str]:
         return sorted(self._tools.keys())
@@ -145,7 +219,15 @@ class ToolRegistry:
     ) -> Any:
         tool = self.get(name)
         if tool is None:
-            raise ValueError(f"Tool '{name}' not found")
+            suggestions = self.suggest(name)
+            payload = {
+                "status": "error",
+                "error_category": "tool_not_found",
+                "message": f"Tool '{name}' not found",
+                "tool_name": name,
+                "suggestions": suggestions,
+            }
+            raise ValueError(str(payload))
         return tool.execute(kwargs, runtime_context=runtime_context)
 
     def setup(self, context: Optional[Dict[str, Any]] = None) -> None:
@@ -252,6 +334,22 @@ class ToolRegistry:
             raise ValueError(f"Tool name collision: '{tool_obj.name}'")
         self._tools[tool_obj.name] = tool_obj
         self._origins[tool_obj.name] = origin
+        normalized = self._normalize_tool_key(tool_obj.name)
+        if normalized and normalized not in self._normalized_map:
+            self._normalized_map[normalized] = tool_obj.name
+        if self.auto_short_aliases and "." in tool_obj.name:
+            prefix, short_name = tool_obj.name.rsplit(".", 1)
+            if short_name not in self._tools:
+                try:
+                    self.register_alias(short_name, tool_obj.name)
+                except ValueError:
+                    pass
+            eq_name = f"{prefix}={short_name}"
+            if eq_name not in self._tools:
+                try:
+                    self.register_alias(eq_name, tool_obj.name)
+                except ValueError:
+                    pass
 
     def _include_toolset_item(self, item: Any) -> None:
         if item is None:
@@ -291,12 +389,24 @@ class ToolRegistry:
                 name, ToolOrigin(source="function")
             )
             self._register_tool_object(tool, origin=origin)
+        for alias, canonical in dict(getattr(other, "_aliases", {}) or {}).items():
+            if canonical in self._tools:
+                try:
+                    self.register_alias(alias, canonical)
+                except ValueError:
+                    continue
 
     def __contains__(self, name: str) -> bool:
-        return name in self._tools
+        return self.resolve_name(name) is not None
 
     def __len__(self) -> int:
         return len(self._tools)
+
+    def _normalize_tool_key(self, value: str) -> str:
+        text = str(value or "").strip().lower()
+        if not text:
+            return ""
+        return re.sub(r"[.\-_=]+", "", text)
 
 
 __all__ = ["ToolOrigin", "ToolRegistry"]

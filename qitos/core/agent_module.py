@@ -421,6 +421,22 @@ class AgentModule(ABC, Generic[StateT, ObservationT, ActionT]):
             kwargs["parser"] = parser
         if protocol is not None:
             kwargs["protocol"] = protocol
+        use_auto_parser = (
+            parser is None
+            and "parser" not in kwargs
+            and getattr(self, "model_parser", None) is None
+        )
+        use_auto_protocol = (
+            protocol is None
+            and "protocol" not in kwargs
+            and getattr(self, "model_protocol", None) is None
+        )
+        if use_auto_parser or use_auto_protocol:
+            auto_parser, auto_protocol = self._harness_defaults_from_model()
+            if use_auto_parser and auto_parser is not None:
+                kwargs["parser"] = auto_parser
+            if use_auto_protocol and auto_protocol is not None:
+                kwargs["protocol"] = auto_protocol
         if search is not None:
             kwargs["search"] = search
         if critics is not None:
@@ -458,6 +474,60 @@ class AgentModule(ABC, Generic[StateT, ObservationT, ActionT]):
             kwargs["hooks"] = hook_list
         if render_list:
             kwargs["render_hooks"] = render_list
+
+    def _harness_defaults_from_model(self) -> tuple[Any, Any]:
+        llm = getattr(self, "llm", None)
+        if llm is None:
+            return None, None
+        metadata = dict(getattr(llm, "qitos_harness_metadata", {}) or {})
+        model_name = getattr(llm, "model", None) or getattr(llm, "model_name", None)
+
+        parser = None
+        protocol = None
+        if model_name:
+            try:
+                from ..harness import build_harness_policy
+
+                policy = build_harness_policy(model_name=model_name)
+                parser = getattr(policy, "parser", None)
+                protocol = getattr(policy, "protocol", None)
+            except Exception:
+                parser = None
+                protocol = None
+        if protocol is None:
+            protocol = metadata.get("protocol")
+        if parser is None and metadata.get("parser"):
+            parser_name = str(metadata.get("parser"))
+            parser = self._parser_from_name(parser_name)
+        return parser, protocol
+
+    def _parser_from_name(self, parser_name: str) -> Any:
+        name = str(parser_name or "").strip()
+        if not name:
+            return None
+        try:
+            from ..kit import (
+                JsonDecisionParser,
+                MiniMaxToolCallParser,
+                ReActTextParser,
+                TerminusJsonParser,
+                TerminusXmlParser,
+                XmlDecisionParser,
+            )
+
+            mapping = {
+                "ReActTextParser": ReActTextParser,
+                "JsonDecisionParser": JsonDecisionParser,
+                "XmlDecisionParser": XmlDecisionParser,
+                "MiniMaxToolCallParser": MiniMaxToolCallParser,
+                "TerminusJsonParser": TerminusJsonParser,
+                "TerminusXmlParser": TerminusXmlParser,
+            }
+            if name in mapping:
+                return mapping[name]()
+        except Exception:
+            return None
+        return None
 
     def _trace_writer_from_input(
         self, trace: Any, trace_logdir: str, trace_prefix: str | None

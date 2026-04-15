@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from qitos.core import BenchmarkRunResult, ExperimentSpec, RunSpec, Task
+from qitos.core import BenchmarkRunResult, ExperimentSpec, RunSpec, Task, ToolResult
 from qitos.recipes.desktop import build_benchmark_result, execute_desktop_task
 
 
@@ -34,8 +34,12 @@ def _classify_failure(run: Any) -> list[str]:
         if diagnostics:
             tags.append("planning_failure")
         for result in list(getattr(record, "action_results", []) or []):
-            status = str((result or {}).get("status") or "")
-            if status in {"validation_error", "approval_required"}:
+            tool_result = ToolResult.from_value(result)
+            status = str(tool_result.status or "")
+            category = str(
+                (tool_result.metadata or {}).get("error_category") or ""
+            ).strip()
+            if category in {"validation_error", "permission_ask", "permission_denied"}:
                 tags.append("execution_environment_failure")
             if status == "error":
                 tags.append("action_selection_failure")

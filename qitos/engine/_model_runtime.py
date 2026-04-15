@@ -21,6 +21,7 @@ from ..core.multimodal import (
     observation_visual_assets,
     text_block,
 )
+from ..core.observation import Observation
 from ..protocols import get_protocol, resolve_protocol_chain
 from ..core.state import StateSchema
 from ._context_runtime import ContextOverflowError
@@ -251,16 +252,14 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
                 f"context overflow: input_tokens={pre_context.input_tokens_total} budget={pre_context.available_input_budget}"
             )
         injection_prefixes: List[str] = []
-        # If native tool call rounds exist, build a multi-turn conversation
-        # by injecting assistant(tool_calls) + tool(results) message pairs.
-        # This replaces the flat user/assistant history for those steps.
-        if engine._native_tool_rounds:
-            # Build the conversation with proper multi-turn structure
-            messages.extend(self._build_native_tool_conversation(
-                history, engine._native_tool_rounds, str(prepared)
-            ))
-        else:
-            messages.extend(history)
+        if self._native_tool_call_preferred():
+            history = self._trim_native_tool_history(
+                history,
+                max_rounds=max(
+                    1, int(getattr(engine.context_config, "conversation_max_rounds", 10))
+                ),
+            )
+        messages.extend(history)
         for item in prompt_messages:
             if not isinstance(item, dict):
                 continue
@@ -313,7 +312,8 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
             prompt_bundle=prompt_bundle,
             protocol=protocol,
         )
-        raw_decision = self._call_llm(engine.agent.llm, messages, request_options)
+        llm_messages = self._strip_internal_message_keys(messages)
+        raw_decision = self._call_llm(engine.agent.llm, llm_messages, request_options)
         response = self._normalize_model_response(raw_decision)
         post_context = context_runtime.finalize_output(
             llm=engine.agent.llm,
@@ -334,26 +334,29 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
                 "prompt": prompt_metadata,
             },
         )
-        engine._history_append(
-            "assistant", response.text, record.step_id, metadata={"source": "engine"}
-        )
-
-        # When native tool calls are used, record the assistant tool_calls
-        # for injection into subsequent API calls. OpenAI multi-turn function
-        # calling requires the full conversation: assistant(tool_calls) -> tool(results)
+        assistant_tool_calls = []
         if response.tool_calls and self._native_tool_call_preferred():
-            engine._native_tool_rounds.append({
-                "step_id": record.step_id,
-                "assistant_tool_calls": [
-                    {
-                        "id": tc.get("id"),
-                        "type": tc.get("type", "function"),
-                        "function": tc.get("function", {}),
-                    }
-                    for tc in response.tool_calls
-                ],
-                "tool_results": [],  # will be filled in by _action_runtime
-            })
+            assistant_tool_calls = [
+                {
+                    "id": item.get("id"),
+                    "type": item.get("type", "function"),
+                    "function": dict(item.get("function", {}))
+                    if isinstance(item.get("function", {}), dict)
+                    else {},
+                }
+                for item in list(response.tool_calls or [])
+                if isinstance(item, dict)
+            ]
+        assistant_content: Any = response.text
+        if assistant_tool_calls and not str(response.text or "").strip():
+            assistant_content = None
+        engine._history_append(
+            "assistant",
+            assistant_content,
+            record.step_id,
+            metadata={"source": "engine"},
+            tool_calls=assistant_tool_calls,
+        )
 
         return response
 
@@ -568,10 +571,22 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
                     return multimodal
                 if normalize_observation_pack(data) is not None:
                     return data
-        if isinstance(observation, dict):
-            env_payload = observation.get("env")
+        if isinstance(observation, Observation):
+            env_payload = observation.env
             if isinstance(env_payload, dict):
                 env_obs = env_payload.get("observation")
+                if isinstance(env_obs, dict):
+                    data = env_obs.get("data")
+                    if isinstance(data, dict):
+                        multimodal = data.get("multimodal")
+                        if isinstance(multimodal, dict):
+                            return multimodal
+                        if normalize_observation_pack(data) is not None:
+                            return data
+        if isinstance(observation, dict):
+            env_payload_dict = observation.get("env")
+            if isinstance(env_payload_dict, dict):
+                env_obs = env_payload_dict.get("observation")
                 if isinstance(env_obs, dict):
                     data = env_obs.get("data")
                     if isinstance(data, dict):
@@ -586,6 +601,12 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
         self, observation: ObservationT, context: Dict[str, Any]
     ) -> Dict[str, Any]:
         stats: Dict[str, Any] = {}
+        if isinstance(observation, Observation):
+            stats["action_results"] = len(observation.action_results or [])
+            if isinstance(observation.state, dict):
+                scratchpad = observation.state.get("scratchpad")
+                if isinstance(scratchpad, list):
+                    stats["scratchpad_items"] = len(scratchpad)
         if isinstance(observation, dict):
             scratchpad = observation.get("scratchpad")
             if isinstance(scratchpad, list):
@@ -1235,67 +1256,46 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
             return True
         return False
 
-    def _build_native_tool_conversation(
-        self,
-        flat_history: List[Dict[str, Any]],
-        native_rounds: List[Dict[str, Any]],
-        current_prepared: str,
+    def _trim_native_tool_history(
+        self, history: List[Dict[str, Any]], *, max_rounds: int
     ) -> List[Dict[str, Any]]:
-        """Build a multi-turn conversation with proper assistant+tool message pairs.
+        if max_rounds <= 0:
+            return history
+        round_steps: List[int] = []
+        for message in history:
+            if not isinstance(message, dict):
+                continue
+            role = str(message.get("role") or "")
+            if not bool(message.get("tool_calls")) and role != "tool":
+                continue
+            step_id = message.get("_step_id")
+            if isinstance(step_id, int):
+                round_steps.append(step_id)
+        if not round_steps:
+            return history
+        keep_steps = sorted(set(round_steps))[-max_rounds:]
+        earliest_step = min(keep_steps)
+        trimmed: List[Dict[str, Any]] = []
+        for message in history:
+            step_marker = message.get("_step_id")
+            if not isinstance(step_marker, int) or step_marker >= earliest_step:
+                trimmed.append(message)
+        return trimmed
 
-        Instead of the flat user/assistant history, constructs OpenAI-compatible
-        multi-turn messages where:
-        - assistant messages include tool_calls
-        - tool messages include tool_call_id and results
-        - user messages are preserved between rounds
-        """
-        # Limit the number of rounds to include to avoid context overflow.
-        # Keep only the most recent rounds.
-        max_rounds = 5
-        rounds_to_include = native_rounds[-max_rounds:] if len(native_rounds) > max_rounds else native_rounds
-
-        # If we dropped earlier rounds, add a summary marker
-        result: List[Dict[str, Any]] = []
-        dropped = len(native_rounds) - len(rounds_to_include)
-        if dropped > 0:
-            result.append({
-                "role": "user",
-                "content": f"[Summary: {dropped} earlier tool call steps omitted for context budget]",
-            })
-            result.append({
-                "role": "assistant",
-                "content": "Understood. I'll continue from where we are.",
-            })
-
-        for rnd in rounds_to_include:
-            step_id = rnd["step_id"]
-
-            # Add a user message representing the state at this step
-            result.append({
-                "role": "user",
-                "content": f"[Step {step_id + 1}] Continue investigating and generating the PoC.",
-            })
-
-            # Add the assistant message with tool_calls
-            result.append({
-                "role": "assistant",
-                "content": None,
-                "tool_calls": rnd.get("assistant_tool_calls", []),
-            })
-
-            # Add tool result messages, truncated to save context budget
-            for tool_msg in rnd.get("tool_results", []):
-                content = tool_msg.get("content", "")
-                # Truncate long tool results
-                if len(content) > 2000:
-                    content = content[:2000] + "\n...[truncated]"
-                result.append({
-                    "role": "tool",
-                    "tool_call_id": tool_msg.get("tool_call_id", ""),
-                    "content": content,
-                })
-
-        return result
+    def _strip_internal_message_keys(
+        self, messages: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        cleaned: List[Dict[str, Any]] = []
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            payload = {
+                key: value
+                for key, value in message.items()
+                if not str(key).startswith("_")
+            }
+            cleaned.append(payload)
+        return cleaned
 
     def _action_from_tool_call(self, tool_call: Dict[str, Any]) -> Action | None:
         if not isinstance(tool_call, dict):

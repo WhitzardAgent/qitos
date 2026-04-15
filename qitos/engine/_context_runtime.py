@@ -49,6 +49,14 @@ class _ContextRuntime:
         raw = getattr(llm, "context_window", None)
         if isinstance(raw, int) and raw > 0:
             return raw
+        metadata = dict(getattr(llm, "qitos_harness_metadata", {}) or {})
+        context_policy = dict(metadata.get("context_policy", {}) or {})
+        hint = context_policy.get("context_window_hint")
+        if isinstance(hint, int) and hint > 0:
+            return hint
+        fallback_hint = context_policy.get("fallback_context_window")
+        if isinstance(fallback_hint, int) and fallback_hint > 0:
+            return fallback_hint
         fallback = int(self.config.default_context_window)
         return fallback if fallback > 0 else None
 
@@ -66,6 +74,11 @@ class _ContextRuntime:
                 )
             reserve = min(reserve, max(0, window - max_output))
             available = max(1, window - max_output - reserve)
+            target = max(
+                1,
+                int(float(window) * float(self.config.target_utilization)) - max_output,
+            )
+            available = min(available, target)
         else:
             available = None
         return {
@@ -125,7 +138,7 @@ class _ContextRuntime:
         *,
         llm: Any,
         telemetry: ContextTelemetry,
-        history_messages: List[Dict[str, str]],
+        history_messages: List[Dict[str, Any]],
         compact_events: List[Dict[str, Any]],
     ) -> ContextTelemetry:
         history_tokens, history_mode = self.count_tokens(history_messages, llm)

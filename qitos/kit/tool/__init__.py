@@ -42,6 +42,7 @@ from .browser import (
 )
 from .library import InMemoryToolLibrary, ToolArtifact, BaseToolLibrary
 from .skill import SkillToolSet
+from .workspace_aware import WorkspaceAwareMixin
 from .tools import (
     math_tools,
     editor_tools,
@@ -97,6 +98,7 @@ __all__ = [
     "ToolArtifact",
     "BaseToolLibrary",
     "SkillToolSet",
+    "WorkspaceAwareMixin",
     "TodoWriteTool",
     "ToolSearchTool",
     "math_tools",

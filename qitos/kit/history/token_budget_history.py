@@ -177,7 +177,9 @@ class TokenBudgetSummaryHistory(History):
 
     def summarize(self, max_items: int = 5) -> str:
         items = self.retrieve(query={"max_items": max_items})
-        return "\n".join(f"[{m.step_id}] {m.role}: {m.content[:120]}" for m in items)
+        return "\n".join(
+            f"[{m.step_id}] {m.role}: {str(m.content)[:120]}" for m in items
+        )
 
     def evict(self) -> int:
         if self.hard_window <= 0 or len(self._messages) <= self.hard_window:
@@ -259,6 +261,12 @@ class TokenBudgetSummaryHistory(History):
         meta.setdefault("role", message.role)
         meta.setdefault("step_id", message.step_id)
         meta.setdefault("content_chars", len(str(message.content or "")))
+        if message.tool_call_id:
+            meta.setdefault("tool_call_id", message.tool_call_id)
+        if message.tool_calls:
+            meta.setdefault("tool_calls_count", len(message.tool_calls))
+        if message.name:
+            meta.setdefault("name", message.name)
         return meta
 
 

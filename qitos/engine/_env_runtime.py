@@ -7,8 +7,10 @@ from typing import Any, Dict, Generic, List, Optional, TypeVar
 
 from ..core.decision import Decision
 from ..core.env import Env, EnvObservation, EnvSpec, EnvStepResult
+from ..core.observation import Observation
 from ..core.state import StateSchema
 from ..core.task import Task
+from ..core.tool_result import ToolResult
 from .states import RuntimePhase
 
 
@@ -49,13 +51,17 @@ class _EnvRuntime(Generic[StateT, ObservationT, ActionT]):
         self, state: StateT, step_id: int, started_at: float
     ) -> ObservationT:
         env_view = self.build_env_view(state, step_id, started_at)
-        obs = {
-            "task": self.engine._active_task,
-            "step": step_id,
-            "state": state.to_dict(),
-            "env": env_view.get("env", {}),
-            "action_results": [],
-        }
+        obs = Observation(
+            task=self.engine._active_task,
+            step_id=step_id,
+            state=state.to_dict(),
+            env=(
+                dict(env_view.get("env", {}))
+                if isinstance(env_view.get("env", {}), dict)
+                else {}
+            ),
+            action_results=[],
+        )
         return obs  # type: ignore[return-value]
 
     def build_observation_after_action(
@@ -67,20 +73,27 @@ class _EnvRuntime(Generic[StateT, ObservationT, ActionT]):
         action_results: List[Any],
     ) -> ObservationT:
         env_view = self.build_env_view(state, step_id, started_at)
-        obs = {
-            "task": self.engine._active_task,
-            "step": step_id,
-            "state": state.to_dict(),
-            "decision": (
-                decision.to_dict() if hasattr(decision, "to_dict") else decision
+        obs = Observation(
+            task=self.engine._active_task,
+            step_id=step_id,
+            state=state.to_dict(),
+            decision=(
+                decision.to_dict()
+                if hasattr(decision, "to_dict")
+                and isinstance(decision.to_dict(), dict)
+                else {}
             ),
-            "action_results": list(action_results),
-            "env": env_view.get("env", {}),
-        }
+            action_results=[ToolResult.from_value(item) for item in list(action_results)],
+            env=(
+                dict(env_view.get("env", {}))
+                if isinstance(env_view.get("env", {}), dict)
+                else {}
+            ),
+        )
         self.engine._emit(
             step_id,
             RuntimePhase.ACT,
-            payload={"stage": "observation_ready", "observation": obs},
+            payload={"stage": "observation_ready", "observation": obs.to_dict()},
         )
         return obs  # type: ignore[return-value]
 

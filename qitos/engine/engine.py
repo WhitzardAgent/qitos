@@ -15,6 +15,7 @@ from ..core.history import History, HistoryMessage, HistoryPolicy
 from ..core.memory import Memory, MemoryRecord
 from ..core.state import StateSchema
 from ..core.task import Task, TaskResult, TaskValidationIssue
+from ..core.tool_result import ToolResult
 from ..trace import TraceWriter
 from ..protocols import get_protocol, infer_protocol_from_parser
 from ..models.profile_registry import infer_default_protocol, infer_model_profile
@@ -22,6 +23,7 @@ from ._action_runtime import _ActionRuntime
 from ._context_runtime import _ContextRuntime
 from ._control_runtime import _ControlRuntime
 from ._env_runtime import _EnvRuntime
+from ._loop_detector import ToolCallLoopDetector
 from ._model_runtime import _ModelRuntime
 from ._trace_runtime import _TraceRuntime
 from .action_executor import ActionExecutor
@@ -85,7 +87,7 @@ class _EngineWindowHistory(History):
         if not isinstance(items, list):
             return ""
         return "\n".join(
-            f"[{x.step_id}] {x.role}: {x.content[:120]}"
+            f"[{x.step_id}] {x.role}: {str(x.content)[:120]}"
             for x in items
             if isinstance(x, HistoryMessage)
         )
@@ -102,12 +104,110 @@ class _EngineWindowHistory(History):
 
 
 @dataclass
+class StepSummary:
+    step_id: int
+    tool_name: str
+    status: str
+    latency_ms: float = 0.0
+    error: Optional[str] = None
+    result_preview: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "step_id": self.step_id,
+            "tool_name": self.tool_name,
+            "status": self.status,
+            "latency_ms": self.latency_ms,
+            "error": self.error,
+            "result_preview": self.result_preview,
+        }
+
+
+@dataclass
 class EngineResult(Generic[StateT]):
     state: StateT
     records: List[StepRecord]
     events: List[RuntimeEvent]
     step_count: int
     task_result: Optional[TaskResult] = None
+    runtime_seconds: float = 0.0
+    total_tokens: int = 0
+
+    @property
+    def tool_calls_by_name(self) -> Dict[str, int]:
+        counts: Dict[str, int] = {}
+        for record in self.records:
+            for inv in list(getattr(record, "tool_invocations", []) or []):
+                if not isinstance(inv, dict):
+                    continue
+                name = str(inv.get("tool_name", "") or "").strip()
+                if not name:
+                    continue
+                counts[name] = counts.get(name, 0) + 1
+        return counts
+
+    @property
+    def success_rate(self) -> float:
+        total = 0
+        success = 0
+        for record in self.records:
+            for item in list(getattr(record, "action_results", []) or []):
+                total += 1
+                if ToolResult.from_value(item).is_success:
+                    success += 1
+        if total <= 0:
+            return 0.0
+        return float(success) / float(total)
+
+    @property
+    def step_summaries(self) -> List[StepSummary]:
+        items: List[StepSummary] = []
+        for record in self.records:
+            invocations = list(getattr(record, "tool_invocations", []) or [])
+            action_results = list(getattr(record, "action_results", []) or [])
+            for idx, invocation in enumerate(invocations):
+                tool_name = ""
+                latency_ms = 0.0
+                if isinstance(invocation, dict):
+                    tool_name = str(invocation.get("tool_name", "") or "")
+                    latency = invocation.get("latency_ms")
+                    if isinstance(latency, (int, float)):
+                        latency_ms = float(latency)
+                tool_result = (
+                    ToolResult.from_value(action_results[idx])
+                    if idx < len(action_results)
+                    else ToolResult(status="error", error="missing_action_result")
+                )
+                preview = tool_result.text
+                items.append(
+                    StepSummary(
+                        step_id=record.step_id,
+                        tool_name=tool_name,
+                        status=tool_result.status,
+                        latency_ms=latency_ms,
+                        error=tool_result.error,
+                        result_preview=preview[:200],
+                    )
+                )
+        return items
+
+    def to_dict(self) -> Dict[str, Any]:
+        task_result_dict: Any = None
+        if self.task_result is not None:
+            if hasattr(self.task_result, "to_dict"):
+                task_result_dict = self.task_result.to_dict()
+            else:
+                task_result_dict = self.task_result
+        return {
+            "step_count": self.step_count,
+            "runtime_seconds": self.runtime_seconds,
+            "total_tokens": self.total_tokens,
+            "tool_calls_by_name": self.tool_calls_by_name,
+            "success_rate": self.success_rate,
+            "step_summaries": [item.to_dict() for item in self.step_summaries],
+            "task_result": task_result_dict,
+            "state": self.state.to_dict() if hasattr(self.state, "to_dict") else self.state,
+        }
 
 
 class Engine(Generic[StateT, ObservationT, ActionT]):
@@ -184,11 +284,12 @@ class Engine(Generic[StateT, ObservationT, ActionT]):
         self._token_usage: int = 0
         self._active_run_id: str = ""
         self._runtime_history: History = _EngineWindowHistory(window_size=24)
+        self._tool_loop_detector = ToolCallLoopDetector(
+            max_repeats=max(1, int(self.context_config.loop_max_repeats))
+        )
         self._last_system_prompt: str = ""
         self._last_prompt_metadata: Dict[str, Any] = {}
         self._last_context_telemetry: Dict[str, Any] = {}
-        # Native tool call round tracking for OpenAI multi-turn function calling
-        self._native_tool_rounds: List[Dict[str, Any]] = []
         self._model_runtime: _ModelRuntime[StateT, ObservationT, ActionT] = (
             _ModelRuntime(self)
         )
@@ -299,6 +400,7 @@ class Engine(Generic[StateT, ObservationT, ActionT]):
             }
         )
         self._setup_env(task_obj=task_obj, state=state, kwargs=kwargs)
+        harness_diagnostics = self._harness_mismatch_diagnostics()
         self._emit(
             0,
             RuntimePhase.INIT,
@@ -308,8 +410,15 @@ class Engine(Generic[StateT, ObservationT, ActionT]):
                 "task_meta": self._task_meta(task_obj),
                 "run_meta": self._run_meta(),
                 "env": self._env_identity(),
+                "harness_diagnostics": harness_diagnostics,
             },
         )
+        if harness_diagnostics.get("mismatch"):
+            self._emit(
+                0,
+                RuntimePhase.INIT,
+                payload={"stage": "harness_mismatch", **harness_diagnostics},
+            )
         self._notify_run_start(task_text, state)
         preflight_issues = self._preflight_validate(
             task_obj=task_obj, workspace=kwargs.get("workspace")
@@ -347,6 +456,8 @@ class Engine(Generic[StateT, ObservationT, ActionT]):
                 task_result=self._build_task_result(
                     state, task_obj=task_obj, started_at=started_at
                 ),
+                runtime_seconds=time.monotonic() - started_at,
+                total_tokens=int(self._token_usage),
             )
             self._notify_run_end(result)
             self._clear_active_context()
@@ -544,6 +655,8 @@ class Engine(Generic[StateT, ObservationT, ActionT]):
             task_result=self._build_task_result(
                 state, task_obj=task_obj, started_at=started_at
             ),
+            runtime_seconds=time.monotonic() - started_at,
+            total_tokens=int(self._token_usage),
         )
         self._notify_run_end(result)
         self._clear_active_context()
@@ -736,33 +849,94 @@ class Engine(Generic[StateT, ObservationT, ActionT]):
     def _history_append(
         self,
         role: str,
-        content: str,
+        content: Any,
         step_id: int,
         metadata: Optional[Dict[str, Any]] = None,
+        *,
+        tool_calls: Optional[List[Dict[str, Any]]] = None,
+        tool_call_id: Optional[str] = None,
+        name: Optional[str] = None,
     ) -> None:
         history = self._history()
         history.append(
             HistoryMessage(
-                role=role, content=content, step_id=step_id, metadata=metadata or {}
+                role=role,
+                content=content,
+                step_id=step_id,
+                metadata=metadata or {},
+                tool_calls=[dict(x) for x in list(tool_calls or []) if isinstance(x, dict)],
+                tool_call_id=tool_call_id,
+                name=name,
             )
         )
 
-    def _normalize_history_messages(self, payload: Any) -> List[Dict[str, str]]:
-        messages: List[Dict[str, str]] = []
+    def _normalize_history_messages(self, payload: Any) -> List[Dict[str, Any]]:
+        messages: List[Dict[str, Any]] = []
         if not isinstance(payload, list):
             return messages
         for item in payload:
             if isinstance(item, HistoryMessage):
                 role = str(item.role).strip()
-                content = str(item.content)
-                if role and content:
-                    messages.append({"role": role, "content": content})
+                if not role:
+                    continue
+                message: Dict[str, Any] = {"role": role, "content": item.content}
+                message["_step_id"] = int(item.step_id)
+                if item.tool_calls:
+                    message["tool_calls"] = [dict(x) for x in item.tool_calls]
+                if item.tool_call_id:
+                    message["tool_call_id"] = str(item.tool_call_id)
+                if item.name:
+                    message["name"] = str(item.name)
+
+                if role not in {"assistant", "tool"}:
+                    content = str(item.content or "")
+                    if not content:
+                        continue
+                    message["content"] = content
+                elif (
+                    message.get("content") in (None, "")
+                    and not message.get("tool_calls")
+                    and not message.get("tool_call_id")
+                ):
+                    continue
+                messages.append(message)
                 continue
             if isinstance(item, dict):
                 role = str(item.get("role", "")).strip()
-                content = str(item.get("content", ""))
-                if role and content:
-                    messages.append({"role": role, "content": content})
+                if not role:
+                    continue
+                payload_message: Dict[str, Any] = {
+                    "role": role,
+                    "content": item.get("content"),
+                }
+                step_value = item.get("step_id")
+                if step_value is not None:
+                    try:
+                        payload_message["_step_id"] = int(step_value)
+                    except Exception:
+                        pass
+                tool_calls = item.get("tool_calls")
+                if isinstance(tool_calls, list):
+                    payload_message["tool_calls"] = [
+                        dict(x) for x in tool_calls if isinstance(x, dict)
+                    ]
+                if item.get("tool_call_id") not in (None, ""):
+                    payload_message["tool_call_id"] = str(item.get("tool_call_id"))
+                if item.get("name") not in (None, ""):
+                    payload_message["name"] = str(item.get("name"))
+
+                if role not in {"assistant", "tool"}:
+                    content = str(payload_message.get("content") or "")
+                    if not content:
+                        continue
+                    payload_message["content"] = content
+                elif (
+                    payload_message.get("content") in (None, "")
+                    and not payload_message.get("tool_calls")
+                    and not payload_message.get("tool_call_id")
+                ):
+                    continue
+                messages.append(payload_message)
         return messages
 
     def _hook_context(self, **kwargs: Any) -> HookContext:
@@ -951,7 +1125,31 @@ class Engine(Generic[StateT, ObservationT, ActionT]):
         self._resolved_protocol = None
         self._resolved_protocol_source = ""
         self._last_prompt_metadata = {}
-        self._native_tool_rounds = []
+        self._tool_loop_detector.reset()
+
+    def _harness_mismatch_diagnostics(self) -> Dict[str, Any]:
+        llm = getattr(self.agent, "llm", None)
+        metadata = dict(getattr(llm, "qitos_harness_metadata", {}) or {})
+        expected_protocol = str(metadata.get("protocol") or "").strip()
+        expected_parser = str(metadata.get("parser") or "").strip()
+        active_protocol = getattr(self.resolve_protocol(), "id", None)
+        parser = self.parser or getattr(self.agent, "model_parser", None)
+        active_parser = parser.__class__.__name__ if parser is not None else None
+        mismatch_fields: List[str] = []
+        if expected_protocol and active_protocol and expected_protocol != active_protocol:
+            mismatch_fields.append("protocol")
+        if expected_parser and active_parser and expected_parser != active_parser:
+            mismatch_fields.append("parser")
+        return {
+            "mismatch": bool(mismatch_fields),
+            "mismatch_fields": mismatch_fields,
+            "expected_protocol": expected_protocol or None,
+            "active_protocol": active_protocol,
+            "expected_parser": expected_parser or None,
+            "active_parser": active_parser,
+            "model_name": getattr(llm, "model", None)
+            or getattr(llm, "model_name", None),
+        }
 
     def _clear_active_context(self) -> None:
         self._trace_runtime.clear_active_context()

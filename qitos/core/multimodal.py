@@ -289,14 +289,22 @@ def normalize_content_block(block: Any) -> Dict[str, Any]:
 def normalize_message(message: Mapping[str, Any]) -> Dict[str, Any]:
     role = str(message.get("role") or "user").strip() or "user"
     content = message.get("content")
+    payload: Dict[str, Any] = {"role": role}
+    for key, value in message.items():
+        if key in {"role", "content"}:
+            continue
+        payload[str(key)] = value
     if isinstance(content, list):
-        return {
-            "role": role,
-            "content": [normalize_content_block(block) for block in content],
-        }
+        payload["content"] = [normalize_content_block(block) for block in content]
+        return payload
     if isinstance(content, Mapping) and str(content.get("type") or "").strip():
-        return {"role": role, "content": [normalize_content_block(content)]}
-    return {"role": role, "content": str(content or "")}
+        payload["content"] = [normalize_content_block(content)]
+        return payload
+    if content is None and role in {"assistant", "tool"}:
+        payload["content"] = None
+        return payload
+    payload["content"] = str(content or "")
+    return payload
 
 
 def normalize_messages(messages: Iterable[Mapping[str, Any]]) -> List[Dict[str, Any]]:

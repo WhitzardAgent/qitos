@@ -22,6 +22,7 @@ from qitos import (
     StateSchema,
     Task,
     TaskBudget,
+    ToolResult,
 )
 from qitos.engine.critic import Critic
 from qitos.harness import build_harness_policy, build_model_for_preset, resolve_family_preset
@@ -595,8 +596,15 @@ def build_benchmark_result(
         if diagnostics and "planning_failure" not in failure_tags:
             failure_tags.append("planning_failure")
         for result in list(getattr(record, "action_results", []) or []):
-            status = str((result or {}).get("status") or "")
-            if status in {"validation_error", "approval_required"} and "execution_environment_failure" not in failure_tags:
+            tool_result = ToolResult.from_value(result)
+            status = str(tool_result.status or "")
+            category = str(
+                (tool_result.metadata or {}).get("error_category") or ""
+            ).strip()
+            if (
+                category in {"validation_error", "permission_ask", "permission_denied"}
+                and "execution_environment_failure" not in failure_tags
+            ):
                 failure_tags.append("execution_environment_failure")
             if status == "error" and "action_selection_failure" not in failure_tags:
                 failure_tags.append("action_selection_failure")

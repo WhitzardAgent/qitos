@@ -80,7 +80,7 @@ class WindowHistory(History):
 
     def summarize(self, max_items: int = 5) -> str:
         items = self.retrieve(query={"max_items": max_items})
-        lines = [f"[{m.step_id}] {m.role}: {m.content[:120]}" for m in items]
+        lines = [f"[{m.step_id}] {m.role}: {str(m.content)[:120]}" for m in items]
         return "\n".join(lines)
 
     def evict(self) -> int:
@@ -112,6 +112,12 @@ class WindowHistory(History):
         meta.setdefault("role", message.role)
         meta.setdefault("step_id", message.step_id)
         meta.setdefault("content_chars", len(str(message.content or "")))
+        if message.tool_call_id:
+            meta.setdefault("tool_call_id", message.tool_call_id)
+        if message.tool_calls:
+            meta.setdefault("tool_calls_count", len(message.tool_calls))
+        if message.name:
+            meta.setdefault("name", message.name)
         return meta
 
     def _estimate_tokens(self, messages: List[HistoryMessage]) -> int:
