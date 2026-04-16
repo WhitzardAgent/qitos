@@ -9,8 +9,8 @@ from pathlib import Path
 from typing import Any
 
 from qitos.core import BenchmarkRunResult, ExperimentSpec, RunSpec, Task
-from qitos.engine.stop_criteria import FinalResultCriteria, MaxStepsCriteria
-from qitos.engine.states import ContextConfig
+from qitos.engine.stop_criteria import FinalResultCriteria, MaxRuntimeCriteria
+from qitos.engine.states import ContextConfig, RuntimeBudget
 from qitos.kit.env.host_env import HostEnv
 from qitos.trace import TraceWriter
 
@@ -44,7 +44,8 @@ def run_cybergym_agent_task(
     api_key: str,
     base_url: str,
     server: str,
-    max_steps: int,
+    max_steps: int | None,
+    max_runtime_seconds: float,
     trace_logdir: str | Path,
     trace_prefix: str = "qitos_cybergym",
     run_spec: RunSpec | None = None,
@@ -63,21 +64,32 @@ def run_cybergym_agent_task(
 
     task_path = Path(task_dir).expanduser().resolve()
     adapter = CyberGymAdapter(server_url=server)
-    task = adapter.from_task_dir(str(task_path), max_steps=max_steps)
+    # The benchmark run should be governed by wall-clock time rather than a
+    # user-visible step cap. QitOS Engine still requires a finite internal step
+    # budget, so use a high guardrail and rely on MaxRuntimeCriteria.
+    internal_step_limit = int(max_steps or 1_000_000)
+    task = adapter.from_task_dir(
+        str(task_path),
+        max_steps=internal_step_limit,
+        max_runtime_seconds=max_runtime_seconds,
+    )
+    workspace_root = str(task.inputs.get("source_root") or task_path)
+    task_root = str(task.inputs.get("task_root") or task_path)
 
     agent = build_agent(
         model=model_name,
-        workspace_root=str(task_path),
+        workspace_root=workspace_root,
+        task_root=task_root,
         server_url=server,
-        max_steps=max_steps,
+        max_steps=internal_step_limit,
         llm_config={"api_key": api_key, "base_url": base_url},
     )
 
-    env = HostEnv(workspace_root=str(task_path))
+    env = HostEnv(workspace_root=workspace_root)
     stop_criteria = [
         PoCVerificationCriteria(),
         FinalResultCriteria(),
-        MaxStepsCriteria(max_steps=max_steps),
+        MaxRuntimeCriteria(max_runtime_seconds=max_runtime_seconds),
     ]
     context_config = ContextConfig(
         tool_result_max_chars=4000,
@@ -96,8 +108,13 @@ def run_cybergym_agent_task(
         return_state=True,
         env=env,
         stop_criteria=stop_criteria,
-        max_steps=max_steps,
-        workspace=str(task_path),
+        engine_kwargs={
+            "budget": RuntimeBudget(
+                max_steps=internal_step_limit,
+                max_runtime_seconds=float(max_runtime_seconds),
+            )
+        },
+        workspace=workspace_root,
         context_config=context_config,
         trace=trace_writer,
         run_spec=run_spec,
@@ -109,7 +126,9 @@ def run_cybergym_agent_task(
         server_url=task.inputs.get("server_url", server),
         error_txt=task.inputs.get("error_txt", ""),
         patch_diff=task.inputs.get("patch_diff", ""),
-        repo_dir=task.inputs.get("repo_dir", ""),
+        task_root=task.inputs.get("task_root", task_root),
+        source_root=task.inputs.get("source_root", workspace_root),
+        repo_dir=task.inputs.get("source_root", task.inputs.get("repo_dir", "")),
     )
 
     return {
@@ -153,7 +172,14 @@ def run_cybergym_task(
         or os.getenv("QITOS_API_KEY", "")
         or os.getenv("CYBERGYM_CLAUDE_AUTH_TOKEN", "")
     )
-    max_steps = int((effective_spec.metadata or {}).get("max_steps", task.budget.max_steps or 30))
+    max_steps_raw = (effective_spec.metadata or {}).get("max_steps", task.budget.max_steps)
+    max_steps = int(max_steps_raw) if max_steps_raw is not None else None
+    max_runtime_seconds = float(
+        (effective_spec.metadata or {}).get(
+            "max_runtime_seconds",
+            task.budget.max_runtime_seconds or 3600,
+        )
+    )
 
     if not data_dir:
         raise ValueError("CyberGym run requires run_spec.environment['data_dir']")
@@ -184,6 +210,7 @@ def run_cybergym_task(
         base_url=base_url,
         server=server,
         max_steps=max_steps,
+        max_runtime_seconds=max_runtime_seconds,
         trace_logdir=trace_logdir,
         trace_prefix=str(environment.get("trace_prefix") or "qitos_cybergym"),
         run_spec=effective_spec,

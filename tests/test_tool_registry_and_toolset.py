@@ -4,6 +4,7 @@ from typing import Any
 import pytest
 
 from qitos import Action, AgentModule, Decision, Engine, StateSchema, ToolRegistry, tool
+from qitos.core.tool import ToolMeta, build_tool_spec
 from qitos.engine import RuntimeBudget
 from qitos.kit import tool as tool_pkg
 from qitos.kit.tool import (
@@ -135,6 +136,32 @@ def test_curated_toolsets_register_cleanly(tmp_path):
         assert (
             registry.list_tools()
         ), f"{toolset.__class__.__name__} registered no tools"
+
+
+def test_tool_schemas_resolve_future_annotations_to_valid_json_types(tmp_path):
+    def _future_annotated(path):
+        return {"path": path}
+
+    _future_annotated.__annotations__ = {"path": "str"}
+    synthetic_spec = build_tool_spec(_future_annotated, ToolMeta(name="synthetic"))
+
+    registry = ToolRegistry()
+    registry.register_toolset(
+        SecurityAuditToolSet(workspace_root=str(tmp_path)), namespace=""
+    )
+
+    specs = {spec["function"]["name"]: spec for spec in registry.get_all_specs()}
+
+    assert (
+        synthetic_spec.input_schema["properties"]["path"]["type"]
+        == "string"
+    )
+    assert (
+        specs["audit_hotspots"]["function"]["parameters"]["properties"]["findings"][
+            "type"
+        ]
+        != "any"
+    )
 
 
 def test_tool_package_does_not_export_uncurated_cyber_toolsets():
