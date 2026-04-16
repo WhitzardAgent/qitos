@@ -171,7 +171,7 @@ examples/qitos_tau_workspace/
 qitos_cybench_workspace/
 examples/qitos_cybench_workspace/
 examples/playground/
-qitos/benchmark/cybergym/agent/
+qitos/benchmark/cybergym/agent
 # Auto-generated API reference pages (built by docs hook)
 docs/reference/api_generated/
 docs/zh/reference/api_generated/
