@@ -6,6 +6,7 @@ description: "The built-in QitOS v0.4 gold presets and their default harness pol
 | Family | Transport | Default protocol | Fallback chain | Tool delivery | Notes |
 |---|---|---|---|---|---|
 | Qwen | OpenAI-compatible | `json_decision_v1` | `xml_decision_v1 -> react_text_v1` | `api_parameter` | Native tool calls are preferred when the endpoint returns `tool_calls` |
+| GLM | OpenAI-compatible | `json_decision_v1` | `xml_decision_v1 -> react_text_v1` | `api_parameter` | Native tool calls are preferred when the endpoint returns `tool_calls`; tuned for GLM-5.1 style OpenAI-compatible serving |
 | Kimi | OpenAI-compatible | `json_decision_v1` | `react_text_v1` | `api_parameter` | Keep the same coding-agent shape with minimal prompt churn |
 | MiniMax | OpenAI-compatible | `minimax_tool_call_v1` | `terminus_xml_v1 -> terminus_json_v1 -> json_decision_v1` | `api_parameter` | Preserves the MiniMax-specific parser advantage |
 | `gpt-oss` | OpenAI-compatible | `json_decision_v1` | `react_text_v1` | `api_parameter` | Targets open-weight or third-party compatible serving |

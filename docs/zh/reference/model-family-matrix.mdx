@@ -6,6 +6,7 @@ description: "QitOS v0.4 内建 gold presets 的默认 harness 策略矩阵。"
 | Family | Transport | 默认 protocol | Fallback chain | Tool delivery | 说明 |
 |---|---|---|---|---|---|
 | Qwen | OpenAI-compatible | `json_decision_v1` | `xml_decision_v1 -> react_text_v1` | `api_parameter` | 如果 endpoint 返回 `tool_calls`，会优先走 native tool-call lane |
+| GLM | OpenAI-compatible | `json_decision_v1` | `xml_decision_v1 -> react_text_v1` | `api_parameter` | 如果 endpoint 返回 `tool_calls`，会优先走 native tool-call lane；默认面向 GLM-5.1 这类 OpenAI-compatible 服务 |
 | Kimi | OpenAI-compatible | `json_decision_v1` | `react_text_v1` | `api_parameter` | 在不明显改 prompt 的前提下切换到 Kimi |
 | MiniMax | OpenAI-compatible | `minimax_tool_call_v1` | `terminus_xml_v1 -> terminus_json_v1 -> json_decision_v1` | `api_parameter` | 保留 MiniMax 特有 parser 优势 |
 | `gpt-oss` | OpenAI-compatible | `json_decision_v1` | `react_text_v1` | `api_parameter` | 面向 open-weight / 第三方 compatible serving |

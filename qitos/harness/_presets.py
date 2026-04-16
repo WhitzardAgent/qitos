@@ -30,6 +30,27 @@ _PRESETS: tuple[FamilyPreset, ...] = (
         recommended_models=("Qwen/Qwen3-8B", "qwen-plus", "Qwen/Qwen3-32B"),
     ),
     FamilyPreset(
+        id="glm",
+        display_name="GLM",
+        model_matchers=("glm-", "zai-org/glm-", "zai-org/glm"),
+        adapter_kind="openai-compatible",
+        default_protocol="json_decision_v1",
+        fallback_protocols=("xml_decision_v1", "react_text_v1"),
+        tool_policy=ToolPolicy(
+            primary_delivery="api_parameter",
+            fallback_delivery="prompt_injection",
+            native_tool_call_preferred=True,
+            notes="Prefer native OpenAI-compatible tool calls when the GLM endpoint returns `tool_calls`, with XML/text fallbacks for text lanes.",
+        ),
+        context_policy=ContextPolicy(
+            context_window_hint=200_000,
+            fallback_context_window=128_000,
+            notes="GLM-5.1 class endpoints commonly expose a 200k context window; fall back conservatively when the provider does not advertise it.",
+        ),
+        notes="Research default for GLM models served through OpenAI-compatible endpoints, preferring native tool calls before text parsing.",
+        recommended_models=("GLM-5.1-sii", "zai-org/GLM-5.1-FP8"),
+    ),
+    FamilyPreset(
         id="kimi",
         display_name="Kimi",
         model_matchers=("kimi", "moonshot", "k2"),
