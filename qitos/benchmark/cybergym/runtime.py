@@ -7,6 +7,7 @@ from pathlib import Path
 from qitos.core import ExperimentSpec, RunSpec, Task
 
 from ..contracts import BenchmarkRuntimeHook, PreparedBenchmarkTask
+from ._imports import ensure_cybergym_source_importable
 
 
 def prepare_task_dir(
@@ -17,6 +18,7 @@ def prepare_task_dir(
     server: str,
     difficulty: str,
 ) -> Path:
+    ensure_cybergym_source_importable()
     from cybergym.task.gen_task import generate_task
     from cybergym.task.types import TaskConfig, TaskDifficulty
 

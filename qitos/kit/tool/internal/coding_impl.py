@@ -49,6 +49,22 @@ def _truncate_text(text: str, max_chars: int) -> tuple[str, bool]:
     return truncate_text(text, max_chars)
 
 
+def _select_line_chunk(
+    lines: List[str], start: int, max_lines: int, max_chars: int
+) -> tuple[List[str], bool]:
+    end = min(len(lines), start + max_lines)
+    chunk: List[str] = []
+    char_count = 0
+    enforce_chars = max_chars > 0
+    for line in lines[start:end]:
+        char_count += len(line) + (1 if chunk else 0)
+        chunk.append(line)
+        if enforce_chars and char_count >= max_chars:
+            break
+    truncated = bool(enforce_chars and start + len(chunk) < end)
+    return chunk, truncated
+
+
 def _build_diff(old_content: str, new_content: str, path: str) -> str:
     return build_diff(old_content, new_content, path)
 
@@ -508,12 +524,13 @@ class CodingToolSet:
         runtime_context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
-        Read one workspace file with line metadata.
+        Read one workspace file as a bounded whole-line text chunk.
 
         :param path: Path relative to the workspace root.
         :param offset: Zero-based starting line offset.
         :param limit: Maximum number of lines to return.
-        :param max_chars: Maximum number of characters to return.
+        :param max_chars: Soft maximum characters; the returned chunk stops at a line
+            boundary just after reaching this value.
         :param runtime_context: Optional runtime context injected by the executor.
         """
         _ = runtime_context
@@ -527,22 +544,17 @@ class CodingToolSet:
             lines = content.splitlines()
             start = max(0, int(offset))
             size = max(1, int(limit))
-            chunk = lines[start : start + size]
+            chunk, truncated = _select_line_chunk(lines, start, size, int(max_chars))
             chunk_text = "\n".join(chunk)
-            chunk_text, truncated = _truncate_text(chunk_text, int(max_chars))
             return {
                 "status": "success",
                 "path": str(path),
                 "content": chunk_text,
                 "line_ending": line_ending,
                 "offset": start,
-                "limit": size,
+                "limit": len(chunk),
                 "total_lines": len(lines),
-                "lines": [
-                    {"line": start + index + 1, "text": text}
-                    for index, text in enumerate(chunk)
-                ],
-                "has_more": start + size < len(lines),
+                "has_more": start + len(chunk) < len(lines),
                 "truncated": truncated,
             }
         except Exception as e:
@@ -563,21 +575,25 @@ class CodingToolSet:
         :param path: Path relative to the workspace root.
         :param runtime_context: Optional runtime context injected by the executor.
         """
-        result = self.file_read_v2(
-            path=path,
-            offset=0,
-            limit=100_000,
-            max_chars=200_000,
-            runtime_context=runtime_context,
-        )
-        if result.get("status") != "success":
-            return result
-        return {
-            "status": "success",
-            "path": path,
-            "content": result.get("content", ""),
-            "size": len(result.get("content", "")),
-        }
+        _ = runtime_context
+        try:
+            resolved = _resolve_workspace_path(self.workspace_root, path)
+            if not resolved.exists():
+                return {"status": "error", "message": f"File not found: {path}"}
+            if resolved.is_dir():
+                return {"status": "error", "message": f"Path is a directory: {path}"}
+            content, line_ending, _mtime = self._read_text_file(resolved)
+            return {
+                "status": "success",
+                "path": path,
+                "content": content,
+                "size": len(content),
+                "truncated": False,
+                "total_lines": len(content.splitlines()),
+                "line_ending": line_ending,
+            }
+        except Exception as e:
+            return {"status": "error", "message": str(e), "path": path}
 
     @tool(
         name="view",
@@ -1197,8 +1213,8 @@ class CodingToolSet:
             "limit": result.get("limit", limit),
             "total_lines": result.get("total_lines", 0),
             "content": result.get("content", ""),
-            "lines": result.get("lines", []),
             "has_more": result.get("has_more", False),
+            "truncated": result.get("truncated", False),
         }
 
     @tool(

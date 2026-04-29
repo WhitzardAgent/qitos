@@ -445,6 +445,8 @@ class AgentModule(ABC, Generic[StateT, ObservationT, ActionT]):
             kwargs["stop_criteria"] = stop_criteria
         if history_policy is not None:
             kwargs["history_policy"] = history_policy
+        elif "history_policy" not in kwargs and self.config.get("history_policy") is not None:
+            kwargs["history_policy"] = self.config.get("history_policy")
         if context_config is not None:
             kwargs["context_config"] = context_config
 

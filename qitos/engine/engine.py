@@ -8,6 +8,7 @@ from typing import Any, Callable, Dict, Generic, List, Optional, TypeVar
 from uuid import uuid4
 
 from ..core.agent_module import AgentModule
+from ..core.action import ActionExecutionPolicy
 from ..core.decision import Decision
 from ..core.errors import ErrorCategory, StopReason
 from ..core.env import Env, EnvObservation, EnvStepResult
@@ -270,7 +271,10 @@ class Engine(Generic[StateT, ObservationT, ActionT]):
             self.stop_criteria = list(stop_criteria)
 
         self.executor = (
-            ActionExecutor(tool_registry=self.tool_registry)
+            ActionExecutor(
+                tool_registry=self.tool_registry,
+                policy=ActionExecutionPolicy(mode="parallel", max_concurrency=4),
+            )
             if self.tool_registry is not None
             else None
         )

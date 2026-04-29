@@ -83,11 +83,22 @@ def classify_exception(exc: Exception, phase: str, step_id: int) -> RuntimeError
         return exc.info
 
     msg = str(exc).lower()
+    phase_name = phase.lower()
 
-    if isinstance(exc, (TimeoutError, ConnectionError)) and phase.lower() in {
-        "decide",
-        "propose",
-    }:
+    if phase_name in {"decide", "propose"} and (
+        isinstance(exc, (TimeoutError, ConnectionError))
+        or any(
+            marker in msg
+            for marker in (
+                "timeout",
+                "timed out",
+                "stream timeout",
+                "read timeout",
+                "connection error",
+                "api connection",
+            )
+        )
+    ):
         return RuntimeErrorInfo(
             category=ErrorCategory.MODEL,
             message=str(exc),

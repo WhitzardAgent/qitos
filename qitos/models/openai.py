@@ -7,9 +7,13 @@ Supports environment variable configuration: OPENAI_API_KEY, OPENAI_BASE_URL
 
 import json
 import os
+import time
+from functools import lru_cache
+from pathlib import Path
 from typing import Any, Dict, List, Optional, cast
 
 from ..core.multimodal import (
+    content_to_text,
     ensure_data_url,
     file_to_data_url,
     has_nontext_content,
@@ -17,6 +21,31 @@ from ..core.multimodal import (
     normalize_messages,
 )
 from .base import Model
+
+
+OPENAI_DEFAULT_TIMEOUT = 120
+OPENAI_DEFAULT_RETRIES = 3
+GLM_TOKENIZER_ENV_VARS = ("QITOS_GLM_TOKENIZER_PATH", "GLM_TOKENIZER_PATH")
+
+
+def _retry_delay_seconds(attempt_index: int) -> float:
+    return float(min(8, 2 ** max(0, int(attempt_index))))
+
+
+def _call_with_retries(operation, *, retries: int = OPENAI_DEFAULT_RETRIES):
+    last_error: Exception | None = None
+    total_attempts = max(1, int(retries))
+    for attempt in range(total_attempts):
+        try:
+            return operation()
+        except Exception as exc:  # Retry all provider errors, including timeouts.
+            last_error = exc
+            if attempt >= total_attempts - 1:
+                raise
+            time.sleep(_retry_delay_seconds(attempt))
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("retry loop exited without returning or raising")
 
 
 def _to_openai_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -85,6 +114,65 @@ def _to_openai_content_blocks(content: List[Any]) -> List[Dict[str, Any]]:
     return blocks
 
 
+def _is_glm_model_name(model: str) -> bool:
+    normalized = str(model or "").strip().lower()
+    return normalized.startswith("glm-") or normalized.startswith("zai-org/glm-")
+
+
+def _glm_tokenizer_path() -> Optional[str]:
+    for name in GLM_TOKENIZER_ENV_VARS:
+        value = os.getenv(name, "").strip()
+        if value and Path(value).exists():
+            return value
+    return None
+
+
+@lru_cache(maxsize=4)
+def _load_glm_tokenizer(path: str) -> Any:
+    from transformers import AutoTokenizer
+
+    return AutoTokenizer.from_pretrained(
+        path,
+        trust_remote_code=True,
+        local_files_only=True,
+    )
+
+
+def _tokenizer_count_result(value: Any) -> Optional[int]:
+    if isinstance(value, int):
+        return int(value)
+    if isinstance(value, list):
+        return len(value)
+    getter = getattr(value, "get", None)
+    if callable(getter):
+        ids = getter("input_ids")
+        if isinstance(ids, list):
+            return len(ids)
+    return None
+
+
+def _normalize_messages_for_tokenizer(payload: List[Any]) -> List[Dict[str, str]]:
+    messages: List[Dict[str, str]] = []
+    for item in payload:
+        if not isinstance(item, dict):
+            messages.append({"role": "user", "content": str(item)})
+            continue
+        role = str(item.get("role") or "user").strip() or "user"
+        content = content_to_text(item.get("content"))
+        extras: Dict[str, Any] = {}
+        for key in ("tool_calls", "tool_call_id", "name"):
+            if key in item and item.get(key) not in (None, "", []):
+                extras[key] = item.get(key)
+        if extras:
+            content = (
+                content
+                + "\n"
+                + json.dumps(extras, ensure_ascii=False, sort_keys=True)
+            ).strip()
+        messages.append({"role": role, "content": content})
+    return messages
+
+
 class OpenAIModel(Model):
     """
     OpenAI model calling implementation
@@ -112,7 +200,7 @@ class OpenAIModel(Model):
         system_prompt: Optional[str] = None,
         temperature: float = 0.7,
         max_tokens: int = 2048,
-        timeout: int = 60,
+        timeout: int = OPENAI_DEFAULT_TIMEOUT,
         context_window: Optional[int] = None,
     ):
         """
@@ -164,7 +252,9 @@ class OpenAIModel(Model):
                 api_key=self.api_key, base_url=self.base_url, timeout=self.timeout
             )
 
-            response = self._chat_completion(client, messages, **kwargs)
+            response = _call_with_retries(
+                lambda: self._chat_completion(client, messages, **kwargs)
+            )
             return self._parse_response(response)
 
         except openai.APIError as e:
@@ -215,7 +305,7 @@ class OpenAIModel(Model):
         client = openai.OpenAI(
             api_key=self.api_key, base_url=self.base_url, timeout=self.timeout
         )
-        return self._chat_completion(client, messages, **kwargs)
+        return _call_with_retries(lambda: self._chat_completion(client, messages, **kwargs))
 
     def _usage_from_response(self, response: Any) -> Optional[Dict[str, Any]]:
         usage = getattr(response, "usage", None)
@@ -327,7 +417,7 @@ class OpenAICompatibleModel(Model):
         system_prompt: Optional[str] = None,
         temperature: float = 0.7,
         max_tokens: int = 2048,
-        timeout: int = 60,
+        timeout: int = OPENAI_DEFAULT_TIMEOUT,
         context_window: Optional[int] = None,
     ):
         """
@@ -360,6 +450,43 @@ class OpenAICompatibleModel(Model):
                 "OPENAI_BASE_URL not set. Please set environment variable or pass base_url parameter."
             )
 
+    def count_tokens(self, messages_or_text: Any) -> Optional[int]:
+        if self._should_use_glm_tokenizer():
+            value = self._count_tokens_with_glm_tokenizer(messages_or_text)
+            if isinstance(value, int) and value >= 0:
+                return value
+        return super().count_tokens(messages_or_text)
+
+    def _should_use_glm_tokenizer(self) -> bool:
+        metadata = dict(getattr(self, "qitos_harness_metadata", {}) or {})
+        if str(metadata.get("family_preset") or "").strip().lower() == "glm":
+            return True
+        return _is_glm_model_name(self.model)
+
+    def _count_tokens_with_glm_tokenizer(self, payload: Any) -> Optional[int]:
+        path = _glm_tokenizer_path()
+        if not path:
+            return None
+        try:
+            tokenizer = _load_glm_tokenizer(path)
+        except Exception:
+            return None
+
+        try:
+            if isinstance(payload, list):
+                messages = _normalize_messages_for_tokenizer(payload)
+                encoded = tokenizer.apply_chat_template(
+                    messages,
+                    tokenize=True,
+                    add_generation_prompt=False,
+                )
+                return _tokenizer_count_result(encoded)
+            text = self._stringify_token_payload(payload)
+            encoded = tokenizer.encode(text, add_special_tokens=False)
+            return _tokenizer_count_result(encoded)
+        except Exception:
+            return None
+
     def _call_api(self, messages: List[Dict[str, Any]], **kwargs: Any) -> str:
         """
         Call OpenAI compatible API
@@ -377,7 +504,9 @@ class OpenAICompatibleModel(Model):
                 api_key=self.api_key, base_url=self.base_url, timeout=self.timeout
             )
 
-            response = self._chat_completion(client, messages, **kwargs)
+            response = _call_with_retries(
+                lambda: self._chat_completion(client, messages, **kwargs)
+            )
             return self._parse_response(response)
 
         except openai.APIError as e:
@@ -479,7 +608,7 @@ class OpenAICompatibleModel(Model):
         client = openai.OpenAI(
             api_key=self.api_key, base_url=self.base_url, timeout=self.timeout
         )
-        return self._chat_completion(client, messages, **kwargs)
+        return _call_with_retries(lambda: self._chat_completion(client, messages, **kwargs))
 
     def _usage_from_response(self, response: Any) -> Optional[Dict[str, Any]]:
         usage = getattr(response, "usage", None)
@@ -529,7 +658,7 @@ class AzureOpenAIModel(OpenAICompatibleModel):
         system_prompt: Optional[str] = None,
         temperature: float = 0.7,
         max_tokens: int = 2048,
-        timeout: int = 60,
+        timeout: int = OPENAI_DEFAULT_TIMEOUT,
         context_window: Optional[int] = None,
     ):
         """
@@ -587,12 +716,14 @@ class AzureOpenAIModel(OpenAICompatibleModel):
                 timeout=self.timeout,
             )
 
-            response = client.chat.completions.create(
-                model=self.deployment or "",
-                messages=cast(Any, _to_openai_messages(messages)),
-                temperature=self.temperature,
-                max_tokens=self.max_tokens,
-                **kwargs,
+            response = _call_with_retries(
+                lambda: client.chat.completions.create(
+                    model=self.deployment or "",
+                    messages=cast(Any, _to_openai_messages(messages)),
+                    temperature=self.temperature,
+                    max_tokens=self.max_tokens,
+                    **kwargs,
+                )
             )
             self._set_last_usage(self._usage_from_response(response))
 

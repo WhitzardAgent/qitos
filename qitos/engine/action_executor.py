@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import time
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
 from ..core.action import Action, ActionExecutionPolicy, ActionResult, ActionStatus
@@ -28,10 +30,49 @@ class ActionExecutor:
         self, actions: Sequence[Action], env: Optional[Env] = None, state: Any = None
     ) -> List[ActionResult]:
         if self.policy.mode == "parallel":
-            raise NotImplementedError(
-                "ActionExecutionPolicy.mode='parallel' is not implemented in the canonical executor"
-            )
+            return self._execute_parallel(actions, env=env, state=state)
         return [self._execute_one(action, env=env, state=state) for action in actions]
+
+    def _execute_parallel(
+        self, actions: Sequence[Action], env: Optional[Env] = None, state: Any = None
+    ) -> List[ActionResult]:
+        results: List[ActionResult] = []
+        pending_batch: List[Action] = []
+
+        def _flush_batch() -> None:
+            nonlocal pending_batch
+            if not pending_batch:
+                return
+            max_workers = min(
+                max(1, int(self.policy.max_concurrency)),
+                len(pending_batch),
+            )
+            with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                futures = [
+                    pool.submit(self._execute_one, action, env=env, state=state)
+                    for action in pending_batch
+                ]
+                results.extend(future.result() for future in futures)
+            pending_batch = []
+
+        for action in actions:
+            if self._can_execute_in_parallel(action):
+                pending_batch.append(action)
+                continue
+            _flush_batch()
+            results.append(self._execute_one(action, env=env, state=state))
+
+        _flush_batch()
+        return results
+
+    def _can_execute_in_parallel(self, action: Action) -> bool:
+        tool = self._resolve_tool(action.name)
+        if tool is None:
+            return False
+        spec = getattr(tool, "spec", None)
+        if spec is None:
+            return False
+        return bool(getattr(spec, "read_only", False) and getattr(spec, "concurrency_safe", False))
 
     def _execute_one(
         self, action: Action, env: Optional[Env] = None, state: Any = None
@@ -46,6 +87,27 @@ class ActionExecutor:
             attempts += 1
             try:
                 tool = self._resolve_tool(action.name)
+                guard_message = self._candidate_submit_ready_guard(action.name, state)
+                if guard_message:
+                    return self._finish_result(
+                        action=action,
+                        status=ActionStatus.ERROR,
+                        start=start,
+                        attempts=attempts,
+                        tool_meta=tool_meta,
+                        output={
+                            "status": "error",
+                            "message": guard_message,
+                            "error_category": "candidate_submit_ready_guard",
+                            "tool": action.name,
+                        },
+                        error=guard_message,
+                        extra_metadata={
+                            "error_category": "candidate_submit_ready_guard",
+                            "progress_count": len(runtime_context["progress_events"]),
+                            "artifacts": list(runtime_context["artifacts"]),
+                        },
+                    )
                 validation = self._validate(tool, action.args, runtime_context)
                 if not validation.valid:
                     return self._finish_result(
@@ -277,6 +339,43 @@ class ActionExecutor:
         raise TypeError(
             "Unsupported tool registry. Expected object with call() or get()."
         )
+
+    def _candidate_submit_ready_guard(self, name: str, state: Any) -> str:
+        if name == "submit_poc":
+            return ""
+        if not bool(getattr(state, "candidate_ready_for_submit", False)):
+            return ""
+        poc_path = str(getattr(state, "poc_path", "") or "").strip()
+        if not poc_path:
+            return ""
+        if self._candidate_ready_file_missing(state, poc_path):
+            return ""
+        return (
+            "Candidate is ready for submission. Call submit_poc now; "
+            f"{name} is blocked until the ready candidate is submitted."
+        )
+
+    @staticmethod
+    def _candidate_ready_file_missing(state: Any, poc_path: str) -> bool:
+        path = Path(poc_path)
+        candidates: List[Path] = []
+        if path.is_absolute():
+            candidates.append(path)
+        else:
+            workspace_root = str(getattr(state, "workspace_root", "") or "").strip()
+            if workspace_root:
+                candidates.append(Path(workspace_root) / path)
+            candidates.append(path)
+
+        saw_checkable_path = False
+        for candidate in candidates:
+            try:
+                saw_checkable_path = True
+                if candidate.is_file():
+                    return False
+            except OSError:
+                continue
+        return saw_checkable_path
 
     def _normalize_output(self, tool: Optional[BaseTool], output: Any) -> Any:
         if tool is None:

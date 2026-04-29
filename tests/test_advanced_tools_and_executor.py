@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import threading
+import time
 
 from qitos import Action, StateSchema, ToolPermissionContext, ToolPermissionRule, ToolRegistry
-from qitos.core.action import ActionStatus
+from qitos.core.action import ActionExecutionPolicy, ActionStatus
 from qitos.core.tool import BaseTool, ToolPermission, ToolSpec, ToolValidationResult
 from qitos.engine.action_executor import ActionExecutor
 from qitos.kit.tool.tools import advanced_coding_tools
@@ -21,10 +23,10 @@ from qitos.kit.tool.shell import RunCommand
 
 
 class _EchoTool(BaseTool):
-    def __init__(self):
+    def __init__(self, name: str = "echo_tool"):
         super().__init__(
             ToolSpec(
-                name="echo_tool",
+                name=name,
                 description="demo tool",
                 parameters={"value": {"type": "string"}},
                 required=["value"],
@@ -44,9 +46,66 @@ class _EchoTool(BaseTool):
         return {"result": value}
 
 
+class _SleepReadTool(BaseTool):
+    def __init__(self, name: str = "sleep_read_tool", delay: float = 0.15):
+        self.delay = delay
+        self.starts: list[float] = []
+        self._lock = threading.Lock()
+        super().__init__(
+            ToolSpec(
+                name=name,
+                description="sleepy read-only tool",
+                parameters={"value": {"type": "string"}},
+                required=["value"],
+                permissions=ToolPermission(filesystem_read=True),
+                read_only=True,
+                concurrency_safe=True,
+            )
+        )
+
+    def run(self, value: str, runtime_context=None):
+        _ = runtime_context
+        with self._lock:
+            self.starts.append(time.perf_counter())
+        time.sleep(self.delay)
+        return {"value": value}
+
+
+class _UnsafeSleepTool(BaseTool):
+    def __init__(self, name: str = "unsafe_sleep_tool", delay: float = 0.05):
+        self.delay = delay
+        self.starts: list[float] = []
+        self._lock = threading.Lock()
+        super().__init__(
+            ToolSpec(
+                name=name,
+                description="sleepy non-concurrency-safe tool",
+                parameters={"value": {"type": "string"}},
+                required=["value"],
+                permissions=ToolPermission(filesystem_read=True),
+                read_only=True,
+                concurrency_safe=False,
+            )
+        )
+
+    def run(self, value: str, runtime_context=None):
+        _ = runtime_context
+        with self._lock:
+            self.starts.append(time.perf_counter())
+        time.sleep(self.delay)
+        return {"value": value}
+
+
 @dataclass
 class _ExecutorState(StateSchema):
     pass
+
+
+@dataclass
+class _CandidateReadyState(StateSchema):
+    poc_path: str = ""
+    candidate_ready_for_submit: bool = False
+    workspace_root: str = ""
 
 
 def test_action_executor_applies_validation_permission_and_truncation():
@@ -89,6 +148,98 @@ def test_action_executor_applies_validation_permission_and_truncation():
     )[0]
     assert ask.status == ActionStatus.SKIPPED
     assert ask.output["status"] == "needs_user_input"
+
+
+def test_action_executor_blocks_non_submit_tools_when_candidate_ready(tmp_path):
+    (tmp_path / "poc.bin").write_bytes(b"candidate")
+    registry = ToolRegistry().register(_EchoTool()).register(_EchoTool(name="submit_poc"))
+    executor = ActionExecutor(registry)
+    state = _CandidateReadyState(
+        task="demo",
+        workspace_root=str(tmp_path),
+        poc_path="poc.bin",
+        candidate_ready_for_submit=True,
+    )
+
+    blocked = executor.execute(
+        [Action(name="echo_tool", args={"value": "ignored"})],
+        state=state,
+    )[0]
+    allowed = executor.execute(
+        [Action(name="submit_poc", args={"value": "poc.bin"})],
+        state=state,
+    )[0]
+
+    assert blocked.status == ActionStatus.ERROR
+    assert blocked.metadata["error_category"] == "candidate_submit_ready_guard"
+    assert "submit_poc" in blocked.output["message"]
+    assert allowed.status == ActionStatus.SUCCESS
+
+
+def test_action_executor_allows_regeneration_when_ready_candidate_file_missing(tmp_path):
+    registry = ToolRegistry().register(_EchoTool())
+    executor = ActionExecutor(registry)
+    state = _CandidateReadyState(
+        task="demo",
+        workspace_root=str(tmp_path),
+        poc_path="missing.bin",
+        candidate_ready_for_submit=True,
+    )
+
+    result = executor.execute(
+        [Action(name="echo_tool", args={"value": "regenerate"})],
+        state=state,
+    )[0]
+
+    assert result.status == ActionStatus.SUCCESS
+
+
+def test_action_executor_runs_concurrency_safe_read_only_tools_in_parallel():
+    tool = _SleepReadTool()
+    registry = ToolRegistry().register(tool)
+    executor = ActionExecutor(
+        registry,
+        policy=ActionExecutionPolicy(mode="parallel", max_concurrency=4),
+    )
+
+    started = time.perf_counter()
+    results = executor.execute(
+        [
+            Action(name="sleep_read_tool", args={"value": "a"}),
+            Action(name="sleep_read_tool", args={"value": "b"}),
+            Action(name="sleep_read_tool", args={"value": "c"}),
+        ]
+    )
+    elapsed = time.perf_counter() - started
+
+    assert [item.status for item in results] == [ActionStatus.SUCCESS] * 3
+    assert elapsed < 0.35
+    assert len(tool.starts) == 3
+    assert max(tool.starts) - min(tool.starts) < 0.08
+
+
+def test_action_executor_keeps_non_concurrency_safe_tools_serial_even_in_parallel_mode():
+    tool = _UnsafeSleepTool()
+    registry = ToolRegistry().register(tool)
+    executor = ActionExecutor(
+        registry,
+        policy=ActionExecutionPolicy(mode="parallel", max_concurrency=4),
+    )
+
+    started = time.perf_counter()
+    results = executor.execute(
+        [
+            Action(name="unsafe_sleep_tool", args={"value": "a"}),
+            Action(name="unsafe_sleep_tool", args={"value": "b"}),
+            Action(name="unsafe_sleep_tool", args={"value": "c"}),
+        ]
+    )
+    elapsed = time.perf_counter() - started
+
+    assert [item.status for item in results] == [ActionStatus.SUCCESS] * 3
+    assert elapsed >= 0.14
+    assert len(tool.starts) == 3
+    assert tool.starts[1] - tool.starts[0] >= 0.04
 
 
 def test_run_command_executes_in_workspace(tmp_path):

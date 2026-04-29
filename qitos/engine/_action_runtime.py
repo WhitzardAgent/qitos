@@ -56,6 +56,89 @@ class _ActionRuntime(Generic[StateT, ActionT]):
             actions.append(Action.from_dict(payload))
         for normalized_action in actions:
             engine._memory_append("action", normalized_action, record.step_id)
+            block_reason = self._action_block_reason(state, normalized_action)
+            if block_reason:
+                blocked_result = ToolResult(
+                    status="error",
+                    output={
+                        "status": "blocked",
+                        "message": block_reason,
+                        "tool_name": normalized_action.name,
+                    },
+                    error="action_blocked",
+                    metadata={
+                        "tool_name": normalized_action.name,
+                        "error_category": "action_blocked",
+                    },
+                )
+                record.action_results = [blocked_result]
+                record.tool_invocations = [
+                    {
+                        "tool_name": normalized_action.name,
+                        "toolset_name": None,
+                        "toolset_version": None,
+                        "source": "agent_action_gate",
+                        "attempts": 0,
+                        "latency_ms": 0,
+                        "status": "error",
+                        "error_category": "action_blocked",
+                        "error": "action_blocked",
+                    }
+                ]
+                engine._memory_append("action_result", blocked_result, record.step_id)
+                if record.decision_source == "native_tool_calls" and record.native_tool_call_used:
+                    tool_call_id = normalized_action.action_id or f"call_{record.step_id}_0"
+                    engine._history_append(
+                        "tool",
+                        self._serialize_for_tool_message(
+                            blocked_result.output,
+                            blocked_result.error,
+                        ),
+                        record.step_id,
+                        metadata={
+                            "source": "engine",
+                            "tool_name": normalized_action.name,
+                        },
+                        tool_call_id=tool_call_id,
+                        name=normalized_action.name,
+                    )
+                else:
+                    engine._history_append(
+                        "user",
+                        block_reason,
+                        record.step_id,
+                        metadata={
+                            "source": "action_gate",
+                            "tool_name": normalized_action.name,
+                        },
+                    )
+                engine._emit(
+                    record.step_id,
+                    RuntimePhase.ACT,
+                    payload={
+                        "stage": "action_blocked",
+                        "tool_name": normalized_action.name,
+                        "reason": block_reason,
+                        "action_results": [
+                            self._model_visible_tool_result_dict(
+                                blocked_result,
+                                normalized_action.name,
+                            )
+                        ],
+                    },
+                )
+                engine._dispatch_hook(
+                    "on_after_act",
+                    engine._hook_context(
+                        step_id=record.step_id,
+                        phase=RuntimePhase.ACT,
+                        state=state,
+                        decision=decision,
+                        action_results=[blocked_result.to_dict()],
+                        record=record,
+                    ),
+                )
+                return [blocked_result.to_dict()]
             recovery_message = engine._tool_loop_detector.check(
                 normalized_action.name, normalized_action.args
             )
@@ -113,6 +196,7 @@ class _ActionRuntime(Generic[StateT, ActionT]):
                             "tool_name": item.name,
                             "latency_ms": item.latency_ms,
                             "attempts": item.attempts,
+                            "action_args": dict(actions[len(results)].args or {}) if len(results) < len(actions) else {},
                         },
                     )
                 )
@@ -126,6 +210,7 @@ class _ActionRuntime(Generic[StateT, ActionT]):
                             "tool_name": item.name,
                             "latency_ms": item.latency_ms,
                             "attempts": item.attempts,
+                            "action_args": dict(actions[len(results)].args or {}) if len(results) < len(actions) else {},
                         },
                     )
                 )
@@ -155,21 +240,23 @@ class _ActionRuntime(Generic[StateT, ActionT]):
                 payload = result.output
                 if isinstance(payload, dict) and set(payload.keys()) == {"env"}:
                     continue
+                tool_name = actions[idx].name if idx < len(actions) else ""
                 tool_call_id = None
                 if idx < len(actions):
                     tool_call_id = actions[idx].action_id
                 if not tool_call_id:
                     tool_call_id = f"call_{record.step_id}_{idx}"
-                serialized = self._serialize_for_tool_message(payload, result.error)
+                model_payload = self._model_visible_tool_output(tool_name, payload)
+                serialized = self._serialize_for_tool_message(model_payload, result.error)
                 engine._history_append(
                     "tool",
                     serialized[
                         : max(256, int(getattr(engine.context_config, "tool_result_max_chars", 4000)))
                     ],
                     record.step_id,
-                    metadata={"source": "engine", "tool_name": actions[idx].name if idx < len(actions) else ""},
+                    metadata={"source": "engine", "tool_name": tool_name},
                     tool_call_id=tool_call_id,
-                    name=(actions[idx].name if idx < len(actions) else None),
+                    name=(tool_name or None),
                 )
         engine._emit(
             record.step_id,
@@ -177,7 +264,13 @@ class _ActionRuntime(Generic[StateT, ActionT]):
             payload={
                 "stage": "action_results",
                 "tool_invocations": record.tool_invocations,
-                "action_results": [item.to_dict() for item in results],
+                "action_results": [
+                    self._model_visible_tool_result_dict(
+                        item,
+                        actions[idx].name if idx < len(actions) else "",
+                    )
+                    for idx, item in enumerate(results)
+                ],
             },
         )
         engine._dispatch_hook(
@@ -201,3 +294,58 @@ class _ActionRuntime(Generic[StateT, ActionT]):
             return json.dumps(payload, ensure_ascii=False, default=str)
         except Exception:
             return str(payload)
+
+    def _action_block_reason(self, state: StateT, action: Action) -> str:
+        blocker = getattr(self.engine.agent, "block_action", None)
+        if blocker is None:
+            return ""
+        try:
+            reason = blocker(state, action)
+        except TypeError:
+            reason = blocker(action)
+        except Exception:
+            return ""
+        return str(reason or "").strip()
+
+    def _model_visible_tool_output(self, tool_name: str, output: Any) -> Any:
+        """Hide benchmark-private verifier fields from native tool-call history."""
+        if str(tool_name).rsplit(".", 1)[-1] != "submit_poc":
+            return output
+        if not isinstance(output, dict):
+            return output
+        if output.get("status") == "error":
+            return {
+                "status": "error",
+                "error": output.get("error") or output.get("raw_output") or "submission failed",
+            }
+        visible = {
+            "status": output.get("status"),
+            "poc_id": output.get("poc_id"),
+            "flag": output.get("flag"),
+            "exit_code": output.get("vul_exit_code", output.get("exit_code")),
+            "output": output.get("raw_output", ""),
+            "stderr": output.get("vul_stderr", ""),
+            "stdout": output.get("vul_stdout", ""),
+        }
+        return {key: value for key, value in visible.items() if value not in (None, "")}
+
+    def _model_visible_tool_result_dict(
+        self,
+        result: ToolResult,
+        tool_name: str,
+    ) -> Dict[str, Any]:
+        payload = result.to_dict()
+        if str(tool_name).rsplit(".", 1)[-1] != "submit_poc":
+            return payload
+        visible_output = self._model_visible_tool_output(tool_name, result.output)
+        visible = ToolResult(
+            status=result.status,
+            output=visible_output,
+            error=result.error,
+            metadata=dict(result.metadata),
+        ).to_dict()
+        visible["metadata"] = {
+            **dict(visible.get("metadata") or {}),
+            "model_visible": True,
+        }
+        return visible

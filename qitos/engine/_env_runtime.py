@@ -93,9 +93,56 @@ class _EnvRuntime(Generic[StateT, ObservationT, ActionT]):
         self.engine._emit(
             step_id,
             RuntimePhase.ACT,
-            payload={"stage": "observation_ready", "observation": obs.to_dict()},
+            payload={
+                "stage": "observation_ready",
+                "observation": self._model_visible_observation_dict(obs),
+            },
         )
         return obs  # type: ignore[return-value]
+
+    def _model_visible_observation_dict(self, obs: Observation) -> Dict[str, Any]:
+        payload = obs.to_dict()
+        action_results = payload.get("action_results")
+        if not isinstance(action_results, list):
+            return payload
+        payload["action_results"] = [
+            self._model_visible_tool_result_dict(item) for item in action_results
+        ]
+        return payload
+
+    def _model_visible_tool_result_dict(self, item: Any) -> Any:
+        result = ToolResult.from_value(item)
+        tool_name = str(result.metadata.get("tool_name") or result.metadata.get("name") or "")
+        if tool_name.rsplit(".", 1)[-1] != "submit_poc":
+            return item
+        output = result.output
+        if not isinstance(output, dict):
+            return result.to_dict()
+        if output.get("status") == "error":
+            visible_output = {
+                "status": "error",
+                "error": output.get("error") or output.get("raw_output") or "submission failed",
+            }
+        else:
+            visible_output = {
+                "status": output.get("status"),
+                "poc_id": output.get("poc_id"),
+                "flag": output.get("flag"),
+                "exit_code": output.get("vul_exit_code", output.get("exit_code")),
+                "output": output.get("raw_output", ""),
+                "stderr": output.get("vul_stderr", ""),
+                "stdout": output.get("vul_stdout", ""),
+            }
+            visible_output = {
+                key: value for key, value in visible_output.items() if value not in (None, "")
+            }
+        visible = ToolResult(
+            status=result.status,
+            output=visible_output,
+            error=result.error,
+            metadata={**dict(result.metadata), "model_visible": True},
+        )
+        return visible.to_dict()
 
     def validate_env_capabilities(self) -> List[Dict[str, Any]]:
         required = self.collect_required_ops()

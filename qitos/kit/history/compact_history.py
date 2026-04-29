@@ -96,12 +96,13 @@ class MicroCompactor:
         newline_count = text.count("\n")
         blob_kind = self._infer_blob_kind(message, text)
         compacted = (
-            f"[Compacted {blob_kind} from step {message.step_id}; "
-            f"original_chars={len(text)}; original_lines={newline_count + 1}]\n"
+            f"[compact:start step={message.step_id} kind={blob_kind} "
+            f"original_chars={len(text)} original_lines={newline_count + 1}]\n"
             f"{head}"
         )
         if tail and tail != head:
             compacted += f"\n...\n{tail}"
+        compacted += "\n[compact:end]"
 
         metadata = dict(message.metadata)
         metadata.update(

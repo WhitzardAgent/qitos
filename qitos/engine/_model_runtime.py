@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import html
 import json
+import os
+import re
 from pathlib import Path
 from typing import Any, Dict, Generic, List, Optional, TypeVar, cast
 
@@ -253,12 +256,15 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
             )
         injection_prefixes: List[str] = []
         if self._native_tool_call_preferred():
-            history = self._trim_native_tool_history(
-                history,
-                max_rounds=max(
-                    1, int(getattr(engine.context_config, "conversation_max_rounds", 10))
-                ),
-            )
+            if os.environ.get("CYBERGYM_DISABLE_HISTORY_TRIM", "").strip().lower() not in {"1", "true", "yes", "on"}:
+                configured_rounds = int(
+                    getattr(engine.context_config, "conversation_max_rounds", 10)
+                )
+                if configured_rounds > 0:
+                    history = self._trim_native_tool_history(
+                        history,
+                        max_rounds=configured_rounds,
+                    )
         messages.extend(history)
         for item in prompt_messages:
             if not isinstance(item, dict):
@@ -280,6 +286,7 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
         )
         messages.append(current_user)
         prepared_full = content_to_text(current_user.get("content"))
+        self._write_assembled_messages_sidecar(state, record.step_id, messages)
         record.prompt_metadata = dict(prompt_metadata)
         record.prompt_metadata.update(
             {
@@ -359,6 +366,26 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
         )
 
         return response
+
+    def _write_assembled_messages_sidecar(
+        self,
+        state: StateT,
+        step_id: int,
+        messages: List[Dict[str, Any]],
+    ) -> None:
+        try:
+            metadata = dict(getattr(state, "metadata", {}) or {})
+            trace_root = str(metadata.get("trace_run_dir") or "").strip()
+            if not trace_root:
+                return
+            step_dir = Path(trace_root) / "agent_steps" / f"step-{int(step_id):04d}"
+            step_dir.mkdir(parents=True, exist_ok=True)
+            (step_dir / "assembled_messages.json").write_text(
+                json.dumps(messages, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except Exception:
+            return
 
     def _build_model_request_options(
         self, *, prompt_bundle: Any, protocol: Any
@@ -1006,20 +1033,93 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
             or (llm.__class__.__name__ if llm is not None else None)
         )
         metadata = dict(response.metadata or {})
+        text = str(response.text or "")
+        tool_calls = (
+            [dict(item) for item in (response.tool_calls or [])]
+            if isinstance(response.tool_calls, list)
+            else None
+        )
+        if not tool_calls:
+            markup_tool_calls = self._extract_text_tool_call_markup(text)
+            if markup_tool_calls:
+                tool_calls = markup_tool_calls
+                metadata["tool_call_markup_salvaged"] = True
+                metadata["tool_call_markup_format"] = "glm_text_tool_call"
+                if self._contains_only_text_tool_call_markup(text):
+                    text = ""
         return ModelResponse(
-            text=str(response.text or ""),
+            text=text,
             raw=response.raw,
             usage=dict(usage) if isinstance(usage, dict) else None,
             finish_reason=response.finish_reason,
-            tool_calls=(
-                [dict(item) for item in (response.tool_calls or [])]
-                if isinstance(response.tool_calls, list)
-                else None
-            ),
+            tool_calls=tool_calls,
             model_name=str(model_name) if model_name is not None else None,
             provider=str(provider) if provider is not None else None,
             metadata=metadata,
         )
+
+    def _extract_text_tool_call_markup(self, text: str) -> List[Dict[str, Any]] | None:
+        """Salvage GLM-style textual tool-call markup into native tool calls.
+
+        Some OpenAI-compatible GLM endpoints occasionally return text like
+        `<tool_call>run_command<arg_key>command</arg_key><arg_value>ls</arg_value></tool_call>`
+        instead of a structured `message.tool_calls` payload, even with
+        `finish_reason=tool_calls`. Treat it as a native call so it does not
+        fall through to JSON parsers.
+        """
+        if "<tool_call>" not in text:
+            return None
+        calls: List[Dict[str, Any]] = []
+        for index, match in enumerate(
+            re.finditer(r"<tool_call>\s*(.*?)\s*</tool_call>", text, re.DOTALL),
+            start=1,
+        ):
+            body = match.group(1)
+            first_arg = re.search(r"<arg_key>", body)
+            name_part = body[: first_arg.start()] if first_arg else body
+            name = html.unescape(re.sub(r"<[^>]+>", "", name_part)).strip()
+            if not name:
+                continue
+            args: Dict[str, Any] = {}
+            for key, value in re.findall(
+                r"<arg_key>\s*(.*?)\s*</arg_key>\s*<arg_value>\s*(.*?)\s*</arg_value>",
+                body,
+                re.DOTALL,
+            ):
+                clean_key = html.unescape(re.sub(r"<[^>]+>", "", key)).strip()
+                if not clean_key:
+                    continue
+                args[clean_key] = self._coerce_text_tool_call_arg(value)
+            calls.append(
+                {
+                    "id": f"call_glm_text_{index}",
+                    "type": "function",
+                    "function": {
+                        "name": name,
+                        "arguments": json.dumps(args, ensure_ascii=False),
+                    },
+                }
+            )
+        return calls or None
+
+    def _coerce_text_tool_call_arg(self, value: str) -> Any:
+        text = html.unescape(str(value or "")).strip()
+        try:
+            return json.loads(text)
+        except Exception:
+            return text
+
+    def _contains_only_text_tool_call_markup(self, text: str) -> bool:
+        stripped = str(text or "").strip()
+        if not stripped:
+            return False
+        remainder = re.sub(
+            r"<tool_call>\s*.*?\s*</tool_call>",
+            "",
+            stripped,
+            flags=re.DOTALL,
+        ).strip()
+        return not remainder
 
     def _extract_response_text(self, raw_output: Any) -> str:
         if raw_output is None:
@@ -1046,9 +1146,6 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
             return self._extract_response_text(choices[0])
         message = getattr(raw_output, "message", None)
         if message is not None:
-            tool_calls = getattr(message, "tool_calls", None)
-            if isinstance(tool_calls, list) and tool_calls:
-                return ""
             content = getattr(message, "content", None)
             if isinstance(content, str):
                 return content
@@ -1065,6 +1162,12 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
                         parts.append(str(getattr(item, "text")))
                 if parts:
                     return "\n".join(parts)
+            reasoning = getattr(message, "reasoning_content", None)
+            if isinstance(reasoning, str):
+                return reasoning
+            text = getattr(message, "text", None)
+            if isinstance(text, str):
+                return text
         for key in ("text", "content", "output_text"):
             value = getattr(raw_output, key, None)
             if isinstance(value, str):

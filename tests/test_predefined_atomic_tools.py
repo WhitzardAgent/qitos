@@ -55,7 +55,9 @@ def test_codebase_toolset_glob_grep_read_append(tmp_path):
 
     read_out = toolset.read_file_range(path="src/a.py", offset=1, limit=1)
     assert read_out["status"] == "success"
-    assert read_out["lines"][0]["line"] == 2
+    assert read_out["offset"] == 1
+    assert read_out["limit"] == 1
+    assert "lines" not in read_out
     assert "return a + b" in read_out["content"]
 
     append_out = toolset.append_file(path="src/b.md", content="extra\n")

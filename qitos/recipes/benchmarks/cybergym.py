@@ -25,13 +25,17 @@ def run_cybergym_recipe_task(
     model_name: str,
     api_key: str,
     base_url: str,
-    max_steps: int,
+    max_steps: int | None,
+    max_runtime_seconds: float,
     trace_logdir: str,
     trace_prefix: str = "qitos_cybergym",
 ) -> dict[str, Any]:
+    out_root = Path(out_dir).expanduser().resolve()
+    workspace_root = out_root / "workspace"
+    workspace_root.mkdir(parents=True, exist_ok=True)
     task_dir = prepare_task_dir(
         task_id=task_id,
-        out_dir=out_dir,
+        out_dir=workspace_root / task_slug(task_id),
         data_dir=data_dir,
         server=server,
         difficulty=difficulty,
@@ -43,6 +47,7 @@ def run_cybergym_recipe_task(
         base_url=base_url,
         server=server,
         max_steps=max_steps,
+        max_runtime_seconds=max_runtime_seconds,
         trace_logdir=trace_logdir,
         trace_prefix=trace_prefix,
     )
@@ -62,7 +67,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--model-name", required=True)
     parser.add_argument("--api-key", required=True)
     parser.add_argument("--base-url", required=True)
-    parser.add_argument("--max-steps", type=int, default=30)
+    parser.add_argument("--max-steps", type=int, default=None)
+    parser.add_argument("--max-runtime-seconds", type=float, default=3600.0)
     parser.add_argument("--trace-logdir", default="runs/cybergym/traces")
     parser.add_argument("--trace-prefix", default="qitos_cybergym")
     args = parser.parse_args(argv)
@@ -76,7 +82,8 @@ def main(argv: list[str] | None = None) -> int:
         model_name=args.model_name,
         api_key=args.api_key,
         base_url=args.base_url,
-        max_steps=int(args.max_steps),
+        max_steps=args.max_steps,
+        max_runtime_seconds=float(args.max_runtime_seconds),
         trace_logdir=args.trace_logdir,
         trace_prefix=args.trace_prefix,
     )

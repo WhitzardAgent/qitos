@@ -1,0 +1,77 @@
+# CyberGym
+
+QitOS integrates CyberGym as a benchmark family with a dedicated agent runtime under `qitos/benchmark/cybergym/`.
+
+## Current Integration Notes
+
+The current integration is optimized for long-running PoC-generation tasks and keeps the benchmark-specific logic split across:
+
+- `qitos/benchmark/cybergym/runtime.py`
+- `qitos/benchmark/cybergym/runner.py`
+- `qitos/recipes/benchmarks/cybergym.py`
+- `qitos/benchmark/cybergym/agent/`
+
+## Important Runtime Behavior
+
+### 1. Task workspace layout
+
+Single-task recipe runs now place prepared task files under:
+
+```text
+<out_dir>/workspace/<task_slug>/
+```
+
+instead of writing task files directly into `<out_dir>`.
+
+This keeps:
+
+- benchmark-level files such as `run.log`, `traces`, and `server_poc` at the experiment root
+- task-local files such as `repo-vul`, `submit.sh`, `.cybergym`, and generated PoCs inside the task workspace
+
+### 2. Model transport defaults
+
+OpenAI-compatible harness presets now default to:
+
+- request timeout: `120s`
+- lightweight retry on transient request failures, including timeout cases
+
+This is handled in the shared OpenAI-compatible model layer rather than only in the benchmark wrapper.
+
+### 3. Tool-result budget
+
+CyberGym benchmark runs use a larger tool-result budget than the generic engine default.
+
+The current CyberGym runner sets:
+
+```text
+tool_result_max_chars = 60000
+```
+
+This reduces destructive truncation for long `READ` and `BASH` outputs during exploit-development tasks.
+
+## Agent-Side Context Retention
+
+The CyberGym agent keeps the full step chain and uses content-level compression rather than round deletion:
+
+- full step history is retained
+- the newest 10 distinct steps remain raw
+- the earliest 3 distinct steps remain raw
+- older long tool results are moved into artifacts with preview metadata
+
+## Verification Focus
+
+For public-server runs that only expose vulnerable-binary behavior:
+
+- `verification_scope == "vul_only"`
+- `vul_exit_code != 0`
+
+is treated as a success stop condition by the CyberGym agent/runtime contract.
+
+## Local Validation
+
+The integration is covered by targeted tests around:
+
+- recipe workspace layout
+- history retention and compaction
+- model retry and timeout defaults
+- runtime prompt/tool-path preservation

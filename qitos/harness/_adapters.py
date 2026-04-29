@@ -53,7 +53,7 @@ class OpenAICompatibleAdapter(ModelAdapter):
         context_policy = kwargs["context_policy"]
         temperature = _coerce_float(kwargs.get("temperature"), 0.2)
         max_tokens = _coerce_int(kwargs.get("max_tokens"), 2048)
-        timeout = _coerce_int(kwargs.get("timeout"), 60)
+        timeout = _coerce_int(kwargs.get("timeout"), 120)
         system_prompt = kwargs.get("system_prompt")
         context_window = kwargs.get("context_window")
         if not isinstance(preset, FamilyPreset):

@@ -111,8 +111,8 @@ class RichRender:
 
             # Truncate content if too long
             content_str = str(content)
-            if len(content_str) > 500:
-                content_str = content_str[:500] + "\n... [truncated]"
+            if len(content_str) > 20000:
+                content_str = content_str[:20000] + "\n... [truncated]"
 
             # Format content with syntax highlighting if it's JSON
             if isinstance(content, dict):

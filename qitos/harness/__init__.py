@@ -58,7 +58,7 @@ def build_model_for_preset(
     tool_delivery: str | None = None,
     temperature: float = 0.2,
     max_tokens: int = 2048,
-    timeout: int = 60,
+    timeout: int = 120,
     system_prompt: str | None = None,
     context_window: int | None = None,
 ) -> Any:

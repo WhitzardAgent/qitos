@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import sys
+from types import ModuleType
 from types import SimpleNamespace
 
 from qitos.models import (
@@ -288,6 +289,99 @@ def test_openai_compatible_model_formats_multimodal_chat_messages(tmp_path, monk
     assert image_block["type"] == "image_url"
     assert image_block["image_url"]["detail"] == "high"
     assert image_block["image_url"]["url"].startswith("data:image/png;base64,")
+
+
+def test_openai_compatible_model_retries_and_uses_120s_timeout(monkeypatch) -> None:
+    captured = {"attempts": 0, "client_kwargs": None}
+
+    class _TransientError(Exception):
+        pass
+
+    class _FakeCompletions:
+        def create(self, **kwargs):
+            captured["attempts"] += 1
+            if captured["attempts"] < 3:
+                raise _TransientError("request time out")
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(
+                            content="Final Answer: retried ok", tool_calls=None
+                        )
+                    )
+                ],
+                usage=SimpleNamespace(
+                    prompt_tokens=9, completion_tokens=4, total_tokens=13
+                ),
+            )
+
+    class _FakeClient:
+        def __init__(self, **kwargs):
+            captured["client_kwargs"] = kwargs
+            self.chat = SimpleNamespace(completions=_FakeCompletions())
+
+    fake_openai = ModuleType("openai")
+    fake_openai.OpenAI = lambda **kwargs: _FakeClient(**kwargs)
+    fake_openai.APIError = _TransientError
+    monkeypatch.setitem(sys.modules, "openai", fake_openai)
+    monkeypatch.setattr("qitos.models.openai.time.sleep", lambda _: None)
+
+    llm = OpenAICompatibleModel(
+        model="gpt-4.1-mini",
+        api_key="test-key",
+        base_url="https://example.test/v1",
+    )
+    out = llm([{"role": "user", "content": "Retry please"}])
+
+    assert out == "Final Answer: retried ok"
+    assert captured["attempts"] == 3
+    assert captured["client_kwargs"]["timeout"] == 120
+    assert llm.timeout == 120
+
+
+def test_openai_compatible_model_call_raw_retries_on_transient_errors(monkeypatch) -> None:
+    captured = {"attempts": 0}
+
+    class _TransientError(Exception):
+        pass
+
+    class _FakeCompletions:
+        def create(self, **kwargs):
+            captured["attempts"] += 1
+            if captured["attempts"] < 3:
+                raise _TransientError("request time out")
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(
+                            content="Final Answer: raw retried ok", tool_calls=None
+                        )
+                    )
+                ],
+                usage=SimpleNamespace(
+                    prompt_tokens=7, completion_tokens=3, total_tokens=10
+                ),
+            )
+
+    class _FakeClient:
+        def __init__(self, **kwargs):
+            self.chat = SimpleNamespace(completions=_FakeCompletions())
+
+    fake_openai = ModuleType("openai")
+    fake_openai.OpenAI = lambda **kwargs: _FakeClient(**kwargs)
+    fake_openai.APIError = _TransientError
+    monkeypatch.setitem(sys.modules, "openai", fake_openai)
+    monkeypatch.setattr("qitos.models.openai.time.sleep", lambda _: None)
+
+    llm = OpenAICompatibleModel(
+        model="gpt-4.1-mini",
+        api_key="test-key",
+        base_url="https://example.test/v1",
+    )
+    response = llm.call_raw([{"role": "user", "content": "Retry raw please"}])
+
+    assert captured["attempts"] == 3
+    assert response.choices[0].message.content == "Final Answer: raw retried ok"
 
 
 def test_explicit_provider_override_wins(monkeypatch) -> None:

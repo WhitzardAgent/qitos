@@ -307,7 +307,6 @@ class _TraceRuntime(Generic[StateT]):
             StopReason.SUCCESS.value,
             StopReason.FINAL.value,
             StopReason.ENV_TERMINAL.value,
-            StopReason.AGENT_CONDITION.value,
         }
         criteria_results = []
         criteria = task_obj.success_criteria if task_obj is not None else []

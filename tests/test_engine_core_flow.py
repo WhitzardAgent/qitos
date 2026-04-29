@@ -83,6 +83,40 @@ def test_agent_run_shortcut():
     assert agent.run("compute", trace=False, render=False) == "42"
 
 
+def test_agent_condition_stop_is_not_automatic_success():
+    class StopAgent(DemoAgent):
+        def init_state(self, task: str, **kwargs: Any) -> DemoState:
+            _ = kwargs
+            return DemoState(task=task, max_steps=3)
+
+        def decide(self, state: DemoState, observation: dict[str, Any]) -> Decision[Action]:
+            _ = observation
+            return Decision.act(
+                actions=[Action(name="add", args={"a": 1, "b": 1})],
+                rationale="take one action then stop",
+            )
+
+        def reduce(
+            self,
+            state: DemoState,
+            observation: dict[str, Any],
+            decision: Decision[Action],
+        ) -> DemoState:
+            _ = observation, decision
+            return state
+
+        def should_stop(self, state: DemoState) -> bool:
+            _ = state
+            return True
+
+    result = Engine(agent=StopAgent(), budget=RuntimeBudget(max_steps=3)).run("compute")
+    assert result.state.stop_reason == "agent_condition"
+    assert result.state.final_result is None
+    assert result.task_result is not None
+    assert result.task_result.success is False
+    assert all(item.passed is False for item in result.task_result.criteria)
+
+
 def test_agent_run_enables_trace_and_render_by_default(tmp_path):
     workspace = tmp_path / "workspace"
     logdir = tmp_path / "runs"
@@ -780,6 +814,256 @@ def test_engine_uses_native_tool_call_lane_before_parser():
     traced = runtime_step_to_trace(record).to_dict()
     assert traced["decision_source"] == "native_tool_calls"
     assert traced["native_tool_call_used"] is True
+
+
+def test_engine_sanitizes_submit_poc_native_tool_history_without_mutating_result():
+    seen_messages: list[list[dict[str, Any]]] = []
+
+    class _SubmitModel:
+        model = "GLM-5.1"
+        provider = "openai-compatible"
+
+        def __init__(self):
+            self.qitos_harness_metadata = {
+                "family_preset": "glm",
+                "tool_policy": {
+                    "primary_delivery": "api_parameter",
+                    "fallback_delivery": "prompt_injection",
+                    "native_tool_call_preferred": True,
+                },
+            }
+            self.calls = 0
+
+        def call_raw(self, messages):
+            self.calls += 1
+            seen_messages.append(list(messages))
+            if self.calls == 1:
+                return {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": "",
+                                "tool_calls": [
+                                    {
+                                        "id": "call_submit",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "submit_poc",
+                                            "arguments": "{}",
+                                        },
+                                    }
+                                ],
+                            },
+                            "finish_reason": "tool_calls",
+                        }
+                    ],
+                    "model": "GLM-5.1",
+                }
+            return {
+                "choices": [
+                    {
+                        "message": {"content": "Final Answer: done"},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "model": "GLM-5.1",
+            }
+
+    class _SubmitAgent(DemoAgent):
+        def __init__(self):
+            super().__init__()
+            self.llm = _SubmitModel()
+
+            @tool(name="submit_poc")
+            def submit_poc() -> dict[str, Any]:
+                return {
+                    "status": "success",
+                    "vul_exit_code": 0,
+                    "fix_exit_code": 0,
+                    "poc_id": "p1",
+                    "flag": None,
+                    "raw_output": "wrong number of function inputs",
+                    "verification_scope": "full",
+                    "vul_stderr": "target stderr",
+                    "fix_stderr": "hidden stderr",
+                    "vul_stdout": "target stdout",
+                    "fix_stdout": "hidden stdout",
+                }
+
+            self.tool_registry.register(submit_poc)
+
+        def decide(self, state: DemoState, observation: dict[str, Any]):
+            _ = observation
+            return None
+
+        def reduce(
+            self,
+            state: DemoState,
+            observation: dict[str, Any],
+            decision: Decision[Action],
+        ) -> DemoState:
+            _ = observation
+            _ = decision
+            return state
+
+    result = Engine(agent=_SubmitAgent(), budget=RuntimeBudget(max_steps=3)).run("compute")
+
+    assert result.records[0].action_results[0].output["fix_exit_code"] == 0
+    assert len(seen_messages) >= 2
+    second_call_text = "\n".join(str(message) for message in seen_messages[1])
+    assert "wrong number of function inputs" in second_call_text
+    assert "vul_exit_code" not in second_call_text
+    assert "fix_exit_code" not in second_call_text
+    assert "fix_stderr" not in second_call_text
+    assert "fix_stdout" not in second_call_text
+    assert "verification_scope" not in second_call_text
+    act_events = [
+        e for e in result.events if getattr(e.phase, "value", e.phase) == "ACT"
+    ]
+    act_event_text = "\n".join(str(e.payload) for e in act_events)
+    assert "wrong number of function inputs" in act_event_text
+    assert "vul_exit_code" not in act_event_text
+    assert "fix_exit_code" not in act_event_text
+    assert "fix_stderr" not in act_event_text
+    assert "fix_stdout" not in act_event_text
+    assert "verification_scope" not in act_event_text
+
+
+def test_engine_agent_can_block_disallowed_actions_before_execution():
+    executed = {"value": False}
+
+    class _RawResponseModel:
+        model = "qwen-plus"
+        provider = "openai-compatible"
+
+        def __init__(self):
+            self.qitos_harness_metadata = {
+                "family_preset": "qwen",
+                "tool_policy": {
+                    "primary_delivery": "api_parameter",
+                    "fallback_delivery": "prompt_injection",
+                    "native_tool_call_preferred": True,
+                },
+            }
+
+        def call_raw(self, messages):
+            _ = messages
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": None,
+                            "tool_calls": [
+                                {
+                                    "id": "call_blocked",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "blocked_tool",
+                                        "arguments": "{}",
+                                    },
+                                }
+                            ],
+                        },
+                        "finish_reason": "tool_calls",
+                    }
+                ],
+                "model": "qwen-plus",
+            }
+
+    class _BlockAgent(DemoAgent):
+        def __init__(self):
+            super().__init__()
+            self.llm = _RawResponseModel()
+
+            @tool(name="blocked_tool")
+            def blocked_tool() -> str:
+                executed["value"] = True
+                return "should not run"
+
+            self.tool_registry.register(blocked_tool)
+
+        def decide(self, state: DemoState, observation: dict[str, Any]):
+            _ = observation
+            if state.current_step > 0:
+                return Decision.final("done")
+            return None
+
+        def block_action(self, state: DemoState, action: Action) -> str | None:
+            _ = state
+            if action.name == "blocked_tool":
+                return "blocked for this state"
+            return None
+
+    result = Engine(agent=_BlockAgent(), budget=RuntimeBudget(max_steps=3)).run("compute")
+
+    assert executed["value"] is False
+    first_result = result.records[0].action_results[0]
+    assert first_result.status == "error"
+    assert first_result.error == "action_blocked"
+    assert first_result.metadata["error_category"] == "action_blocked"
+    assert "blocked for this state" in str(first_result.output)
+
+
+def test_engine_salvages_glm_text_tool_call_markup_before_parser():
+    class _GLMMarkupModel:
+        model = "GLM-5.1"
+        provider = "openai-compatible"
+
+        def __init__(self):
+            self.qitos_harness_metadata = {
+                "family_preset": "glm",
+                "tool_policy": {
+                    "primary_delivery": "api_parameter",
+                    "fallback_delivery": "prompt_injection",
+                    "native_tool_call_preferred": True,
+                },
+            }
+
+        def call_raw(self, messages):
+            _ = messages
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": (
+                                "<tool_call>add"
+                                "<arg_key>a</arg_key><arg_value>20</arg_value>"
+                                "<arg_key>b</arg_key><arg_value>22</arg_value>"
+                                "</tool_call>"
+                            ),
+                        },
+                        "finish_reason": "tool_calls",
+                    }
+                ],
+                "model": "GLM-5.1",
+            }
+
+    class _NeverParser:
+        def parse(self, raw_output, context=None):
+            _ = raw_output
+            _ = context
+            raise AssertionError("GLM text tool-call markup should bypass the parser")
+
+    class _Agent(DemoAgent):
+        def __init__(self):
+            super().__init__()
+            self.llm = _GLMMarkupModel()
+            self.model_parser = _NeverParser()
+
+        def decide(self, state: DemoState, observation: dict[str, Any]):
+            _ = observation
+            if state.current_step > 0:
+                return Decision.final("42")
+            return None
+
+    result = Engine(agent=_Agent(), budget=RuntimeBudget(max_steps=3)).run("compute")
+    assert result.state.final_result == "42"
+    record = result.records[0]
+    assert record.decision_source == "native_tool_calls"
+    assert record.native_tool_call_used is True
+    assert record.actions[0].name == "add"
+    assert record.actions[0].args == {"a": 20, "b": 22}
+    assert record.model_response["tool_calls"][0]["function"]["name"] == "add"
 
 
 def test_engine_native_tool_call_lane_falls_back_to_parser_on_bad_arguments():
