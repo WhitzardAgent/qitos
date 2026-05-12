@@ -20,13 +20,13 @@ This layer exists so one agent can switch model families without rewriting:
 
 ## The idea in one sentence
 
-A family preset is the research default for one model family.
+A family preset bundles the research defaults for one model family — the transport, protocol, fallback chain, tool delivery mode, and context settings that work best out of the box.
 
 It says:
 
-- which transport to use
-- which protocol to prefer
-- which fallback protocol chain to keep
+- which transport (the client that communicates with the model API) to use
+- which protocol (the output format contract between model and parser) to prefer
+- which fallback chain (the ordered list of protocols to try if the first one fails) to keep
 - how to deliver tool schemas
 - what context defaults should apply
 
@@ -88,7 +88,7 @@ So for Qwen:
 - but native tool calls are preferred before the text parser chain
 - and `xml_decision_v1 -> react_text_v1` remain the stable fallback path
 
-That difference matters because QitOS now treats "model family" and "transport" as separate concerns.
+That difference matters because QitOS now treats model family and transport as separate concerns.
 
 ## Why not just instantiate `OpenAICompatibleModel(...)` directly?
 

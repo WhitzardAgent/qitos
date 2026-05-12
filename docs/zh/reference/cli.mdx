@@ -5,7 +5,7 @@ description: "QitOS 的 qita 与 qit CLI 参考，包括最小 coding-agent demo
 
 QitOS 提供两个顶层 CLI：
 
-- `qita`：trace 检查与回放
+- `qita`：trace（运行记录）检查与回放
 - `qit`：demo、benchmark 与开发者工作流入口
 
 ## qit demo
@@ -38,7 +38,7 @@ qit demo minimal
 
 ## qita
 
-当你要检查 traced runs 时，使用 `qita`。
+当你要检查 traced runs（运行记录）时，使用 `qita`。
 
 ### `qita board`
 
@@ -68,7 +68,7 @@ qita replay --run ./runs/<run_id>
 qita export --run ./runs/<run_id> --html ./report.html
 ```
 
-导出独立 HTML artifact。
+导出独立 HTML artifact（持久化的输出文件）。
 
 ## qit bench
 
@@ -118,7 +118,7 @@ qit bench eval --input ./results/tau.jsonl --json
 qit bench replay --run ./runs/<run_id>
 ```
 
-把 benchmark run 直接桥接到 qita replay。
+把 benchmark run 直接桥接到 qita replay（回放）。
 
 ### `qit bench export`
 

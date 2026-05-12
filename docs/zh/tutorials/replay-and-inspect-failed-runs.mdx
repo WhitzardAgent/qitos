@@ -3,9 +3,9 @@ title: "教程：Replay 并检查失败 Run"
 description: "使用 qita board、replay、export 和 diff 来理解一次 official QitOS run 为什么会失败或发生变化。"
 ---
 
-这节课从“run 已经存在”开始。
+这节课从 run 已经存在开始。
 
-问题不再是“它跑完了吗”，而是“它为什么会这样运行，以及两次 run 到底差在哪里”。
+问题不再是它跑完了吗，而是它为什么会这样运行，以及两次 run 到底差在哪里。
 
 ## 第一步：打开 board
 
@@ -53,7 +53,7 @@ qita replay --run ./runs/<run_id>
 
 这通常能快速判断失败来源是：
 
-- protocol 不匹配
+- protocol（模型输出的格式契约）不匹配
 - tool 选择错误
 - context 饱和
 - benchmark 环境准备失败
@@ -79,7 +79,7 @@ v0.3 的 diff 视图聚焦在高价值字段：
 - first failure step
 - run config diff
 
-这正是回答“到底变了什么”的最快路径。
+这是回答到底变了什么的最快路径。
 
 ## 第五步：导出 artifact
 
@@ -89,7 +89,7 @@ v0.3 的 diff 视图聚焦在高价值字段：
 qit bench export --run ./runs/<run_id> --html ./reports/failed_run.html
 ```
 
-这样团队讨论会始终围绕同一份 trace artifact，而不是零散截图。
+这样团队讨论会始终围绕同一份 trace artifact（持久化的输出文件），而不是零散截图。
 
 ## Best-effort replay 提醒
 
@@ -99,8 +99,8 @@ QitOS 当前的 replay 是 **best effort**。
 
 - 研究调试
 - benchmark review
-- prompt / parser 回归分析
-- artifact 分享
+- prompt / parser（将原始模型输出解析为Decision的组件）回归分析
+- artifact（持久化的输出文件）分享
 
 但它不承诺远程 provider 或外部环境永远给出严格一致的输出。
 

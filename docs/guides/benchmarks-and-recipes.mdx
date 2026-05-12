@@ -5,11 +5,11 @@ description: "How QitOS separates framework capabilities, benchmark adapters, an
 
 # Benchmarks and Recipes
 
-QitOS now keeps three different layers separate on purpose.
+QitOS keeps three different layers separate by design.
 
 ## 1. Framework layer
 
-This is the reusable kernel:
+This is the reusable kernel (the core AgentModule + Engine execution loop):
 
 - `AgentModule + Engine`
 - `DesktopEnv`
@@ -22,15 +22,15 @@ Framework code should stay benchmark-agnostic.
 
 ## 2. Benchmark layer
 
-This is where dataset-specific integration belongs:
+Dataset-specific integration belongs here:
 
 - `qitos.benchmark.desktop` for the starter benchmark family
 - `qitos.benchmark.osworld` for the real OSWorld adapter path
 - benchmark-specific runtimes
 - benchmark-specific evaluators/scorers
-- benchmark-native task metadata and artifact handling
+- benchmark-native task metadata and artifact (a persistent output file or data record from a run) handling
 
-If something is about `test_all.json`, evaluator bridges, setup/postconfig, qcow2 boot inputs, or benchmark-native scoring, it belongs here.
+If something involves `test_all.json`, evaluator bridges, setup/postconfig, qcow2 boot inputs, or benchmark-native scoring, it belongs here.
 
 ## 3. Recipe layer
 
@@ -64,6 +64,6 @@ This split solves three real problems:
 - one baseline can be reused by examples, docs, and benchmark runners
 - future `qitos-recipes` extraction becomes a packaging move instead of a redesign
 
-That is the right direction for QitOS as a research-first framework.
+This separation keeps QitOS viable as a research-first framework.
 
 If you are adding a new benchmark family, continue with [Third-party benchmark integration](/guides/third-party-benchmark-integration).

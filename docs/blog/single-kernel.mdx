@@ -5,15 +5,15 @@ description: "Why examples, benchmarks, and production-style agents in QitOS all
 
 One of the strongest QitOS opinions is also one of the simplest:
 
-**a run should have one execution kernel.**
+**a run should have one execution kernel (the core AgentModule + Engine execution loop).**
 
 In practice, that means:
 
 - `AgentModule` defines policy
 - `Engine` owns execution
-- parsers, toolsets, critics, memory, and tracing attach to that runtime
+- parsers, toolsets, critics (modules that evaluate each step and can trigger retries or stops), memory, and tracing attach to that runtime
 
-We deliberately avoid introducing a hidden second loop for planning, benchmarking, or domain-specific workflows.
+We avoid introducing a hidden second loop for planning, benchmarking, or domain-specific workflows.
 
 ## Why this matters
 
@@ -23,7 +23,7 @@ When frameworks introduce multiple implicit runtimes, three things usually happe
 2. benchmark logic drifts away from day-to-day agent logic
 3. traces stop telling a coherent story
 
-QitOS tries to avoid all three.
+QitOS avoids all three.
 
 If a benchmark run, a Claude Code-style agent, and a security audit agent all use the same kernel, then:
 
@@ -34,13 +34,13 @@ If a benchmark run, a Claude Code-style agent, and a security audit agent all us
 
 ## Where specialization belongs
 
-QitOS does support specialization, but it wants specialization to live in the right places:
+QitOS does support specialization, but specialization should live in the right places:
 
 - state design
 - prompt policy
-- parser and protocol choice
+- parser (a component that converts raw model output into a typed Decision) and protocol (the output format the model is asked to follow) choice
 - tool composition
-- `reduce()` semantics
+- `reduce()` (a function that folds the current observation and decision into the next state) semantics
 
 This is why a domain-specific audit agent can still be an ordinary QitOS agent.
 

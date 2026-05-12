@@ -13,7 +13,7 @@ QitOS v0.5 now has one complete multimodal release path:
 - the `openai_cua_agent.py` baseline
 - qita visual inspection
 
-The point is no longer only “multimodal foundation”.
+The point is no longer just laying a multimodal foundation.
 The point is that one desktop / computer-use story now holds together end to end.
 
 ## The first wire target: OpenAI-compatible chat completions
@@ -48,7 +48,7 @@ Instead of teaching each model adapter and environment its own image schema, Qit
 - `GroundingMetadata`
 - `VisualTraceAsset`
 
-This gives us one place to define:
+These shared types provide one place to define:
 
 - what counts as an image input
 - how screenshot observations are represented
@@ -56,15 +56,15 @@ This gives us one place to define:
 
 ## Multimodal input does not replace parsers or protocols
 
-This is the most important design point.
+The key design point is this:
 
 In QitOS:
 
 - **multimodal input** answers: what did the model see?
-- **protocol + parser** answer: how must the model respond?
+- **protocol** (output format definition) **+ parser** (raw-output-to-Decision converter) answer: how must the model respond?
 - **tool schema** answers: what can the model call?
 
-So visual input works with the protocols you already know:
+Visual input works alongside the protocols you already know:
 
 - `react_text_v1`
 - `json_decision_v1`
@@ -72,13 +72,13 @@ So visual input works with the protocols you already know:
 - `terminus_*`
 - `minimax_tool_call_v1`
 
-That means we can combine:
+This means we can combine:
 
 - screenshot input
 - OpenAI-compatible multimodal wire format
 - existing JSON/XML/native-tool-call parsers
 
-without inventing a separate “vision-only runtime”.
+without inventing a separate vision-only runtime.
 
 ## Screenshot-first environment support
 
@@ -90,7 +90,7 @@ It provides a minimal, benchmark-agnostic path for:
 - optional DOM / OCR / accessibility hints
 - mock GUI control hooks
 
-This gives us a stable SDK surface before we plug in heavier GUI environments.
+The result is a stable SDK surface before heavier GUI environments are plugged in.
 
 ```python
 from qitos.kit import ScreenshotEnv
@@ -144,10 +144,10 @@ OSWorld and similar GUI benchmarks need more than image input:
 The current phase gives QitOS a clean foundation for that work:
 
 - multimodal messages are now first-class
-- screenshot observations now fit the Engine/trace/qita model
+- screenshot observations now fit the Engine/trace (structured run log)/qita model
 - GUI capability hooks now exist in the environment contract
 
-That means the next OSWorld adapter can be built **on top of** the kernel instead of beside it.
+So the next OSWorld adapter can be built **on top of** the kernel (the core AgentModule + Engine loop) instead of beside it.
 
 ## Current boundary
 

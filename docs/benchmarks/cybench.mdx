@@ -5,7 +5,7 @@ description: "Run CTF-style security evaluation tasks with CyBenchAdapter, Docke
 
 CyBench is a capture-the-flag (CTF) benchmark that tests an agent's ability to perform security analysis tasks: reverse engineering, web exploitation, forensics, and cryptography. Tasks run in isolated environments and are scored by comparing agent-submitted answers to known flag values.
 
-QitOS provides `CyBenchAdapter` to load task metadata from a local CyBench repository, `CyBenchRuntime` to prepare and tear down the task environment, and `score_cybench_submission` to compute all standard metrics.
+QitOS provides `CyBenchAdapter` to load task metadata from a local CyBench repository, `CyBenchRuntime` (a runtime that prepares and tears down the task environment) to manage the task environment lifecycle, and `score_cybench_submission` to compute all standard metrics.
 
 ## Scoring modes
 

@@ -3,23 +3,23 @@ title: "Model Family Matrix"
 description: "QitOS v0.4 内建 gold presets 的默认 harness 策略矩阵。"
 ---
 
-| Family | Transport | 默认 protocol | Fallback chain | Tool delivery | 说明 |
+| Family | Transport（通信客户端） | 默认 protocol（格式契约） | Fallback chain | Tool delivery | 说明 |
 |---|---|---|---|---|---|
 | Qwen | OpenAI-compatible | `json_decision_v1` | `xml_decision_v1 -> react_text_v1` | `api_parameter` | 如果 endpoint 返回 `tool_calls`，会优先走 native tool-call lane |
 | Kimi | OpenAI-compatible | `json_decision_v1` | `react_text_v1` | `api_parameter` | 在不明显改 prompt 的前提下切换到 Kimi |
-| MiniMax | OpenAI-compatible | `minimax_tool_call_v1` | `terminus_xml_v1 -> terminus_json_v1 -> json_decision_v1` | `api_parameter` | 保留 MiniMax 特有 parser 优势 |
+| MiniMax | OpenAI-compatible | `minimax_tool_call_v1` | `terminus_xml_v1 -> terminus_json_v1 -> json_decision_v1` | `api_parameter` | 保留 MiniMax 特有 parser（解析器）优势 |
 | `gpt-oss` | OpenAI-compatible | `json_decision_v1` | `react_text_v1` | `api_parameter` | 面向 open-weight / 第三方 compatible serving |
 | Gemma 4 | OpenAI-compatible | `json_decision_v1` | `react_text_v1` | `prompt_injection` | 面向 served Gemma 4，不绑定 Gemini SDK |
 
 ## 正确理解这张表
 
-这张表不是“模型排行榜”。
+这张表不是模型排行榜。
 
-它表达的是：当你在 QitOS 里选择某个 family preset 时，框架默认会采用什么模型侧契约。
+它表达的是：当你在 QitOS 里选择某个 family preset（预配置的模型家族默认值）时，框架默认会采用什么模型侧契约。
 
 如果你需要改某一项，请显式 override：
 
-- override protocol
+- override protocol（格式契约）
 - override base URL
 - override model name
 

@@ -33,9 +33,9 @@ All of the following can be passed to `agent.run(task, ...)`. This is the canoni
 
 | Argument | Type | Default | Description |
 |----------|------|---------|-------------|
-| `parser` | `Any` | `None` | Parser instance (e.g. `ReActTextParser`, `JsonDecisionParser`) forwarded to the `Engine` |
+| `parser` | `Any` | `None` | Parser (a component that converts raw model output into a typed Decision) instance (e.g. `ReActTextParser`, `JsonDecisionParser`) forwarded to the `Engine` |
 | `search` | `Any` | `None` | `Search` strategy instance for `branch` decisions (e.g. `DynamicTreeSearch`) |
-| `critics` | `List[Any] \| None` | `None` | List of `Critic` instances evaluated after each step |
+| `critics` | `List[Any] \| None` | `None` | List of `Critic` (a module that evaluates each step and can trigger retries or stops) instances evaluated after each step |
 | `stop_criteria` | `List[Any] \| None` | `None` | Custom stop criteria list; replaces the default `FinalResultCriteria` |
 | `history_policy` | `Any` | `None` | `HistoryPolicy` instance controlling message history window |
 
@@ -91,12 +91,12 @@ When you construct an `Engine` directly (or via `engine_kwargs`), these paramete
 | `validation_gate` | `StateValidationGate \| None` | default gate | Validates state before and after each phase |
 | `recovery_handler` | `RecoveryHandler \| None` | `None` | Callable `(state, phase, exc) -> None` invoked on recoverable errors |
 | `recovery_policy` | `RecoveryPolicy \| None` | `RecoveryPolicy()` | Controls retry behaviour and backoff |
-| `trace_writer` | `TraceWriter \| None` | `None` | Writes trace artifacts; set via `AgentModule.run(trace=True)` |
-| `parser` | `Parser[ActionT] \| None` | `None` | Converts raw LLM output to `Decision` |
+| `trace_writer` | `TraceWriter \| None` | `None` | Writes trace (a structured log of all run events and steps) artifacts; set via `AgentModule.run(trace=True)` |
+| `parser` | `Parser[ActionT] \| None` | `None` | Parser (a component that converts raw model output into a typed Decision); converts raw LLM output to `Decision` |
 | `stop_criteria` | `List[StopCriteria] \| None` | `[FinalResultCriteria()]` | Ordered stop criteria evaluated after each step |
 | `branch_selector` | `BranchSelector \| None` | `FirstCandidateSelector()` | Selects among `branch` candidates |
 | `search` | `Search \| None` | `None` | Search strategy for expanding and scoring branch candidates |
-| `critics` | `List[Critic] \| None` | `[]` | Critics evaluated after each step |
+| `critics` | `List[Critic] \| None` | `[]` | Critics (modules that evaluate each step and can trigger retries or stops) evaluated after each step |
 | `env` | `Env \| None` | `None` | Environment for observe/step/is_terminal lifecycle |
 | `history_policy` | `HistoryPolicy \| None` | `HistoryPolicy()` | Controls how history messages are assembled for model calls |
 | `hooks` | `List[EngineHook] \| None` | `[]` | Engine lifecycle hooks |

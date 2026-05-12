@@ -3,15 +3,15 @@ title: "Benchmarks"
 description: "Run desktop-starter, OSWorld, GAIA, Tau-Bench, and CyBench through one official QitOS benchmark path with normalized outputs and trace artifacts."
 ---
 
-QitOS treats benchmark work as part of the same runtime story as normal agent runs.
+Benchmark work in QitOS runs on the same runtime as normal agent runs.
 
-That means benchmark execution, replay, export, and result aggregation all sit on top of the same core primitives:
+Benchmark execution, replay, export, and result aggregation all sit on top of the same core primitives:
 
 - `Task`
-- `RunSpec`
-- `ExperimentSpec`
-- `TraceWriter`
-- `BenchmarkRunResult`
+- `RunSpec` (metadata describing how a single run was configured)
+- `ExperimentSpec` (metadata grouping runs into an experiment)
+- `TraceWriter` (writes structured run events and steps to disk)
+- `BenchmarkRunResult` (a normalized result row for one benchmark task)
 - `qita`
 
 ## Supported benchmarks
@@ -37,13 +37,13 @@ qit bench export ...
 
 The scripts under `examples/benchmarks/` still exist, but in v0.3 they are thin wrappers over the same result and trace contract.
 
-QitOS now also keeps benchmark work in three explicit layers:
+Benchmark work is organized in three explicit layers:
 
-- framework: shared runtime, env, harness, and qita capabilities
+- framework: shared runtime, env, harness (the model-facing wiring layer), and qita capabilities
 - benchmark: dataset/runtime/evaluator/scorer integration under `qitos.benchmark.*`
 - recipe: reproducible baseline methods under `qitos.recipes.*`
 
-That split is what lets starter benchmarks, real benchmark adapters, and reusable baselines coexist without leaking into `examples/`.
+This split lets starter benchmarks, real benchmark adapters, and reusable baselines coexist without leaking into `examples/`.
 
 ## Why this matters
 
@@ -57,7 +57,7 @@ Because all benchmark outputs share one shape, you can:
 
 ## What a benchmark run produces
 
-A benchmark run may produce two artifact layers:
+A benchmark run may produce two artifact layers (persistent output files from a run):
 
 1. a trace directory with `manifest.json`, `events.jsonl`, and `steps.jsonl`
 2. a JSONL file of normalized `BenchmarkRunResult` rows

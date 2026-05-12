@@ -11,7 +11,7 @@ description: "QitOS 中真正的 OSWorld benchmark adapter 路径，并与 deskt
 - **Benchmark 层**：`qitos.benchmark.osworld`
 - **Recipe 层**：`qitos.recipes.desktop.osworld_starter`
 
-这意味着 `osworld` 不再被 `desktop-starter` 这个 starter benchmark 名称隐含替代。
+`osworld` 不再被 `desktop-starter` 这个 starter benchmark 名称隐含替代。
 
 ## `qitos.benchmark.osworld` 负责什么
 
@@ -34,7 +34,7 @@ OSWorld benchmark family 只负责 benchmark-relevant 的内容：
 - `DesktopEnv`
 - multimodal observation 契约
 - qita screenshot timeline / replay / overlay
-- protocol / parser / native tool calling 的 family preset 所有权
+- protocol（模型输出的格式契约）/ parser（将原始模型输出解析为Decision的组件）/ native tool calling 的 family preset（预配置的模型家族默认值）所有权
 
 ## Canonical usage
 
@@ -65,4 +65,4 @@ qit bench run \
 
 ## 当前应该如何理解
 
-`osworld` 现在已经成为 QitOS 里的官方 benchmark family，但它应被理解为 benchmark adapter 层，而不是对 full OSWorld parity 的夸大宣称。
+`osworld` 现在已经成为 QitOS 里的官方 benchmark family，但它应被理解为 benchmark adapter 层，而不是对 full OSWorld parity 的过度宣称。

@@ -88,8 +88,8 @@ qit bench run \
 This command:
 
 - loads benchmark tasks
-- constructs `RunSpec` and `ExperimentSpec`
-- produces normalized `BenchmarkRunResult` rows
+- constructs `RunSpec` (metadata describing how a single run was configured) and `ExperimentSpec` (metadata grouping runs into an experiment)
+- produces normalized `BenchmarkRunResult` (a standardized result row for one benchmark task) rows
 
 Common benchmark names now include:
 

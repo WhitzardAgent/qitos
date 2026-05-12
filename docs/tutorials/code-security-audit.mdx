@@ -5,9 +5,9 @@ description: "Specialize the QitOS kernel into a reproducible defensive audit ag
 
 This final lesson answers the hardest question in the course:
 
-can the same kernel power a serious domain agent without collapsing into custom orchestration?
+can the same kernel (the core AgentModule + Engine execution loop) power a serious domain agent without collapsing into custom orchestration?
 
-The answer in QitOS is yes, but only if you put domain logic in the right places.
+The answer in QitOS is yes, but only if domain logic goes in the right places.
 
 You will study `examples/real/code_security_audit_agent.py`.
 
@@ -40,7 +40,7 @@ Judgment rules:
 - Prefer a small number of high-signal findings over a long noisy list.
 ```
 
-This is the final step in the course's prompt design ladder:
+This is the final step in the course's prompt design ladder (the progression from simple parser contracts to domain judgment):
 
 - lesson 1: parser contract
 - lesson 2: planner versus executor contracts
@@ -61,7 +61,7 @@ and a text-first OpenAI-compatible model harness.
 
 That stability is important. It shows that domain specialization does not require a new protocol by default.
 
-You should only move to a model-specific harness if the domain actually benefits from it. For example:
+You should only move to a model-specific harness (the wiring layer that connects a transport, parser, and protocol) if the domain actually benefits from it. For example:
 
 - use JSON/XML contracts when you require stricter machine-readable outputs
 - use a native tool-call parser when your provider produces structured tool calls more reliably than text
@@ -106,7 +106,7 @@ QitOS supports those options, but the default research path remains provider-agn
     - low-level repository inspection from the codebase profile of `CodingToolSet`
     - explicit progress tracking from `TaskToolSet`
 
-    This is how QitOS wants you to specialize agents:
+    This is how QitOS specializes agents:
 
     by composing the right environment, not by writing a new loop
   </Step>
@@ -149,7 +149,7 @@ QitOS supports those options, but the default research path remains provider-agn
 
     It needs:
 
-    - the recent audit trajectory
+    - the recent audit trajectory (the sequence of observations and decisions across steps)
     - the strongest candidate findings so far
   </Step>
 
@@ -173,7 +173,7 @@ QitOS supports those options, but the default research path remains provider-agn
 
     This is the domain-specialized version of the same core lesson:
 
-    traces keep the raw evidence
+    traces (structured logs of all run events and steps) keep the raw evidence
     state keeps the compact working memory
   </Step>
 
@@ -189,7 +189,7 @@ QitOS supports those options, but the default research path remains provider-agn
     - enough room for recent reasoning and evidence
     - not enough room for the model to keep re-reading every old search result verbatim
 
-    If you extend this into a much larger audit, the next upgrade is usually `CompactHistory`, not unbounded history.
+    If you extend this into a much larger audit, the next upgrade is usually `CompactHistory` (a history adapter that summarizes older context to stay within token limits), not unbounded history.
   </Step>
 
   <Step title="Choose memory only if it changes the audit outcome">
@@ -280,7 +280,7 @@ model and scaffolding should sometimes be designed together.
 
 If you keep forcing a pure JSON contract in that setting, the model may spend extra effort fighting its own native habits. The agent can still work, but the fit is worse.
 
-That is why QitOS treats these choices as a coordinated protocol decision rather than as isolated knobs:
+These choices form a coordinated protocol (the output format the model is asked to follow) decision rather than isolated knobs:
 
 - parser
 - tool schema style
@@ -314,7 +314,7 @@ So the point of `Whitzard` is not only that it is a stronger audit agent. It als
 
 when a model has a strong native tool-calling prior, you often get a better agent by adapting the scaffolding to the model instead of forcing every model through the same contract.
 
-That is one of the reasons QitOS keeps parser choice, tool schema choice, and prompt/protocol choice explicit and composable.
+QitOS keeps parser choice, tool schema choice, and prompt/protocol choice explicit and composable for exactly this reason.
 
 ## Full example
 

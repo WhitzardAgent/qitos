@@ -17,14 +17,14 @@ description: "使用同一个 Claude Code 风格 agent，在 Qwen、Kimi、MiniM
 
 ## v0.4 到底改了什么
 
-这个 example 不再把 transport 写死在代码里。
+这个 example 不再把 transport（与模型 API 通信的客户端）写死在代码里。
 
 它现在会先解析：
 
-1. family preset
+1. family preset（预配置的模型家族默认值）
 2. harness policy
 3. model transport
-4. parser 与 protocol
+4. parser（将原始模型输出解析为 Decision 的组件）与 protocol（模型输出的格式契约）
 
 因此，同一个 agent 现在可以切换：
 
@@ -124,10 +124,8 @@ python examples/real/claude_code_agent.py \
 - `parser`
 - `tool schema delivery`
 
-这些字段能帮助你确认：真正变化的是 harness policy，而不是 example 被暗中改写成另一套 agent。
+这些字段能帮助你确认：真正变化的是 harness（模型适配层）policy，而不是 example 被暗中改写成另一套 agent。
 
-## 这件事为什么重要
+## 为什么这很重要
 
-这就是 QitOS v0.4 的研究默认面。
-
-它让你在保持 agent 实现稳定的前提下，比较不同模型家族。
+这就是 QitOS v0.4 的研究默认面。它让你在保持 agent 实现稳定的前提下，比较不同模型家族。

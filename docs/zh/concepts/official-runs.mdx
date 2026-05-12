@@ -3,7 +3,7 @@ title: "Official Runs"
 description: "什么样的 run 才算 QitOS 官方 run，以及 best-effort replay 到底意味着什么。"
 ---
 
-在 QitOS 里，official run 不等于“跑完且留下了 trace”。它指的是一类结构足够完整、可以被 replay、diff、export 和复盘的研究 artifact。
+在 QitOS 里，official run 不等于跑完且留下了 trace。它指的是一类结构足够完整、可以被 replay、diff、export 和复盘的研究 artifact（持久化的输出文件）。
 
 ## 最低契约
 
@@ -15,11 +15,11 @@ description: "什么样的 run 才算 QitOS 官方 run，以及 best-effort repl
 - 能被 `qita` replay / export / compare
 - benchmark 场景下产出统一的 `BenchmarkRunResult`
 
-也就是说，它必须把模型身份、prompt protocol、parser、tool manifest、环境摘要、seed、package version、git SHA 和 benchmark 元信息一起记录下来。
+也就是说，它必须把模型身份、prompt protocol（模型输出的格式契约）、parser（将原始模型输出解析为 Decision 的组件）、tool manifest、环境摘要、seed、package version、git SHA 和 benchmark 元信息一起记录下来。
 
 ## 为什么它重要
 
-没有这层契约时，你经常会遇到这些问题：
+没有这层契约时，经常会遇到这些问题：
 
 - 两次 run 的 parser 到底是不是同一个？
 - tool surface 有没有悄悄变过？
@@ -27,7 +27,7 @@ description: "什么样的 run 才算 QitOS 官方 run，以及 best-effort repl
 - 这个失败还能不能之后 replay？
 - 两次 run 到底是配置不同，还是只是运气不同？
 
-QitOS 把这些问题视为 runtime 的一部分，而不是事后整理表格时再补。
+QitOS 把这些问题视为 runtime 的一部分，不是事后整理表格时再补。
 
 ## Best-effort replay
 
@@ -46,14 +46,14 @@ QitOS 当前提供的是 **research-grade best-effort replay**，不是严格字
 
 但它不会承诺远程模型服务、网页内容、外部工具或挑战环境永远返回相同结果。
 
-所以这套 replay 语义适合：
+所以这套 replay 语义适合用于：
 
 - 调试失败 run
 - 比较 prompt / parser / tool 回归
 - benchmark 复盘
 - 向协作者分享 artifact
 
-但不应被理解为“所有远程调用都能严格重现到 token 级别”。
+但不应被理解为所有远程调用都能严格重现到 token 级别。
 
 ## 官方入口
 
@@ -66,7 +66,7 @@ qit bench replay ...
 qit bench export ...
 ```
 
-`examples/benchmarks/` 依然保留，但在 v0.3 中它们已经是这条官方路径上的薄包装，而不是另一套独立框架。
+`examples/benchmarks/` 依然保留，但在 v0.3 中它们已经是这条官方路径上的薄包装，不是另一套独立框架。
 
 ## 继续阅读
 

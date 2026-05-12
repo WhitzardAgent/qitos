@@ -5,12 +5,12 @@ description: "Build a long-running coding agent and learn when to move from manu
 
 This is where the course moves from "pattern" to "operator workflow."
 
-You are still inside the same QitOS kernel, but now the agent must behave well over many steps inside a workspace. That raises new design questions:
+You are still inside the same QitOS kernel (the core AgentModule + Engine execution loop), but now the agent must behave well over many steps inside a workspace. This raises new design questions:
 
 - should you still build the tool surface by hand?
 - how much workflow discipline belongs in the system prompt?
 - when is `HistoryPolicy` enough?
-- when do you need `CompactHistory` or explicit memory?
+- when do you need `CompactHistory` (summarizing older context to stay within token limits) or explicit memory?
 
 The lesson studies `examples/real/claude_code_agent.py`.
 
@@ -23,7 +23,7 @@ The lesson studies `examples/real/claude_code_agent.py`.
 | State | Plan and cursor | Todos, mode, target file, verification command, optional doc URL |
 | History | Default behavior | Explicit `HistoryPolicy(max_messages=16, max_tokens=2800)` |
 | Memory | None | Still none by default, but now memory becomes a real design option |
-| Compaction | Not introduced | Introduced as an upgrade path for longer runs |
+| Compaction | Not introduced | Introduced as an upgrade path for longer runs -- summarizing older context to stay within token limits |
 
 ## The system prompt now defines workflow discipline
 
@@ -53,7 +53,7 @@ Final Answer: <what changed + verification proof>
 This is a major QitOS design lesson:
 
 - the runtime stays the same
-- the prompt can still become much more operational
+- the prompt can become much more operational
 
 ## The default lesson parser remains ReAct on purpose
 
@@ -65,7 +65,7 @@ model_parser=ReActTextParser()
 
 That is deliberate.
 
-You are learning how much of an agent's behavior can be changed through:
+You are learning how much of an agent's behavior can change through:
 
 - better state
 - better tools
@@ -77,13 +77,13 @@ without immediately changing the parser or protocol.
 
 Under the hood, the example still builds an `OpenAICompatibleModel` transport for the current endpoint.
 
-But v0.4 adds one new layer before that transport is created:
+But v0.4 adds one new layer before that transport (the adapter that sends requests to and receives responses from a model API) is created:
 
-- resolve a `FamilyPreset`
-- build a `HarnessPolicy`
-- choose protocol, parser, tool delivery mode, and context defaults
+- resolve a `FamilyPreset` (a reusable configuration bundle for a model family)
+- build a `HarnessPolicy` (the wiring layer that connects a transport, parser, and protocol)
+- choose protocol, parser (a component that converts raw model output into a typed Decision), tool delivery mode, and context defaults
 
-That means one example can switch across Qwen, Kimi, MiniMax, `gpt-oss`, and Gemma 4 without changing the agent implementation itself.
+One example can switch across Qwen, Kimi, MiniMax, `gpt-oss`, and Gemma 4 without changing the agent implementation itself.
 
 For most of those families, the harness is still text/JSON-first:
 
@@ -119,7 +119,7 @@ If you later need a family-specific protocol, QitOS can support it, but the pres
     )
     ```
 
-    This is the point in the course where presets become the right abstraction.
+    This is the point in the course where presets (reusable configuration bundles) become the right abstraction.
 
     `coding_tools(...)` gives you a coherent workspace bundle instead of forcing you to hand-register every file, shell, task, and notebook tool.
 
@@ -164,7 +164,7 @@ If you later need a family-specific protocol, QitOS can support it, but the pres
     - `todos` exposes a work queue that survives multiple steps
     - `mode` lets the agent remember whether it is planning or executing
     - `doc_url` adds optional external grounding without forcing browsing
-    - `scratchpad` keeps the recent compressed trajectory
+    - `scratchpad` keeps the recent compressed trajectory (the sequence of observations and decisions across steps)
 
     This is more advanced than lesson 2, but it is still disciplined:
 
@@ -190,7 +190,7 @@ If you later need a family-specific protocol, QitOS can support it, but the pres
         state.mode = str(state.metadata.get("mode"))
     ```
 
-    This is the long-running agent version of the same old lesson:
+    This is the long-running agent version of the same lesson:
 
     tools do work, but `reduce()` still decides what the agent should remember.
   </Step>
@@ -210,7 +210,7 @@ If you later need a family-specific protocol, QitOS can support it, but the pres
     - how many tokens can be spent on history
     - when older interaction context stops being sent verbatim
 
-    This is not the same as memory and not the same as compaction.
+    This is not the same as memory and not the same as compaction (summarizing older context to stay within token limits).
   </Step>
 
   <Step title="Learn the boundary between history, compaction, and memory">
@@ -296,7 +296,7 @@ By this point in the course, you should think in layers:
 - compaction is how old history is compressed
 - memory is what should outlive the immediate turn structure
 
-That separation is one of the most important QitOS design decisions.
+That separation is one of the central QitOS design decisions.
 
 ## Full example
 
@@ -308,7 +308,7 @@ The full runnable lesson lives at:
 
 Lesson 4 keeps the long-running structure, but changes the domain completely.
 
-That means you will learn how to specialize:
+You will learn how to specialize:
 
 - tool composition
 - prompt policy

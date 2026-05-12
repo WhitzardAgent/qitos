@@ -4,7 +4,7 @@ description: "从 PyPI 或源码安装 QitOS，并按需启用 models 与 benchm
 ---
 
 <Warning>
-QitOS 当前处于 **Alpha** 阶段。核心 `AgentModule + Engine` 内核、tracing 与规范化 examples 相对稳定；更高层 API 仍可能在版本间演进。用于生产时请固定版本。
+QitOS 当前处于 **Alpha** 阶段。核心 `AgentModule + Engine` kernel（执行内核）、tracing 与规范化 examples 相对稳定；更高层 API 仍可能在版本间演进。用于生产时请固定版本。
 </Warning>
 
 ## 环境要求
@@ -25,7 +25,7 @@ pip install qitos
 
 核心安装包含：
 
-- `AgentModule + Engine` 内核
+- `AgentModule + Engine` 内核（kernel，执行内核）
 - `qita` 可观测性工具
 - `kit` 工具箱模块
 
@@ -91,7 +91,7 @@ python -c "import qitos; print(qitos.__version__)"
 0.3.0
 ```
 
-也可以顺手验证最小 coding agent 与两个 CLI 都已经进入 PATH：
+也可以顺手验证最小 coding agent 和两个 CLI 是否已进入 PATH：
 
 ```bash
 qit demo minimal

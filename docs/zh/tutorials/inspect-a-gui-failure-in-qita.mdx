@@ -12,7 +12,7 @@ desktop 失败不能只看 parser。
 - 模型看到了什么
 - 它点击/输入了什么
 - grounding 是否存在
-- critic 是否拒绝了弱动作
+- critic（评估器，可批准、停止或重试当前步骤）是否拒绝了弱动作
 
 ```bash
 qita replay --run ./runs/<run_id>
@@ -22,5 +22,5 @@ qita replay --run ./runs/<run_id>
 
 - visual timeline
 - replay screenshot preview
-- action overlay
+- action（标准化工具调用）overlay
 - failure tags

@@ -5,12 +5,12 @@ description: "The canonical QitOS contract for adding a new benchmark family wit
 
 # Third-Party Benchmark Integration
 
-QitOS now treats benchmark integration as a first-class SDK surface.
+QitOS now treats benchmark integration as a first-class SDK surface (a stable, documented API contract for extensions).
 
 If you are adding a new benchmark family, the default shape is:
 
-- `qitos.benchmark.<family>` for dataset loading, benchmark runtime, evaluator, scorer, and benchmark-native artifacts
-- `qitos.recipes.*` for reproducible baseline methods
+- `qitos.benchmark.<family>` for dataset loading, benchmark runtime, evaluator, scorer, and benchmark-native artifacts (persistent output records from runs)
+- `qitos.recipes.*` for reproducible baseline methods (preset configurations that produce consistent results)
 - `examples/*` only for thin user-facing entrypoints
 
 Do **not** put benchmark-specific setup, scoring, or dataset logic into `qitos/core`, `DesktopEnv`, or random example files.
@@ -21,12 +21,12 @@ Do **not** put benchmark-specific setup, scoring, or dataset logic into `qitos/c
 
 Keep these concerns in the framework:
 
-- `AgentModule + Engine`
+- `AgentModule + Engine` (the kernel: the core execution loop)
 - `ActionSpace`
 - `EnvironmentAdapter`
 - `DesktopEnv`
 - provider-neutral tool and action vocabularies
-- family presets and harness ownership
+- family presets (configuration bundles for model families) and harness (adapter + protocol + toolset) ownership
 - qita replay, export, compare, screenshot timeline, and overlays
 
 Framework code must stay benchmark-agnostic.
@@ -41,9 +41,9 @@ Put these concerns in `qitos.benchmark.<family>`:
 - benchmark-specific `setup` / `postconfig`
 - evaluator bridge
 - scorer and failure taxonomy
-- benchmark-native artifact payloads
+- benchmark-native artifact (persistent output file) payloads
 
-If it depends on dataset files like `test_all.json`, benchmark-native VM/bootstrap inputs, or upstream evaluator semantics, it belongs here.
+If it depends on dataset files like `test_all.json`, benchmark-native VM/bootstrap inputs, or upstream evaluator (a component that judges task success against ground truth) semantics, it belongs here.
 
 ### Recipe layer
 
@@ -169,7 +169,7 @@ Your benchmark family should preserve:
 
 - `RunSpec`
 - `ExperimentSpec`
-- trace directory compatibility
+- trace (structured run log) directory compatibility
 - qita replay / export / compare
 
 If you add benchmark-native artifacts, make sure they can still be understood alongside:
@@ -205,7 +205,7 @@ When adding a benchmark family, update all of:
 - `CHANGELOG.md`
 - README progress/news when the change is user-visible
 
-That sync work is part of the implementation, not a follow-up.
+This sync work is part of the implementation, not a follow-up.
 
 ## Current reference examples
 
@@ -221,4 +221,4 @@ Use these in the repo as reference implementations:
 - `qitos.recipes.benchmarks.tau_bench`
 - `qitos.recipes.benchmarks.cybench`
 
-These are the canonical shapes future integrations should follow.
+These are the canonical shapes (standardized patterns) future integrations should follow.

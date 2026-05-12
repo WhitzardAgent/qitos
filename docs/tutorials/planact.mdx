@@ -3,11 +3,11 @@ title: "Lesson 2: PlanAct"
 description: "Add explicit planning to the ReAct kernel and learn how QitOS separates planner control from executor control."
 ---
 
-This lesson is the first time you deliberately bend the default loop.
+This lesson is the first time you bend the default loop.
 
 You are still building an ordinary QitOS agent, but now you will introduce:
 
-- a planning artifact in state
+- a planning artifact (a persistent output produced by a run) in state
 - a planner prompt separate from the execution prompt
 - a `decide()` override that only handles the planning boundary
 
@@ -78,7 +78,7 @@ Instead:
 
 The execution path **does** use `ReActTextParser`.
 
-That means lesson 2 already teaches a subtle but important QitOS idea:
+Lesson 2 already teaches a subtle but important QitOS idea:
 
 different phases of the same agent can use different parsing contracts, as long as the control boundary is explicit.
 
@@ -110,7 +110,7 @@ Why keep the same harness?
         scratchpad: list[str] = field(default_factory=list)
     ```
 
-    This is the first time the course makes a hidden reasoning artifact explicit.
+    This is the first time the course makes a hidden reasoning artifact (a persistent output produced by a run) explicit.
 
     Why store the plan in state?
 
@@ -145,7 +145,7 @@ Why keep the same harness?
 
     This is the right QitOS move:
 
-    planning becomes a named artifact with a dedicated parser, not an unstructured paragraph in the main scratchpad.
+    planning becomes a named artifact with a dedicated parser (a component that converts raw model output into a typed Decision), not an unstructured paragraph in the main scratchpad.
   </Step>
 
   <Step title="Use decide only as the planning gate">
@@ -166,7 +166,7 @@ Why keep the same harness?
 
     `prompt -> ReActTextParser -> Decision -> tool execution`
 
-    So lesson 2 is not about replacing the runtime. It is about adding one explicit control boundary to it.
+    Lesson 2 is not about replacing the runtime. It is about adding one explicit control boundary to it.
   </Step>
 
   <Step title="Bind execution prompt and parser clearly">
@@ -284,7 +284,7 @@ This lesson is showing the opposite design:
 - a plan is just another state artifact
 - execution is still the normal Engine path
 
-That is one of the deepest QitOS ideas.
+This is one of the deepest QitOS ideas.
 
 ## Full example
 
@@ -296,12 +296,12 @@ The full runnable lesson lives at:
 
 Lesson 3 keeps the same kernel again, but now the agent becomes operationally long-running.
 
-That means you will finally introduce:
+You will finally introduce:
 
-- preset toolsets instead of manual wiring
+- preset (a reusable configuration bundle) toolsets instead of manual wiring
 - a workflow-oriented system prompt
 - explicit history control
-- the point where context compaction and memory become real design questions
+- the point where context compaction (summarizing older context to stay within token limits) and memory become real design questions
 
 <CardGroup cols={2}>
   <Card title="Next lesson: Claude Code-style agent" icon="rectangle-terminal" href="/tutorials/claude-code">

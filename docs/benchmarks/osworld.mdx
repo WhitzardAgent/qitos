@@ -5,13 +5,13 @@ description: "The benchmark-specific OSWorld adapter path in QitOS, distinct fro
 
 # OSWorld Benchmark Adapter
 
-QitOS now separates three layers clearly:
+QitOS separates three layers:
 
 - **framework**: `DesktopEnv`, `ActionSpace`, `EnvironmentAdapter`, qita visual debugging
 - **benchmark**: `qitos.benchmark.osworld`
 - **recipe**: `qitos.recipes.desktop.osworld_starter`
 
-That means `osworld` is no longer implied by the `desktop-starter` benchmark name.
+So `osworld` is no longer implied by the `desktop-starter` benchmark name.
 
 ## What lives in `qitos.benchmark.osworld`
 
@@ -34,7 +34,7 @@ These remain framework-level:
 - `DesktopEnv`
 - multimodal observation contracts
 - qita screenshot timeline / replay / overlay
-- family preset ownership of protocol/parser/native tool calling
+- family preset ownership of protocol, parser, and native tool calling
 
 ## Canonical usage
 

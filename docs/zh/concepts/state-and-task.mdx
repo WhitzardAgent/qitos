@@ -5,7 +5,7 @@ description: "理解 QitOS 中的 StateSchema、Task、TaskBudget、TaskResource
 
 ## StateSchema
 
-`StateSchema` 是 agent 强类型状态的基类。一次 run 中，所有 hooks 都围绕它读取与写入，它是整个运行期间的单一事实来源。
+`StateSchema` 是 agent 强类型状态的基类。一次 run 中，所有 hooks 都围绕它读取与写入，它是整个运行期间的单一事实来源（single source of truth）。
 
 ### 内置字段
 
@@ -106,9 +106,9 @@ result = agent.run(task, return_state=True)
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
-| `id` | `str` | 唯一任务 ID，会写入 trace artifacts。 |
+| `id` | `str` | 唯一任务 ID，会写入 trace artifacts（持久化的输出文件）。 |
 | `objective` | `str` | 传给 `init_state` 的任务文本。 |
-| `resources` | `list[TaskResource]` | 任务依赖的文件、目录、URL 或 artifacts。 |
+| `resources` | `list[TaskResource]` | 任务依赖的文件、目录、URL 或 artifacts（持久化的输出文件）。 |
 | `env_spec` | `EnvSpec \| None` | 声明 environment 类型与能力。 |
 | `constraints` | `dict[str, Any]` | 传给 agent 的自由约束信息。 |
 | `success_criteria` | `list[str]` | 在 `TaskResult` 中记录的人类可读成功标准。 |
@@ -148,17 +148,17 @@ TaskResource(kind="dir", path="output/", required=False)
 # 远程 URL
 TaskResource(kind="url", uri="https://arxiv.org/abs/2501.12345", required=True)
 
-# 来自先前运行的 artifact
+# 来自先前运行的 artifact（持久化的输出文件）
 TaskResource(kind="artifact", path="runs/agent_20260407/steps.jsonl")
 ```
 
-合法的 `kind` 值包括：`"file"`、`"dir"`、`"url"`、`"artifact"`。
+合法的 `kind` 值包括：`file`、`dir`、`url`、`artifact`。
 
 ---
 
 ## Decision
 
-`Decision` 表示一次 decide step 的输出，也就是 agent 下一步想做什么。它有四种模式，每种模式都对应一个工厂方法。
+`Decision` 表示一次 decide step 的输出（decision，agent 每步的结构化决策），也就是 agent 下一步想做什么。它有四种模式，每种模式都对应一个工厂方法。
 
 <Tabs>
   <Tab title="act">

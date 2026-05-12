@@ -23,7 +23,7 @@ The engine-level semantic output of the agent loop. A decision may contain actio
 
 ### Action
 
-A normalized tool invocation selected by the agent and executed by the runtime.
+A normalized tool invocation (normalized meaning the call is validated, typed, and expressed in a canonical format independent of the original model output) selected by the agent and executed by the runtime.
 
 ## Reproducibility terms
 
@@ -51,7 +51,7 @@ The serialized description of the tool surface exposed to the run. It is part of
 
 ### Prompt protocol
 
-The output/input contract expected by the model path, such as ReAct text, JSON, XML, or a model-specific harness.
+The format contract between the model and the parser — it defines what structure the model output should have (e.g., ReAct text, JSON, XML, or a model-specific harness) so the parser can reliably extract a `Decision`.
 
 ### Parser
 
@@ -59,7 +59,7 @@ The component that converts raw model output into a `Decision`. The parser must 
 
 ### Context compaction
 
-Any strategy used to shrink accumulated context while keeping a long-running run operational. QitOS records compaction telemetry in the trace.
+Any strategy used to shrink accumulated context while keeping a long-running run operational. QitOS records compaction telemetry (structured metrics about what was compacted, when, and how much context was recovered) in the trace.
 
 ## Inspection terms
 

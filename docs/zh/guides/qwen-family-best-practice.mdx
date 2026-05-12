@@ -3,7 +3,7 @@ title: "Qwen 家族最佳实践"
 description: "如何在 QitOS 中用 native tool-call lane 运行 Qwen 与 qwen-plus。"
 ---
 
-在 QitOS 里，Qwen 已经不再只是“默认走 JSON”的普通家族。
+在 QitOS 里，Qwen 已经不再只是默认走 JSON 的普通家族。
 
 对于 OpenAI-compatible 的 Qwen endpoint，QitOS 现在优先采用这条链路：
 
@@ -16,29 +16,29 @@ fallback: json_decision_v1 -> xml_decision_v1 -> react_text_v1
 
 ## v0.4 之后实际改变了什么
 
-现在 `qwen` family preset 会把三件事绑定在一起：
+现在 `qwen` family preset（预配置，预配置的模型家族默认值）会把三件事绑定在一起：
 
 - tool schema 默认通过 `api_parameter` 交付
 - 如果 endpoint 返回了 `tool_calls`，优先走 native lane
 - 文本协议链继续保留，作为稳定 fallback
 
-所以 `default_protocol` 仍然是 `json_decision_v1`，但对 Qwen 来说，它现在更准确的角色是**文本 fallback**，而不是最优路径本身。
+所以 `default_protocol`（模型输出的格式契约）仍然是 `json_decision_v1`，但对 Qwen 来说，它现在更准确的角色是**文本 fallback**，而不是最优路径本身。
 
 ## 什么时候会命中 native lane
 
 QitOS 会在以下条件同时满足时优先走 native lane：
 
-- 模型被解析为 `qwen` family preset
-- harness metadata 中 `native_tool_call_preferred = true`
+- 模型被解析为 `qwen` family preset（预配置）
+- harness（模型适配层，负责将协议、传输、工具交付等组合在一起）metadata 中 `native_tool_call_preferred = true`
 - OpenAI-compatible 响应里确实带有 `tool_calls`
 
 只要其中任意一个条件不满足，QitOS 就会自动回退到原来的 parser chain。
 
 ## 为什么不直接照搬 Qwen-Agent 的 sentinel prompt
 
-官方 Qwen-Agent 为“不提供原生 tool channel 的 Qwen chat 接口”设计了一套专门的 function-calling prompt。
+官方 Qwen-Agent 为不提供原生 tool channel 的 Qwen chat 接口设计了一套专门的 function-calling prompt。
 
-QitOS 在 OpenAI-compatible 的 Qwen 路径里**不直接照搬**它，原因是：
+QitOS 在 OpenAI-compatible 的 Qwen 路径里**没有照搬**它，原因是：
 
 - OpenAI-compatible serving 已经提供结构化的 `tool_calls`
 - 保留结构化信息比先序列化回文本再解析更干净
@@ -46,8 +46,8 @@ QitOS 在 OpenAI-compatible 的 Qwen 路径里**不直接照搬**它，原因是
 
 换句话说：
 
-- Qwen-Agent 解决的是更一般的 “Qwen chat interface” 问题
-- QitOS 这里解决的是 “同一个 harness 层里如何优先用好 OpenAI-compatible served Qwen” 的问题
+- Qwen-Agent 解决的是更一般的 Qwen chat interface 问题
+- QitOS 这里解决的是同一个 harness 层里如何优先用好 OpenAI-compatible served Qwen 的问题
 
 ## 推荐的 `qwen-plus` 运行方式
 
@@ -81,4 +81,4 @@ python examples/real/claude_code_agent.py \
 - `native_tool_call_used`
 - `native_tool_call_fallback_reason`
 
-如果 endpoint 没有返回原生 tool calls，QitOS 仍然会继续运行，但 trace 中会明确告诉你它为什么回退到了 parser lane。
+如果 endpoint 没有返回原生 tool calls，QitOS 仍然会继续运行，但 trace（运行记录）中会明确告诉你它为什么回退到了 parser（将原始模型输出解析为 Decision 的组件）lane。

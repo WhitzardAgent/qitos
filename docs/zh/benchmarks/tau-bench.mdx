@@ -10,7 +10,7 @@ QitOS 提供：
 - `TauBenchAdapter`
 - 自包含运行时 `TauRuntimeEnv`
 
-因此你不必额外安装上游 `tau_bench` 包，就可以直接运行该 benchmark。
+因此你不必额外安装上游 `tau_bench` 包，就可以直接运行该 benchmark。`TauRuntimeEnv` 提供了自包含的运行时环境。
 
 ## 可用环境
 
@@ -69,7 +69,7 @@ qit bench eval --input results/tau_retail_test.jsonl --json
 qita board --logdir runs
 ```
 
-`tau_bench_eval.py` 依然保留，但它现在只是同一套官方结果结构与 trace 契约上的 benchmark wrapper。
+`tau_bench_eval.py` 依然保留，但它现在只是同一套官方结果结构与 trace（运行记录）契约上的 benchmark wrapper。
 
 运行单个任务：
 
@@ -103,14 +103,9 @@ python examples/benchmarks/tau_bench_eval.py \
 
 `TauRuntimeEnv` 提供了最小可替换的 `reset / step / calculate_reward` 接口。reward 通过重放 ground-truth action sequence 并比较最终状态哈希来计算。
 
-Agent 只有在：
+Agent 只有在工具调用引起了正确状态转移、且文本回复中包含了要求的输出值时，才会得到 `1.0`。
 
-- 工具调用引起了正确状态转移
-- 文本回复中包含了要求的输出值
-
-时，才会得到 `1.0`。
-
-## 如何检查结果
+## 检查结果
 
 典型结果 JSONL 会记录：
 

@@ -5,14 +5,14 @@ description: "Use qita's visual timeline and replay preview to understand a fail
 
 # Inspect a GUI Failure in qita
 
-Desktop failures are usually not “just parser failures”.
+Desktop failures are rarely just parser failures (a parser converts raw model output into a typed Decision). Usually the cause is more nuanced.
 
 You need to answer:
 
 - what the model saw
 - what it tried to click or type
 - whether grounding existed
-- whether the critic rejected a weak action
+- whether the critic (a module that evaluates each step and can trigger retries or stops) rejected a weak action
 
 ## Open the run
 
@@ -58,4 +58,4 @@ Then look at benchmark output / manifest summaries and ask which bucket fits bes
 - `execution_environment_failure`
 - `stop_completion_failure`
 
-This keeps GUI debugging tied to a benchmark-grade taxonomy instead of “the model looked wrong”.
+This keeps GUI debugging tied to a benchmark-grade taxonomy instead of vague impressions.

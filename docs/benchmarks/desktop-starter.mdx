@@ -5,9 +5,9 @@ description: "The official v0.5 desktop benchmark path for OSWorld-compatible st
 
 # Desktop Starter Benchmark
 
-`desktop-starter` is the first official multimodal starter benchmark family in QitOS.
+`desktop-starter` is the first official multimodal starter benchmark (a standardized evaluation suite for measuring agent performance) family in QitOS.
 
-It is intentionally scoped as an **OSWorld-compatible starter**:
+It is scoped as an **OSWorld-compatible starter**:
 
 - desktop / computer-use task structure
 - screenshot + a11y + OCR + UI candidates
@@ -47,7 +47,7 @@ Each result row includes the standard benchmark fields plus desktop-specific met
 - success / stop reason
 - step count
 - action count
-- critic count
+- critic (a module that evaluates each step and can trigger retries or stops) count
 - token usage
 - latency
 - failure tags
@@ -68,7 +68,7 @@ The desktop starter benchmark is the first multimodal path where all of these no
 - benchmark tasks
 - baseline agent
 - unified runner output
-- trace artifacts
+- trace artifacts (persistent output files from a run)
 - qita visual inspection
 - docs/tutorial story
 

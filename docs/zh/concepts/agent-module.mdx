@@ -3,7 +3,7 @@ title: "Agent Module"
 description: "AgentModule 是策略层，用来定义 agent 如何初始化状态、构造 prompt、做决策，并把观测归约到下一步状态。"
 ---
 
-`AgentModule` 是你定义 agent 行为时要实现的核心契约。它负责 agent “如何思考”的全部内容：状态初始化、prompt 构造、决策逻辑以及状态归约，但它**不执行循环本身**。执行循环由 [Engine](/zh/concepts/engine) 负责。
+`AgentModule` 是你定义 agent 行为时要实现的核心契约。它负责 agent 如何思考的全部内容：状态初始化、prompt 构造、决策逻辑以及状态归约，但它**不执行循环本身**。执行循环由 [Engine](/zh/concepts/engine)（执行内核）负责。
 
 ## 泛型参数
 
@@ -17,8 +17,8 @@ class AgentModule(ABC, Generic[StateT, ObservationT, ActionT]):
 | 参数 | 含义 |
 |---|---|
 | `StateT` | 你的强类型状态类，必须继承 `StateSchema` |
-| `ObservationT` | Engine 传给各个 hooks 的 observation 类型 |
-| `ActionT` | `decide` 产生的 action 类型 |
+| `ObservationT` | Engine 传给各个 hooks 的 observation（每步后 agent 接收的结构化观察结果）类型 |
+| `ActionT` | `decide` 产生的 action（标准化工具调用）类型 |
 
 一个完整的强类型声明通常长这样：
 
@@ -44,7 +44,7 @@ def init_state(self, task: str, **kwargs: Any) -> StateT:
 
 ### `reduce`（必需）
 
-每次 action cycle 结束后调用。它把“旧状态 + 新观测 + 本步决策”归约成“下一步状态”。这就是 agent 从执行结果中学习的地方。
+每次 action cycle 结束后调用。它把旧状态 + 新观测 + 本步决策归约成下一步状态——这是 agent 从执行结果中学习的地方，也是 reduce（将观察和决策归约回状态的钩子）的核心机制。
 
 ```python
 def reduce(
@@ -202,8 +202,8 @@ print(result.state.stop_reason)
 | `return_state` | `bool` | 返回 `EngineResult`，而不是 `state.final_result` |
 | `trace` | `bool \| TraceWriter` | `True` 自动启用 trace，`False` 关闭，或直接传入 `TraceWriter` |
 | `trace_logdir` | `str` | trace 输出目录，默认 `"./runs"` |
-| `parser` | `Parser` | 与 prompt 格式匹配的输出 parser |
-| `critics` | `list[Critic]` | 每步执行后评估的 critics |
+| `parser` | `Parser` | 与 prompt 格式匹配的输出 parser（将原始模型输出解析为 Decision 的组件） |
+| `critics` | `list[Critic]` | 每步执行后评估的 critics（后置评估器，可批准、停止或重试当前步骤） |
 | `stop_criteria` | `list[StopCriteria]` | 除默认条件外的附加停止条件 |
 
 <Tip>
@@ -218,7 +218,7 @@ print(result.state.stop_reason)
 AgentModule(
     tool_registry=registry,   # ToolRegistry：agent 可用的工具
     llm=model,                # LLM client，供 Engine 默认模型路径使用
-    model_parser=parser,      # 把原始模型输出解析成 Decision 的 parser
+    model_parser=parser,      # 把原始模型输出解析成 Decision 的 parser（将原始模型输出解析为 Decision 的组件）
     memory=memory,            # 跨步或跨 run 的 memory 实现
     history=history,          # 单次 run 内的 history 实现
     **config,                 # 额外配置，保存在 self.config

@@ -3,7 +3,7 @@ title: "Qwen family best practice"
 description: "How to run Qwen and qwen-plus with the native tool-call lane in QitOS."
 ---
 
-Qwen in QitOS is no longer just "JSON-first by default".
+Qwen in QitOS is no longer just JSON-first by default.
 
 For OpenAI-compatible Qwen endpoints, QitOS now prefers this order:
 
@@ -12,27 +12,27 @@ native tool calls -> Decision.act(...) -> tool execution
 fallback: json_decision_v1 -> xml_decision_v1 -> react_text_v1
 ```
 
-That matches the spirit of Qwen-Agent: function calling is the preferred lane when the backend exposes it cleanly.
+This matches the spirit of Qwen-Agent: function calling is the preferred lane when the backend exposes it cleanly.
 
 ## What changed in v0.4
 
-The `qwen` family preset now keeps three ideas together:
+The `qwen` family preset (a configuration bundle that maps the Qwen model family to its default protocol, adapter, and tool delivery) now keeps three ideas together:
 
 - tool schemas are delivered through `api_parameter`
 - native tool calls are preferred when the endpoint returns `tool_calls`
 - text protocols remain available as a stable fallback chain
 
-So the default protocol is still `json_decision_v1`, but for Qwen it is now the **text fallback**, not the ideal path itself.
+The default protocol (output format the model is expected to follow) is still `json_decision_v1`, but for Qwen it is now the **text fallback**, not the ideal path itself.
 
 ## When the native lane is used
 
 QitOS will prefer the native lane when all of these are true:
 
 - the model resolves to the `qwen` family preset
-- the harness metadata says `native_tool_call_preferred = true`
+- the harness (the configured adapter + protocol + toolset combination) metadata says `native_tool_call_preferred = true`
 - the OpenAI-compatible response actually contains `tool_calls`
 
-If any of those conditions fail, QitOS falls back to the normal parser chain.
+If any of those conditions fail, QitOS falls back to the normal parser (raw-output-to-Decision converter) chain.
 
 ## Why QitOS does not copy the Qwen-Agent sentinel prompt
 
@@ -44,10 +44,10 @@ QitOS does **not** copy that prompt format directly for the OpenAI-compatible Qw
 - preserving that structure is cleaner than serializing it back into text
 - it keeps the runtime generic enough for other families that also expose native tool calls
 
-In other words:
+Put differently:
 
-- Qwen-Agent solves the more general "Qwen chat interface" problem
-- QitOS solves the "OpenAI-compatible served Qwen inside one reusable harness layer" problem
+- Qwen-Agent solves the more general Qwen chat interface problem
+- QitOS solves the OpenAI-compatible served Qwen inside one reusable harness layer problem
 
 ## Recommended `qwen-plus` example
 
@@ -74,11 +74,11 @@ You should expect the harness summary to show:
 
 Inspect the run in `qita` and check:
 
-- `family preset`
-- `prompt protocol`
+- `family preset` (configuration bundle for a model family)
+- `prompt protocol` (output format definition)
 - `tool delivery`
-- `decision_source`
-- `native_tool_call_used`
+- `decision_source` (how the Decision was produced)
+- `native_tool_call_used` (whether the native tool-call path was taken)
 - `native_tool_call_fallback_reason`
 
-If the endpoint did not return native tool calls, QitOS will still run, but you should see the fallback reason and the parser lane in the trace.
+If the endpoint did not return native tool calls, QitOS will still run, but you should see the fallback reason and the parser lane in the trace (the structured run log).

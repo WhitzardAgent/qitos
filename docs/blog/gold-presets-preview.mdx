@@ -5,19 +5,19 @@ description: "QitOS v0.4 moves from one-off provider wiring to reusable family-l
 
 QitOS started with a simple idea:
 
-one kernel, many agents.
+one kernel (the core AgentModule + Engine execution loop), many agents.
 
 v0.4 extends that idea to model families.
 
 Instead of rewriting examples every time we try a new endpoint, we now resolve:
 
-- a family preset
-- a harness policy
-- a transport adapter
-- a protocol and parser pair
+- a family preset (a reusable configuration bundle for a model family)
+- a harness policy (the wiring layer that connects a transport, parser, and protocol)
+- a transport adapter (the adapter that sends requests to and receives responses from a model API)
+- a protocol (the output format the model is asked to follow) and parser (a component that converts raw model output into a typed Decision) pair
 
-This matters because reproducible agent research is not only about trace files.
+Reproducible agent research is not only about trace files.
 
 It is also about keeping the model-facing contract visible and stable.
 
-That is why the v0.4 flagship example can switch across Qwen, Kimi, MiniMax, `gpt-oss`, and Gemma 4 without changing the agent implementation itself.
+The v0.4 flagship example can switch across Qwen, Kimi, MiniMax, `gpt-oss`, and Gemma 4 without changing the agent implementation itself.

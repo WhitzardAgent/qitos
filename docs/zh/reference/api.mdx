@@ -15,7 +15,7 @@ from qitos import AgentModule, Engine, Decision, ...
 
 <Accordion title="AgentModule">
 
-`AgentModule` 是 QitOS 的策略层。你通过继承它来定义 agent 的 state 形状、system prompt、decision logic 与 reduction rules；真正的执行循环由 `Engine` 驱动。
+`AgentModule` 是 QitOS 的策略层。你通过继承它来定义 agent 的 state 形状、system prompt、decision logic 与 reduction rules；真正的执行循环由 `Engine`（执行内核）驱动。
 
 ```python
 class AgentModule(ABC, Generic[StateT, ObservationT, ActionT])
@@ -39,7 +39,7 @@ def __init__(
 |---|---|---|
 | `tool_registry` | `ToolRegistry \| None` | agent 可调用的工具注册表 |
 | `llm` | `Any` | 用于默认模型决策路径的 LLM callable |
-| `model_parser` | `Any` | 把原始模型输出解析成 `Decision` 的 parser |
+| `model_parser` | `Any` | parser（将原始模型输出解析为Decision的组件），把输出解析成 `Decision`（agent每步的结构化决策） |
 | `memory` | `Memory \| None` | 可选 memory adapter |
 | `history` | `History \| None` | 可选 history adapter |
 | `**config` | `Any` | 额外关键字参数，保存在 `self.config` |
@@ -70,7 +70,7 @@ def reduce(
 ) -> StateT
 ```
 
-把当前 observation 与 decision 折叠进下一步 state。
+把当前 observation（每步后agent接收的结构化观察结果）与 decision（agent每步的结构化决策）折叠进下一步 state。
 
 </Accordion>
 
@@ -104,7 +104,7 @@ def decide(
 ) -> Decision[ActionT] | None
 ```
 
-自定义决策 hook。返回 `Decision` 时跳过默认模型调用；返回 `None` 时继续走 Engine 的模型路径。
+自定义决策 hook。返回 `Decision`（agent每步的结构化决策）时跳过默认模型调用；返回 `None` 时继续走 Engine 的模型路径。
 
 </Accordion>
 
@@ -202,7 +202,7 @@ class EngineResult(Generic[StateT]):
 
 <Accordion title="Decision">
 
-`Decision` 是 decide phase 的规范输出。推荐用工厂方法构造：
+`Decision` 是 decide phase 的规范输出（agent每步的结构化决策）。推荐用工厂方法构造：
 
 ```python
 Decision.act(...)
@@ -213,7 +213,7 @@ Decision.branch(...)
 
 四种 mode 分别对应：
 
-- `"act"`：执行动作
+- `"act"`：执行动作（action，标准化工具调用）
 - `"final"`：给出最终答案并结束
 - `"wait"`：本步不执行动作
 - `"branch"`：提出多个候选决策

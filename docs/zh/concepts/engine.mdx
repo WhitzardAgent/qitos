@@ -3,7 +3,7 @@ title: "Engine"
 description: "Engine 是执行内核，负责驱动 agent 循环、执行 actions、管理 tracing，并检查停止条件。"
 ---
 
-`Engine` 是 QitOS 所有 agent 工作流共享的执行内核。它运行 step loop，协调 `AgentModule` 的 hooks，分发工具调用，执行 critics，检查 stop conditions，并写出 trace artifacts。只有当你需要比 `agent.run()` 更细粒度的控制时，才会直接和它交互。
+`Engine` 是 QitOS 所有 agent 工作流共享的执行内核（kernel）。它运行 step loop，协调 `AgentModule` 的 hooks，分发工具调用，执行 critics，检查 stop conditions，并写出 trace artifacts。只有当你需要比 `agent.run()` 更细粒度的控制时，才会直接和它交互。
 
 <Note>
   QitOS 强制遵守 **single-kernel rule**：一次 run 只有一个 `Engine`。parser、critic、memory adapter、toolkit 等扩展都挂接在这条主流水线上，而不是再引入第二个执行循环。
@@ -21,7 +21,7 @@ prepare → decide → act → reduce → critics → check_stop → trace
 2. **decide**：先调用 `agent.decide(state, observation)`；若返回 `None`，再走 Engine 的默认模型调用路径。
 3. **act**：把 `Decision.actions` 中的工具调用交给 `ToolRegistry` 执行。
 4. **reduce**：`agent.reduce(state, observation, decision)` 用新的 observation 更新 state。
-5. **critics**：所有已注册 `Critic` 在此步后评估当前结果，必要时可 stop 或 retry。
+5. **critics**：所有已注册 `Critic`（后置评估器，可批准、停止或重试当前步骤）在此步后评估当前结果，必要时可 stop 或 retry。
 6. **check_stop**：检查 budget、`FinalResultCriteria`、`agent.should_stop()` 以及自定义 `StopCriteria`。
 7. **trace**：把本步的 step record 与 runtime events 写入 `TraceWriter`。
 
@@ -46,11 +46,11 @@ engine = Engine(
 |---|---|---|
 | `agent` | `AgentModule` | **必需**。要执行的策略模块。 |
 | `budget` | `RuntimeBudget \| None` | 步数、时间与 token 限制。默认 `RuntimeBudget(max_steps=10)`。 |
-| `parser` | `Parser \| None` | 把原始模型输出解析成 `Decision`，必须与 prompt 格式匹配。 |
-| `critics` | `list[Critic] \| None` | 每步后执行的评估器，可 stop 或 retry。 |
+| `parser` | `Parser \| None` | 把原始模型输出解析成 `Decision` 的 parser（将原始模型输出解析为 Decision 的组件），必须与 prompt 格式匹配。 |
+| `critics` | `list[Critic] \| None` | 每步后执行的评估器（critic，后置评估器，可批准、停止或重试当前步骤），可 stop 或 retry。 |
 | `stop_criteria` | `list[StopCriteria] \| None` | 停止条件列表。默认 `[FinalResultCriteria()]`。 |
 | `env` | `Env \| None` | 提供 `reset/observe/step/is_terminal/close` 生命周期的 environment。 |
-| `trace_writer` | `TraceWriter \| None` | 为本次 run 写出 `manifest.json`、`events.jsonl`、`steps.jsonl`。 |
+| `trace_writer` | `TraceWriter \| None` | 为本次 run 写出 trace artifacts（持久化的输出文件）：`manifest.json`、`events.jsonl`、`steps.jsonl`。 |
 | `hooks` | `list[EngineHook] \| None` | 生命周期 hooks。 |
 | `render_hooks` | `list \| None` | 渲染 hooks，会在内部合并进 `hooks`。 |
 | `history_policy` | `HistoryPolicy \| None` | 控制 in-run 对话历史如何被组装。 |
@@ -115,7 +115,7 @@ engine.clear_hooks()
 
 ## Budget 耗尽
 
-当 step 数、墙钟时间或 token 预算耗尽时，Engine 会把 `state.stop_reason` 设置为对应值，并写出 `END` event。运行会优雅结束，仍然返回 `EngineResult`，所以你可以通过检查 `state.stop_reason` 判断是否发生预算耗尽。
+当 step 数、墙钟时间或 token 预算耗尽时，Engine 会把 `state.stop_reason` 设置为对应值，并写出 `END` event。运行会优雅结束，仍然返回 `EngineResult`，你可以通过检查 `state.stop_reason` 判断是否发生了预算耗尽。
 
 ```python
 from qitos.engine.states import RuntimeBudget

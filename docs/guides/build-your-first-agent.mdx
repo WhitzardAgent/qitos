@@ -3,7 +3,7 @@ title: "First Agent"
 description: "Build a working QitOS minimal coding agent from scratch: state, model, tools, run, and qita inspection."
 ---
 
-Every QitOS agent follows one execution path: `AgentModule + Engine + Trace`. You define the strategy; the Engine owns the loop. This guide walks through that path using the minimal coding agent from `examples/quickstart/minimal_agent.py`.
+Every QitOS agent follows one execution path: `AgentModule + Engine + Trace` (a trace is the structured log of decisions, actions, and observations recorded during a run). You define the strategy; the Engine owns the loop. This guide walks through that path using the minimal coding agent from `examples/quickstart/minimal_agent.py`.
 
 ## Prerequisites
 
@@ -85,14 +85,14 @@ class MinimalCodingAgent(AgentModule[MinimalCodingState, dict[str, Any], Action]
 
 <Step title="Reduce trajectory back into state">
 
-`reduce()` is where QitOS turns tool results into agent progress:
+`reduce()` (the method that folds the latest observation and decision back into agent state) is where QitOS turns tool results into agent progress:
 
 ```python
     def reduce(
         self,
         state: MinimalCodingState,
         observation: dict[str, Any],
-        decision: Decision[Action],
+        decision: Decision[Action],  # the structured output from the model
     ) -> MinimalCodingState:
         action_results = observation.get("action_results", [])
         if decision.rationale:
@@ -154,7 +154,7 @@ def main() -> None:
 qita board --logdir ./runs
 ```
 
-The board starts on `http://127.0.0.1:8765`. Use it to inspect the patching trajectory, replay the run, and export the trace as HTML.
+The board starts on `http://127.0.0.1:8765`. Use it to inspect the patching trajectory (the ordered sequence of steps the agent took), replay the run, and export the trace as HTML.
 
 </Step>
 
@@ -176,10 +176,10 @@ qit demo minimal
 
 | Mistake | Symptom | Fix |
 |---|---|---|
-| Forget `return state` in `reduce` | `StateValidationError` or `None` state | Always end `reduce` with `return state` |
+| Forget `return state` in `reduce` | `StateValidationError` or `None` state | Always end `reduce()` with `return state` |
 | Skip provider config | `OPENAI_API_KEY` / `QITOS_API_KEY` error before the run starts | Export the API key and base URL before running the demo |
 | Never run verification | The agent edits code but finishes without proof | Keep a concrete `test_command` in state and treat passing it as success |
-| Wrong prompt-parser pairing | Parse errors every step | Match your system prompt format to `ReActTextParser` or another explicit parser |
+| Wrong prompt-parser pairing | Parse errors every step | Match your system prompt format to `ReActTextParser` (a parser that extracts structured Decisions from ReAct-formatted text) or another explicit parser |
 | Toolset too broad for the task | The run wanders through unnecessary tools | Start with the minimal coding preset and add tools only when the task really needs them |
 
 ## Next steps

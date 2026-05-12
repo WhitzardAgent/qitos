@@ -3,7 +3,7 @@ title: "Official Runs"
 description: "What qualifies as an official QitOS run, what gets recorded, and what best-effort replay really means."
 ---
 
-An official QitOS run is not just “a run that produced a trace”. It is a run with enough structure to be compared, replayed, exported, and discussed as a research artifact.
+An official QitOS run is not just a run that produced a trace. It is a run with enough structure to be compared, replayed, exported, and discussed as a research artifact.
 
 ## Minimum contract
 
@@ -15,11 +15,11 @@ A run counts as an official QitOS run when its trace manifest includes:
 - replay and export compatibility with `qita`
 - a normalized benchmark result row when the run comes from `qit bench run` or a benchmark example wrapper
 
-In practice, that means the run records model identity, prompt protocol, parser, tool manifest, environment summary, seed, package version, git SHA, and benchmark metadata.
+In practice, the run records model identity, prompt protocol, parser, tool manifest, environment summary, seed, package version, git SHA, and benchmark metadata.
 
 ## Why this matters
 
-Without that contract, two runs may both “finish”, but you still cannot answer the important questions:
+Without that contract, two runs may both finish, but you still cannot answer the important questions:
 
 - were they using the same parser contract?
 - were they using the same tool surface?
@@ -31,9 +31,9 @@ QitOS treats those questions as part of the runtime, not as post-hoc bookkeeping
 
 ## Best-effort replay
 
-QitOS currently provides **research-grade best-effort replay**, not strict byte-for-byte determinism.
+QitOS currently provides **research-grade best-effort replay** (replay that captures enough state to inspect and compare runs, but does not guarantee byte-for-byte identical re-execution), not strict byte-for-byte determinism.
 
-That means QitOS records enough information to make replay and comparison useful:
+QitOS records enough information to make replay and comparison useful:
 
 - `seed`
 - `git_sha`
@@ -53,7 +53,7 @@ Use the replay contract like this:
 - for benchmark comparison
 - for sharing runs with collaborators
 
-Do not treat it as a promise that a remote model call will always reproduce the same tokens.
+Do not rely on it for exact token-level reproducibility from remote model providers.
 
 ## Where you see this in practice
 

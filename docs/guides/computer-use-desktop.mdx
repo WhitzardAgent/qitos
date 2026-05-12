@@ -3,14 +3,14 @@ title: "Computer Use and Desktop Env"
 description: "Build OSWorld-inspired desktop agents on QitOS without binding yourself to a provider-specific computer-use API."
 ---
 
-QitOS v0.5 now has a first official provider-neutral **computer-use lane** for desktop and GUI work.
+QitOS v0.5 now has a first official provider-neutral **computer-use lane** (a complete execution path for GUI and desktop interaction) for desktop and GUI work.
 
-This slice is inspired by the original OSWorld architecture and task loop, but it is implemented in QitOS-native pieces:
+This lane is inspired by the original OSWorld architecture and task loop, but it is implemented in QitOS-native pieces:
 
-- `DesktopEnv` for screenshot + accessibility + terminal observations
+- `DesktopEnv` for screenshot + accessibility + terminal observations (the data returned by the environment after each action)
 - `qitos.kit.tool.gui` for atomic GUI actions
 - `ComputerUseToolSet` / `computer_use_tools()` for composition-first authoring
-- `desktop_actions_json_v1` and `desktop_actions_xml_v1` for protocol-aware scaffolding
+- `desktop_actions_json_v1` and `desktop_actions_xml_v1` for protocol-aware (each protocol defines the output format the model must follow) scaffolding
 - OpenAI-compatible multimodal image input for the current screenshot turn
 
 ## Why this lane exists
@@ -18,10 +18,10 @@ This slice is inspired by the original OSWorld architecture and task loop, but i
 The official OpenAI computer-use APIs are useful, but they are also provider-specific. QitOS takes a different default path for research:
 
 - keep the **model input** on the existing OpenAI-compatible image-input lane,
-- keep the **output contract** in QitOS protocols and parsers,
+- keep the **output contract** in QitOS protocols (output format definitions) and parsers (components that convert raw model output into structured Decisions),
 - keep the **desktop runtime** in a provider-neutral environment adapter.
 
-That means the same computer-use harness can be used with:
+The same computer-use harness (the configured adapter + protocol + toolset combination) can be used with:
 
 - OpenAI-compatible multimodal APIs,
 - open-source models that only understand JSON or XML scaffolding,
@@ -101,8 +101,8 @@ agent = MyAgent(
 
 QitOS keeps **multimodal input** and **output scaffolding** as separate concerns.
 
-- multimodal input answers: “what can the model see?”
-- protocol/parser answers: “how should the model respond?”
+- multimodal input answers: what can the model see?
+- protocol/parser answers: how should the model respond?
 
 For desktop work, QitOS now ships two protocol presets:
 
@@ -120,7 +120,7 @@ agent = MyAgent(
 )
 ```
 
-This is the same design idea used elsewhere in QitOS: adapt the scaffolding to the model, instead of pretending one parser/prompt shape fits every family.
+The design principle is the same one used elsewhere in QitOS: adapt the scaffolding to the model, instead of assuming one parser/prompt shape fits every family.
 
 ## Example: `openai_cua_agent.py`
 
@@ -145,7 +145,7 @@ It is now the **benchmark-grade starter baseline**, not just a thin demo loop:
 - GUI execution goes through `ComputerUseToolSet`
 - environment state refresh goes through `DesktopEnv`
 - the baseline prompt and state implement planner / grounding / action-selector discipline
-- critic retries can reject obviously weak actions before the run continues
+- critic (a step-level validator) retries can reject obviously weak actions before the run continues
 
 Smoke run:
 
@@ -174,7 +174,7 @@ qit bench run \
 ## Container-first direction
 
 The desktop lane is designed to be **container-first**.
-That keeps the future OSWorld-style adapter direction aligned with:
+This keeps the future OSWorld-style adapter direction aligned with:
 
 - reproducible desktop state
 - provider isolation

@@ -3,13 +3,13 @@ title: "如何新增一个 model-family preset"
 description: "在不分叉 runtime 的前提下，为 QitOS v0.4 增加一个新的模型家族 preset。"
 ---
 
-新增 family preset 时，不要从“写一套新 runtime”开始。
+新增 family preset（预配置）时，不要从”写一套新 runtime”开始。
 
 先回答 5 个问题：
 
 1. 哪些 model name 应该命中这个 family？
-2. 该 family 用什么 transport？
-3. 默认 protocol 是什么？
+2. 该 family 用什么 transport（与模型 API 通信的客户端）？
+3. 默认 protocol（模型输出的格式契约）是什么？
 4. fallback protocol chain 是什么？
 5. tool 与 context 默认策略是什么？
 
@@ -39,7 +39,7 @@ FamilyPreset(
 
 ## 优先复用已有 protocol
 
-QitOS v0.4 刻意继续复用 `ModelProtocol`。
+QitOS v0.4 仍然复用 `ModelProtocol`。
 
 多数情况下，你应该从这些协议里选：
 
@@ -62,21 +62,19 @@ OpenAICompatibleAdapter
 
 如果模型本身是通过 OpenAI-compatible endpoint 提供的，优先复用它。
 
-不要因为“模型家族不同”，就过早引入新的 transport adapter。
+不要因为模型家族不同，就过早引入新的 transport adapter。
 
 ## 让 preset 可追踪
 
-preset 只有能被后续研究者看到，才真正有价值。
-
-因此新增 preset 时，务必确保这些信息能进入：
+preset 只有能被后续研究者看到才有价值。新增 preset 时，务必确保这些信息能进入：
 
 - `RunSpec.metadata`
-- trace manifest
+- trace（运行记录）manifest
 - `qita`
 
 ## 验收检查
 
 - `resolve_family_preset(...)` 能同时从 family id 和 model name 正确解析
-- `build_harness_policy(...)` 返回正确的 protocol 与 parser
+- `build_harness_policy(...)` 返回正确的 protocol 与 parser（将原始模型输出解析为 Decision 的组件）
 - `infer_model_profile(...)` 与 preset 默认值保持一致
-- flagship example 无需改 agent 代码，就能切换到这个 family
+- flagship example 无需改 agent 代码就能切换到这个 family

@@ -5,15 +5,15 @@ description: "Build the first real QitOS agent and learn the full prompt-parser-
 
 This is the first complete agent in the course.
 
-It is small on purpose, but it is not fake. You will build a real coding agent with:
+It is small on purpose, but it is not a toy. You will build a real coding agent with:
 
 - a typed state
-- a real LLM harness
+- a real LLM harness (the wiring layer that connects a transport, parser, and protocol into a coherent model-facing configuration)
 - a real system prompt
-- a real parser
+- a real parser (a component that converts raw model output into a typed Decision)
 - real tools
-- a real `reduce()` loop
-- real `qita` traces
+- a real `reduce()` (a function that folds the current observation and decision into the next state) loop
+- real `qita` traces (structured logs of all run events and steps)
 
 You will study `examples/patterns/react.py`, but the lesson is written so you do not need to reverse-engineer that file to understand why it works.
 
@@ -25,7 +25,7 @@ The task is tiny:
 - fix `add(a, b)` so it returns `a + b`
 - run a verification command
 
-That small task is useful because it lets you see the whole QitOS kernel without extra orchestration noise.
+That small task is useful because it lets you see the whole QitOS kernel (the core AgentModule + Engine execution loop) without extra orchestration noise.
 
 ## The design for this lesson
 
@@ -59,7 +59,7 @@ That gives you the most transparent possible path:
 
 `messages -> text model output -> ReAct parser -> Decision -> tool execution`
 
-We do not start with native tool calling, XML, JSON, or model-specific harnesses because those add coupling before you understand the core loop.
+We do not start with native tool calling, XML, JSON, or model-specific harnesses (the wiring layer that connects a transport, parser, and protocol) because those add coupling before you understand the core loop.
 
 ## The system prompt is a contract, not decoration
 
@@ -119,7 +119,7 @@ Why this harness is appropriate here:
 - it stays compatible with the prompt-injection tool schema path used by `REACT_SYSTEM_PROMPT`
 - it keeps the lesson portable across research labs and local gateways
 
-You are not choosing the "best model" here. You are choosing the simplest harness that exposes the kernel clearly.
+You are not choosing the best model here. You are choosing the simplest harness that exposes the kernel clearly.
 
 <Steps>
   <Step title="Design the state around the next step">
@@ -137,9 +137,9 @@ You are not choosing the "best model" here. You are choosing the simplest harnes
 
     Why these fields?
 
-    - `scratchpad` stores the compressed trajectory that the next model step can use
-    - `target_file` keeps the agent grounded in one artifact
-    - `test_command` turns "done" into an executable success condition
+    - `scratchpad` stores the compressed trajectory (the sequence of observations and decisions across steps) that the next model step can use
+    - `target_file` keeps the agent grounded in one file
+    - `test_command` makes the success condition executable
 
     This is your first QitOS habit:
 
@@ -189,7 +189,7 @@ You are not choosing the "best model" here. You are choosing the simplest harnes
 
     "This agent asks the model to speak ReAct text, and the Engine parses that text with the ReAct parser."
 
-    In QitOS, this pairing is the harness.
+    In QitOS, this pairing is the harness (the wiring layer that connects a transport, parser, and protocol).
 
     Later lessons will change prompts and protocols. For now, keep this pair fixed.
   </Step>
@@ -213,7 +213,7 @@ You are not choosing the "best model" here. You are choosing the simplest harnes
 
     This is the second core habit:
 
-    `prepare()` is not a state dump. It is a prompt-ready view of state.
+    `prepare()` is not a state dump -- it is a prompt-ready view of state.
   </Step>
 
   <Step title="Use reduce to define what the agent remembers">
@@ -244,9 +244,9 @@ You are not choosing the "best model" here. You are choosing the simplest harnes
         return state
     ```
 
-    Three lessons are hidden in this one function:
+    Three lessons are in this one function:
 
-    - not every observation belongs in future context
+    - not every observation (the environment's response after an action or reset) belongs in future context
     - state is where you keep the compressed working memory
     - `final_result` is a clean, explicit success signal
   </Step>
@@ -261,7 +261,7 @@ You are not choosing the "best model" here. You are choosing the simplest harnes
     - context compaction
     - model-specific protocol overrides
 
-    That is not because QitOS lacks them. It is because lesson 1 is about seeing the default path clearly before you bend it.
+    That is not because QitOS lacks them. Lesson 1 is about seeing the default path clearly before you bend it.
   </Step>
 
   <Step title="Run the example and inspect the kernel with qita">
