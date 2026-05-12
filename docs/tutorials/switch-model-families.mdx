@@ -21,12 +21,12 @@ The example no longer hardcodes one transport path.
 
 Instead it resolves:
 
-1. family preset
-2. harness policy
-3. model transport
-4. parser and protocol
+1. family preset (a reusable configuration bundle for a model family)
+2. harness policy (the wiring layer that connects a transport, parser, and protocol)
+3. model transport (the adapter that sends requests to and receives responses from a model API)
+4. parser (a component that converts raw model output into a typed Decision) and protocol (the output format the model is asked to follow)
 
-That means the same agent can now switch between:
+The same agent can now switch between:
 
 - Qwen
 - Kimi
@@ -124,7 +124,7 @@ After each run, inspect:
 - `parser`
 - `tool schema delivery`
 
-That is how you confirm the same agent code switched harness policy rather than silently changing behavior in an ad-hoc way.
+That is how you confirm the same agent code switched harness (the wiring layer that connects a transport, parser, and protocol) policy rather than silently changing behavior in an ad-hoc way.
 
 ## Why this matters
 

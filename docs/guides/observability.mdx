@@ -3,9 +3,9 @@ title: "Observability"
 description: "Inspect, replay, and export agent runs with the qita web board."
 ---
 
-Every `agent.run()` call writes a trace to `./runs/<run_id>/` by default. The `qita` CLI tool reads these traces and exposes them through a local web board with run inspection, step-by-step replay, and standalone HTML export.
+Every `agent.run()` call writes a trace (the structured log of decisions, actions, and observations recorded during a run) to `./runs/<run_id>/` by default. The `qita` CLI tool reads these traces and exposes them through a local web board with run inspection, step-by-step replay, and standalone HTML export.
 
-## Trace artifacts
+## Trace artifacts (persistent output files from a run)
 
 Each run directory contains three files:
 
@@ -13,7 +13,7 @@ Each run directory contains three files:
 |---|---|
 | `manifest.json` | Run metadata: `run_id`, `model_id`, `status`, `stop_reason`, `step_count`, `event_count`, `schema_version`, `prompt_hash`, `run_config_hash`, `seed`, `summary` |
 | `events.jsonl` | One JSON object per line; each line is a `RuntimeEvent` with `step_id`, `phase`, `ts`, `ok`, `error`, and `payload` |
-| `steps.jsonl` | One JSON object per line; each line is a `StepRecord` with `step_id`, `decision`, `actions`, `action_results`, `observation`, and `critic_outputs` |
+| `steps.jsonl` | One JSON object per line; each line is a `StepRecord` with `step_id`, `decision` (the model's structured output), `actions` (the tool calls dispatched), `action_results`, `observation` (the environment's response), and `critic_outputs` |
 
 `manifest.json` is written on initialization and finalized when the Engine exits. `events.jsonl` and `steps.jsonl` are append-only and grow one entry at a time during the run.
 
@@ -68,7 +68,7 @@ Use the toolbar to search, filter, and sort:
 
 The summary strip above the cards shows: success rate, average steps, average events, and the top-3 failure stop reasons across all visible runs.
 
-This is the board view you will use most often when comparing runs:
+This board view is the primary way to compare runs:
 
 ![qita board overview](/images/qita-board.png)
 
@@ -80,13 +80,13 @@ Click **view** on any run card to open the run detail page. The page has two tab
 
 **Traj tab**
 
-The trajectory view shows every step as a card with five collapsible sections:
+The trajectory (the ordered sequence of steps the agent took) view shows every step as a card with five collapsible sections:
 
 - **State** — scalar fields from the observation output
-- **Thought** — the model's rationale (from `decision.rationale` or parsed `Thought:` line)
-- **Action** — the tool call that was dispatched
-- **Direct Observation** — action results; search hits render as a table, errors are highlighted
-- **Critic** — critic output (`action`, `reason`, `score`) if critics were attached
+- **Thought** -- the model's rationale (from `decision.rationale` or parsed `Thought:` line)
+- **Action** -- the tool call that was dispatched based on the decision
+- **Direct Observation** -- action results (the data returned after the tool executes); search hits render as a table, errors are highlighted
+- **Critic** -- critic (a step-level validator) output (`action`, `reason`, `score`) if critics were attached
 - **Trace Events** — raw `RuntimeEvent` list for the step (collapsed by default)
 
 The **Step Navigator** sidebar lets you jump to any step. Use the controls to:
@@ -103,7 +103,7 @@ A gantt-like **phase timeline** at the top of the traj view shows phase duration
 
 Displays the raw `manifest.json` as formatted JSON.
 
-The trajectory view is where parser behavior, tool calls, and step timing become easy to inspect:
+The trajectory view is where parser (raw-output-to-Decision converter) behavior, tool calls, and step timing become easy to inspect:
 
 ![qita trajectory view](/images/qita-traj.png)
 

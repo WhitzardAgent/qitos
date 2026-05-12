@@ -3,11 +3,11 @@ title: "Tools 与 Registry"
 description: "理解 QitOS 中的工具、工具集以及 ToolRegistry 如何组合成 agent 能力表面。"
 ---
 
-工具就是 agent 可以执行的动作。运行时，Engine 会把 `Decision` 里的工具调用分发给 `ToolRegistry`，由它查找并执行对应 callable。
+工具就是 agent 可以执行的动作。运行时，Engine 会把 `Decision` 里的 action（标准化工具调用）分发给 `ToolRegistry`，由它查找并执行对应 callable。
 
 ## `@tool` 装饰器
 
-使用 `@tool` 把任意 callable 标记成 QitOS 工具。这个装饰器只会附加元数据，不会改变函数行为，所以在测试里依旧可以像普通函数一样直接调用。
+使用 `@tool` 把任意 callable 标记成 QitOS 工具。这个装饰器只会附加元数据，不会改变函数行为，测试里依旧可以像普通函数一样直接调用。
 
 ```python
 from qitos import tool
@@ -112,7 +112,7 @@ registry.include(tools)
 
 ### 注册 toolset
 
-_Toolset_ 指的是任何拥有 `tools()` 方法、并返回 callable 或 `BaseTool` 列表的对象。使用 `register_toolset()` 注册它：
+Toolset 指的是任何拥有 `tools()` 方法、并返回 callable 或 `BaseTool` 列表的对象。使用 `register_toolset()` 注册它：
 
 ```python
 from qitos.kit import CodingToolSet

@@ -3,7 +3,7 @@ title: "Agent Module"
 description: "AgentModule is the policy layer that defines your agent's strategy: how it initializes state, builds prompts, decides what to do, and reduces observations into the next state."
 ---
 
-`AgentModule` is the contract you implement to define agent behavior. It owns everything about _how_ your agent thinks — state initialization, prompt construction, decision logic, and state reduction — but it never runs the loop itself. That's the [Engine's](/concepts/engine) job.
+`AgentModule` is the contract you implement to define agent behavior. It owns everything about how your agent thinks — state initialization, prompt construction, decision logic, and state reduction — but it never runs the loop itself. That is the [Engine's](/concepts/engine) job.
 
 ## Generic type parameters
 
@@ -44,7 +44,7 @@ Any keyword arguments passed to `Engine.run()` flow through here, so you can acc
 
 ### `reduce` (required)
 
-Called after every action cycle. Transform the previous state plus the new observation and decision into the next state. This is where your agent learns from what just happened.
+Called after every action cycle (one full round of decide → act → observe). Transform the previous state plus the new observation and decision into the next state. This is where your agent absorbs what just happened and updates its progress.
 
 ```python
 def reduce(
@@ -63,7 +63,7 @@ def reduce(
 
 ### `build_system_prompt` (optional)
 
-Return a dynamic system prompt string, or `None` to skip. Called before every decide step, so your prompt can react to current state.
+Return a dynamic system prompt string, or `None` to skip. Called before every decide step, so your prompt can adapt to the current state.
 
 ```python
 def build_system_prompt(self, state: StateT) -> str | None:
@@ -74,7 +74,7 @@ The default implementation returns `None`.
 
 ### `prepare` (optional)
 
-Converts current state into the model-ready text that becomes the user turn. Defaults to `str(state)`. Override this to format a structured prompt from your state fields.
+Converts current state into the model-ready text that becomes the user turn (the message sent to the LLM as the user's input). Defaults to `str(state)`. Override this to format a structured prompt from your state fields.
 
 ```python
 def prepare(self, state: StateT) -> str:
@@ -83,7 +83,7 @@ def prepare(self, state: StateT) -> str:
 
 ### `decide` (optional)
 
-Override to provide your own decision logic before the Engine hands off to the LLM. Return `None` to let the Engine use its model decision path.
+Override to provide your own decision logic before the Engine calls the LLM. Return `None` to let the Engine use its standard model decision path.
 
 ```python
 def decide(self, state: StateT, observation: ObservationT) -> Decision[ActionT] | None:
@@ -94,7 +94,7 @@ def decide(self, state: StateT, observation: ObservationT) -> Decision[ActionT] 
 
 ### `should_stop` (optional)
 
-An additional stop condition checked each step after `reduce`. Return `True` to halt the run. The Engine's built-in stop criteria (budget, `FinalResultCriteria`, etc.) still apply on top of this.
+An additional stop condition checked each step after `reduce`. Return `True` to halt the run. The Engine's built-in stop criteria (step budget, `FinalResultCriteria`, etc.) still apply on top of this.
 
 ```python
 def should_stop(self, state: StateT) -> bool:
@@ -203,7 +203,7 @@ Key parameters for `agent.run()`:
 | `trace`         | `bool \| TraceWriter` | `True` to auto-create a trace writer, `False` to disable   |
 | `trace_logdir`  | `str`                 | Directory for trace output (default: `"./runs"`)           |
 | `parser`        | `Parser`              | Output parser matched to your prompt format                |
-| `critics`       | `list[Critic]`        | Critics evaluated after each step                          |
+| `critics`       | `list[Critic]`        | Critics (post-step evaluators that can stop or retry) evaluated after each step |
 | `stop_criteria` | `list[StopCriteria]`  | Additional stop conditions beyond the default              |
 
 <Tip>

@@ -3,7 +3,7 @@ title: "构建第一个 Agent"
 description: "从零开始构建一个可运行的 QitOS 最小 coding agent：state、model、tools、run 与 qita 检查。"
 ---
 
-每个 QitOS agent 都遵循同一条执行路径：`AgentModule + Engine + Trace`。你负责定义策略，Engine 负责执行循环。本页会用 `examples/quickstart/minimal_agent.py` 里的最小 coding agent，带你把这条主链路从头走一遍。
+每个 QitOS agent 都遵循同一条执行路径：`AgentModule + Engine + Trace`（运行记录）。你负责定义策略，Engine 负责执行循环。本页会用 `examples/quickstart/minimal_agent.py` 里的最小 coding agent，带你把这条主链路从头走一遍。
 
 ## 前置条件
 
@@ -40,13 +40,13 @@ class MinimalCodingState(StateSchema):
     test_command: str = 'python -c "import buggy_module; assert buggy_module.add(20, 22) == 42"'
 ```
 
-核心心智模型是：task、scratchpad 和 verification contract 都显式放在 state 里，而不是藏在隐式胶水里。
+核心心智模型：task、scratchpad 和 verification contract 都显式放在 state 里，而不是藏在隐式胶水里。
 
 </Step>
 
 <Step title="接入真实模型和 coding toolset">
 
-这个最小示例故意保持模型驱动。它使用一个 OpenAI-compatible model，再配上 canonical coding preset：
+这个最小示例故意保持模型驱动，使用一个 OpenAI-compatible model，再配上 canonical coding preset（预配置）：
 
 ```python
 from typing import Any
@@ -83,9 +83,9 @@ class MinimalCodingAgent(AgentModule[MinimalCodingState, dict[str, Any], Action]
 
 </Step>
 
-<Step title="把 trajectory 归约回 state">
+<Step title="把 trajectory（运行的时间序列记录）归约回 state">
 
-`reduce()` 是 QitOS 把 tool result 变成 agent 进度的地方：
+`reduce()`（归约，将观察和决策归约回状态的钩子）是 QitOS 把 tool result 变成 agent 进度的地方：
 
 ```python
     def reduce(
@@ -108,7 +108,7 @@ class MinimalCodingAgent(AgentModule[MinimalCodingState, dict[str, Any], Action]
 ```
 
 <Warning>
-  `reduce` 必须返回 `state`。这一点在 coding agent 里也完全一样。
+  `reduce` 必须返回 `state`。在 coding agent 里也一样。
 </Warning>
 
 </Step>
@@ -154,7 +154,7 @@ def main() -> None:
 qita board --logdir ./runs
 ```
 
-board 默认启动在 `http://127.0.0.1:8765`。你可以用它检查 patch 轨迹、replay run，并把 trace 导出成 HTML。
+board 默认启动在 `http://127.0.0.1:8765`。你可以用它检查 patch 轨迹、replay run，并把 trace（运行记录）导出成 HTML。
 
 </Step>
 
@@ -176,10 +176,10 @@ qit demo minimal
 
 | 错误 | 症状 | 修复方式 |
 |---|---|---|
-| 忘记在 `reduce` 里 `return state` | `StateValidationError` 或 state 变成 `None` | `reduce` 最后总是返回 `state` |
+| 忘记在 `reduce` 里 `return state` | `StateValidationError` 或 state 变成 `None` | `reduce` 最后务必返回 `state` |
 | 没有先配 provider config | run 还没开始就报 `OPENAI_API_KEY` / `QITOS_API_KEY` 错误 | 先导出 API key 和 base URL |
 | 从不做验证 | agent 改了代码，但没有完成证明 | 把明确的 `test_command` 放进 state，并把它成功通过当成完成条件 |
-| prompt 和 parser 不匹配 | 每一步都出现 parse error | 让 prompt 格式和 `ReActTextParser` 之类的显式 parser 对齐 |
+| prompt 和 parser 不匹配 | 每一步都出现 parse error | 让 prompt 格式和 `ReActTextParser` 之类的显式 parser（将原始模型输出解析为 Decision 的组件）对齐 |
 | toolset 给得过宽 | run 在不必要的工具之间游走 | 先从最小 coding preset 开始，只有任务真的需要时再加工具 |
 
 ## 下一步建议

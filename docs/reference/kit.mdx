@@ -5,6 +5,16 @@ description: "Reference for qitos.kit — reusable parsers, memory adapters, too
 
 `qitos.kit` provides concrete, reusable building blocks for common agent authoring patterns. All components attach to the `AgentModule + Engine` pipeline and do not introduce a second orchestrator.
 
+Key terms used on this page:
+
+- **parser**: a component that converts raw model output into a typed `Decision`
+- **protocol**: the output format the model is asked to follow
+- **transport**: the adapter that sends requests to and receives responses from a model API
+- **harness**: the wiring layer that connects a transport, parser, and protocol into a coherent model-facing configuration
+- **preset**: a reusable configuration bundle for a model family
+- **critic**: a module that evaluates each step and can trigger retries or stops
+- **trace**: a structured log of all run events and steps
+
 ```python
 from qitos.kit import ReActTextParser, WindowMemory, CodingToolSet, ...
 ```
@@ -229,7 +239,7 @@ Both share the same constructor signature as `JsonDecisionParser` and `XmlDecisi
 
 <Tab title="History & Compaction">
 
-QitOS treats long-running context management as a first-class authoring concern.
+Long-running context management in QitOS is a first-class authoring concern.
 
 The key separation is:
 
@@ -290,7 +300,7 @@ Use it when:
 
 `MessageGrouper` groups messages into compactable rounds. It prefers grouping by step when possible, and falls back to assistant-boundary grouping otherwise.
 
-This matters because QitOS tries to compact context in ways that still preserve the structure of an agent trajectory.
+This matters because QitOS compacts context in ways that preserve the structure of an agent trajectory (the sequence of observations and decisions across steps).
 
 </Tab>
 

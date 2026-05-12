@@ -3,7 +3,7 @@ title: "Agent Patterns"
 description: "ReAct, PlanAct, Tree-of-Thought, and Reflexion patterns with working code examples."
 ---
 
-QitOS ships with four canonical agent patterns. Each pattern changes the policy layer, but all of them still run through the same `AgentModule + Engine` kernel.
+QitOS ships with four canonical agent patterns. Each pattern changes the policy layer, but all of them still run through the same `AgentModule + Engine` kernel (the core execution loop that drives decide-act-observe cycles).
 
 Use this page as the map. Use the [Tutorials](/tutorials) track when you want a step-by-step build.
 
@@ -11,8 +11,8 @@ Use this page as the map. Use the [Tutorials](/tutorials) track when you want a 
 |---|---|---|
 | **ReAct** | Open-ended tool use, coding, search | Thought -> Action -> Observation loop |
 | **PlanAct** | Multi-step tasks with a known structure | Explicit plan list, cursor advances on success |
-| **Tree-of-Thought** | Exploration, research, question answering | `Decision.branch()` over scored candidates |
-| **Reflexion** | Tasks requiring grounded self-critique | Actor drafts, critic evaluates, loop until grounded |
+| **Tree-of-Thought** | Exploration, research, question answering | `Decision.branch()` (alternative candidate paths) over scored candidates |
+| **Reflexion** | Tasks requiring grounded self-critique | Actor drafts, critic (a step-level validator that can allow, stop, or retry) evaluates, loop until grounded |
 
 ## Pattern overview
 
@@ -21,11 +21,11 @@ Use this page as the map. Use the [Tutorials](/tutorials) track when you want a 
 ReAct is the simplest useful pattern in QitOS.
 
 - The model emits `Thought:` and `Action:`
-- `ReActTextParser` parses the text into `Decision`
+- `ReActTextParser` (a parser that extracts structured `Decision` objects from ReAct-formatted text) parses the text into `Decision`
 - tools execute
-- `reduce()` appends the latest trajectory to state
+- `reduce()` appends the latest trajectory (the sequence of decisions and observations across steps) to state
 
-Use it when the task is open-ended and the next useful action depends on the latest observation.
+Use it when the task is open-ended and the next useful action depends on the latest observation (the result returned by the environment after an action executes).
 
 Primary example:
 
@@ -72,7 +72,7 @@ Primary example:
 Reflexion adds grounded self-critique.
 
 - the actor proposes a move
-- a critic evaluates the trajectory
+- a critic (a step-level validator) evaluates the trajectory
 - the loop can retry or stop based on critique output
 
 Use it when a task benefits from explicit self-checking rather than only raw continuation.
@@ -97,7 +97,7 @@ Primary example:
     Learn the minimal thought-action-observation loop.
   </Card>
   <Card title="Lesson 2: PlanAct" icon="list-check" href="/tutorials/planact">
-    Learn explicit planning without changing the kernel.
+    Learn explicit planning without changing the kernel (the core AgentModule + Engine loop).
   </Card>
   <Card title="Claude Code-style agent" icon="rectangle-terminal" href="/tutorials/claude-code">
     See how the same kernel becomes a long-running coding agent.

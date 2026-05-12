@@ -3,16 +3,16 @@ title: "QitOS Documentation"
 description: "The torch-flavor framework for agent researchers building reproducible LLM agents on one AgentModule + Engine kernel."
 ---
 
-QitOS is the torch-flavor framework for agent researchers. Prototype methods, run benchmarks, and inspect long-horizon trajectories on one `AgentModule + Engine` kernel with built-in `qita` observability.
+QitOS is a PyTorch-style framework for agent researchers. It lets you prototype methods, run benchmarks, and inspect long-horizon trajectories on a single `AgentModule + Engine` kernel, with built-in observability via `qita` (the trace viewer that ships with QitOS).
 
 ## Two authoring paths
 
-QitOS deliberately keeps two top-level ways to build agents:
+QitOS offers two top-level ways to build agents:
 
-- `Research-first`: handwrite the prompt, parser, protocol, transport, and tool surface so you can study and optimize the kernel directly.
-- `Preset-first`: start from family presets and preset tool builders when you want a fast baseline or quick multi-family switching.
+- **Research-first**: handwrite the prompt, parser, protocol (the output format contract between model and parser), transport (the client that talks to the model API), and tool surface so you can study and optimize the kernel directly.
+- **Preset-first**: start from family presets (pre-configured model-family defaults) and preset tool builders when you want a fast baseline or quick multi-family switching.
 
-The framework is strongest when both paths remain first-class.
+Both paths are first-class citizens in the framework.
 
 <CardGroup cols={2}>
   <Card title="Quick Start" icon="rocket" href="/quickstart">
@@ -96,7 +96,7 @@ The framework is strongest when both paths remain first-class.
     One `AgentModule + Engine` runtime across examples, benchmarks, and production-style agents
   </Card>
   <Card title="Protocol-aware parsers" icon="brackets-curly" href="/reference/kit">
-    Prompt format and parser choice are paired on purpose, not left as implicit glue
+    Prompt format and parser choice are paired intentionally, not left as implicit glue code
   </Card>
   <Card title="Long-running context control" icon="clock-rotate-left" href="/guides/memory-and-history">
     History policy, summary history, compact history, and memory adapters for sustained runs

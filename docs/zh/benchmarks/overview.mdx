@@ -5,7 +5,7 @@ description: "通过统一的官方 QitOS benchmark 路径运行 desktop-starter
 
 在 QitOS 里，benchmark 不是另一套平行 runtime，而是同一条 agent runtime 叙事的延伸。
 
-这意味着 benchmark execution、replay、export 与结果聚合都建立在同一组核心原语之上：
+benchmark execution、replay、export 与结果聚合都建立在同一组核心原语之上：
 
 - `Task`
 - `RunSpec`
@@ -38,15 +38,15 @@ qit bench export ...
 
 QitOS 现在也把 benchmark 工作明确拆成三层：
 
-- framework：共享 runtime、env、harness 与 qita 能力
+- framework：共享 runtime、env、harness（模型适配层）与 qita 能力
 - benchmark：放在 `qitos.benchmark.*` 下的数据集 / runtime / evaluator / scorer 集成
 - recipe：放在 `qitos.recipes.*` 下的可复现 baseline method
 
-正是这套拆分，让 starter benchmark、真实 benchmark adapter 和可复用 baseline 能同时存在，而不会重新泄漏回 `examples/`。
+有了这套拆分，starter benchmark、真实 benchmark adapter 和可复用 baseline 就能同时存在，不会重新泄漏回 `examples/`。
 
-## 这为什么重要
+## 为什么这很重要
 
-因为 benchmark 输出形状统一之后，你就可以：
+benchmark 输出形状统一之后，你就可以：
 
 - 跨 benchmark 比较 runs
 - 无需每个 benchmark 单独写聚合脚本
@@ -56,9 +56,9 @@ QitOS 现在也把 benchmark 工作明确拆成三层：
 
 ## benchmark run 会产出什么
 
-一条 benchmark 路径通常会留下两层 artifact：
+一条 benchmark 路径通常会留下两层 artifact（持久化的输出文件）：
 
-1. trace 目录：`manifest.json`、`events.jsonl`、`steps.jsonl`
+1. trace（运行记录）目录：`manifest.json`、`events.jsonl`、`steps.jsonl`
 2. 统一的 `BenchmarkRunResult` JSONL
 
 每一行结果至少包含：

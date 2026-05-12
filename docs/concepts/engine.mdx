@@ -3,7 +3,7 @@ title: "Engine"
 description: "Engine is the execution kernel that owns the agent loop: it calls your AgentModule hooks in sequence, executes actions, manages tracing, and enforces stop criteria."
 ---
 
-`Engine` is the single execution kernel for all QitOS agent workflows. It runs the step loop, coordinates your `AgentModule` hooks, dispatches tool calls, applies critics, checks stop conditions, and writes trace artifacts. You interact with it directly only when you need control beyond what `agent.run()` provides.
+`Engine` is the single execution kernel for all QitOS agent workflows. It runs the step loop, coordinates your `AgentModule` hooks, dispatches tool calls to the `ToolRegistry` for execution, applies critics (post-step evaluators that can approve, stop, or retry the step), checks stop conditions, and writes trace artifacts (persistent records like `steps.jsonl` and `events.jsonl` that capture what happened during the run). You interact with it directly only when you need control beyond what `agent.run()` provides.
 
 <Note>
   QitOS enforces a **single-kernel rule**: there is exactly one `Engine` per run. Extensions like parsers, critics, memory adapters, and toolkits attach to this pipeline — they do not introduce a second execution loop.
@@ -21,7 +21,7 @@ prepare → decide → act → reduce → critics → check_stop → trace
 2. **decide** — `agent.decide(state, observation)` is checked first; if it returns `None`, the Engine calls the LLM via the configured parser.
 3. **act** — Tool calls in the decision's `actions` list are executed against the `ToolRegistry`.
 4. **reduce** — `agent.reduce(state, observation, decision)` updates state with the new observation.
-5. **critics** — Any registered `Critic` instances evaluate the step; they can trigger a stop or retry.
+5. **critics** — Any registered `Critic` instances (post-step evaluators that can approve, stop, or retry the step) evaluate the step; they can trigger a stop or retry.
 6. **check_stop** — Budget exhaustion, `FinalResultCriteria`, `agent.should_stop()`, and any custom `StopCriteria` are evaluated.
 7. **trace** — The step record and events are written to the `TraceWriter`.
 

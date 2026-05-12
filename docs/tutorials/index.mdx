@@ -5,9 +5,9 @@ description: "A self-contained course for researchers designing agents in the Qi
 
 This track is meant to be completed in order.
 
-It is not a gallery of examples. It is a course about how to design agents in the QitOS mindmap without guessing where prompt policy, parser choice, tool composition, memory, and traceability belong.
+It is a course about how to design agents in the QitOS mindmap without guessing where prompt policy, parser choice, tool composition, memory, and traceability belong.
 
-Every lesson keeps the same kernel:
+Every lesson keeps the same kernel (the core AgentModule + Engine execution loop):
 
 `task -> state -> prompt/protocol -> decision -> tool execution -> reduce -> trace`
 
@@ -17,15 +17,15 @@ What changes is the policy layer you build on top of that kernel.
 
 The course now explicitly teaches QitOS through two authoring paths:
 
-- `Research-first`: handwrite prompt, parser, protocol, transport, and tool surface.
-- `Preset-first`: keep the agent implementation stable and switch model families through family presets.
+- `Research-first`: handwrite prompt, parser (a component that converts raw model output into a typed Decision), protocol (the output format the model is asked to follow), transport (the adapter that sends requests to and receives responses from a model API), and tool surface.
+- `Preset-first`: keep the agent implementation stable and switch model families through family presets (reusable configuration bundles for a model family).
 
 The research-first path is still the default mental model for understanding the kernel.
 The preset-first path is the acceleration layer you adopt once you want stronger reuse or cleaner multi-family comparisons.
 
 ## What makes this track different
 
-Each lesson is written to be self-contained. That means every lesson explicitly covers:
+Each lesson is written to be self-contained. Every lesson explicitly covers:
 
 - the exact agent shape you are building
 - the state fields you introduce and why they matter
@@ -46,10 +46,10 @@ When you design an agent in QitOS, you are always answering the same questions:
 |---|---|---|
 | What problem is the agent solving? | `task`, `prepare()` | The exact objective and the context you surface per step |
 | What must persist across steps? | `StateSchema` | Plans, scratchpads, findings, mode flags, ranked summaries |
-| How does the model know how to respond? | `build_system_prompt()`, `model_parser`, `model_protocol` | Text, JSON, XML, Terminus, MiniMax, or provider-specific harnessing |
+| How does the model know how to respond? | `build_system_prompt()`, `model_parser`, `model_protocol` | Text, JSON, XML, Terminus, MiniMax, or provider-specific harnessing (the wiring layer that connects a transport, parser, and protocol into a coherent model-facing configuration) |
 | What can the agent do? | `ToolRegistry`, preset toolsets | Minimal tools, coding presets, audit tools, web tools, task boards |
-| How does the loop learn from execution? | `reduce()` | What becomes state, what stays only in the trace, what counts as success |
-| How do long runs stay under control? | `HistoryPolicy`, `History`, `Memory` | Message trimming, compaction, retrieval, durable memory |
+| How does the loop learn from execution? | `reduce()` | What becomes state, what stays only in the trace (a structured log of all run events and steps), what counts as success |
+| How do long runs stay under control? | `HistoryPolicy`, `History`, `Memory` | Message trimming, compaction (summarizing older context to stay within token limits), retrieval, durable memory |
 | How do you inspect behavior? | `TraceWriter`, `qita` | Board, replay, export, prompt hash, parser diagnostics, context telemetry |
 
 That worksheet stays constant across all four lessons.
@@ -58,7 +58,7 @@ That worksheet stays constant across all four lessons.
 
 | Lesson | What you build | New design idea | Prompt and parser | Tools | Context strategy |
 |---|---|---|---|---|---|
-| 1. ReAct | The smallest useful coding agent | Learn the default `LLM -> parser -> Decision` path | `REACT_SYSTEM_PROMPT` + `ReActTextParser` | Manual `ToolRegistry` + compact `CodingToolSet` | No memory, no compaction, tiny scratchpad in state |
+| 1. ReAct | The smallest useful coding agent | Learn the default `LLM -> parser -> Decision` path | `REACT_SYSTEM_PROMPT` + `ReActTextParser` | Manual `ToolRegistry` + compact `CodingToolSet` | No memory, no compaction (summarizing older context to stay within token limits), tiny scratchpad in state |
 | 2. PlanAct | A planning-first repair agent | Add explicit planning without adding a second runtime | `PLAN_DRAFT_PROMPT` for planning, `PLAN_EXEC_SYSTEM_PROMPT` + `ReActTextParser` for execution | Same compact coding tools | Plan in state, still no separate memory/compaction |
 | 3. Claude Code-style | A long-running coding agent | Move from hand wiring to preset toolsets and workflow prompts | Custom workflow system prompt + `ReActTextParser` | `coding_tools(...)` preset | `HistoryPolicy` first, then when to add `CompactHistory` and memory |
 | 4. Code security audit | A domain-specialized review agent | Specialize the kernel by domain rather than inventing a new runtime | `SECURITY_AUDIT_SYSTEM_PROMPT` + `ReActTextParser`, with protocol upgrade notes | `SecurityAuditToolSet` + codebase/task tools | Ranked finding memory, bounded history, audit-oriented traces |
@@ -76,10 +76,10 @@ That is the shortest path for learning the kernel.
 
 In v0.4, the flagship coding example grows one level deeper:
 
-- you still get an `OpenAICompatibleModel` transport underneath
-- but you now resolve it through a family preset and a harness policy first
+- you still get an `OpenAICompatibleModel` transport (the adapter that sends requests to and receives responses from a model API) underneath
+- but you now resolve it through a family preset and a harness (the wiring layer that connects a transport, parser, and protocol) policy first
 
-That keeps one example portable across Qwen, Kimi, MiniMax, `gpt-oss`, and Gemma 4.
+This keeps one example portable across Qwen, Kimi, MiniMax, `gpt-oss`, and Gemma 4.
 
 Later in the course you will also learn how to reason about protocol upgrades:
 

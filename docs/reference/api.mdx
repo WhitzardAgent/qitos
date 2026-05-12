@@ -15,7 +15,7 @@ from qitos import AgentModule, Engine, Decision, ...
 
 <Accordion title="AgentModule">
 
-`AgentModule` is the strategy layer of QitOS. You subclass it to define your agent's state shape, system prompt, decision logic, and reduction rules. The `Engine` drives the execution loop and calls each hook in order.
+`AgentModule` is the strategy layer of QitOS. You subclass it to define your agent's state shape, system prompt, decision logic, and reduction rules. The `Engine` drives the execution loop (the kernel) and calls each hook in order.
 
 ```python
 class AgentModule(ABC, Generic[StateT, ObservationT, ActionT])
@@ -39,7 +39,7 @@ def __init__(
 |-----------|------|-------------|
 | `tool_registry` | `ToolRegistry \| None` | Registry of tools the agent can call |
 | `llm` | `Any` | LLM callable used for model decisions |
-| `model_parser` | `Any` | Parser that converts raw model output to a `Decision` |
+| `model_parser` | `Any` | Parser (a component that converts raw model output into a typed Decision) that converts raw model output to a `Decision` |
 | `memory` | `Memory \| None` | Optional memory adapter |
 | `history` | `History \| None` | Optional history adapter |
 | `**config` | `Any` | Extra keyword args stored as `self.config` |
@@ -180,7 +180,7 @@ def run(
 
 <Accordion title="Engine">
 
-`Engine` is the execution kernel. It owns the phase loop, tool execution, recovery, tracing, and stop-criteria evaluation. You normally obtain an `Engine` through `AgentModule.build_engine()` or `AgentModule.run()`, but you can also construct one directly.
+`Engine` is the execution kernel (the core AgentModule + Engine execution loop). It owns the phase loop, tool execution, recovery, tracing, and stop-criteria evaluation. You normally obtain an `Engine` through `AgentModule.build_engine()` or `AgentModule.run()`, but you can also construct one directly.
 
 ```python
 class Engine(Generic[StateT, ObservationT, ActionT])
@@ -216,12 +216,12 @@ def __init__(
 | `validation_gate` | `StateValidationGate \| None` | default gate | Pre/post phase state validation |
 | `recovery_handler` | `RecoveryHandler \| None` | `None` | Callable invoked on recoverable errors |
 | `recovery_policy` | `RecoveryPolicy \| None` | default policy | Controls retry behaviour on failures |
-| `trace_writer` | `TraceWriter \| None` | `None` | Writes structured trace artifacts to disk |
+| `trace_writer` | `TraceWriter \| None` | `None` | Writes structured trace (a structured log of all run events and steps) artifacts to disk |
 | `parser` | `Parser[ActionT] \| None` | `None` | Parser for raw model output |
 | `stop_criteria` | `List[StopCriteria] \| None` | `[FinalResultCriteria()]` | Ordered list of stop criteria |
 | `branch_selector` | `BranchSelector \| None` | `FirstCandidateSelector()` | Strategy for picking among branch candidates |
 | `search` | `Search \| None` | `None` | Search strategy for `branch` decisions |
-| `critics` | `List[Critic] \| None` | `[]` | Critics evaluated after each step |
+| `critics` | `List[Critic] \| None` | `[]` | Critics (modules that evaluate each step and can trigger retries or stops) evaluated after each step |
 | `env` | `Env \| None` | `None` | Environment for observe/step lifecycle |
 | `history_policy` | `HistoryPolicy \| None` | `HistoryPolicy()` | Controls message history assembly |
 | `hooks` | `List[EngineHook] \| None` | `[]` | Engine lifecycle hooks |
@@ -287,7 +287,7 @@ class EngineResult(Generic[StateT]):
 
 <Accordion title="Decision">
 
-`Decision` is the canonical output of the decide phase. Use the factory class methods rather than constructing directly.
+`Decision` is the canonical output of the decide phase. Use the factory class methods rather than constructing directly. A Decision captures what the agent wants to do next -- execute actions, produce a final answer, wait, or propose branch candidates.
 
 ```python
 @dataclass
@@ -356,7 +356,7 @@ def branch(
 
 <Accordion title="Action">
 
-`Action` is the normalized action contract emitted by the policy and consumed by the executor.
+`Action` is the normalized action (a tool invocation) contract emitted by the policy and consumed by the executor.
 
 ```python
 @dataclass

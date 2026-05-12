@@ -10,7 +10,7 @@ The goal is not just to get a score. The goal is to produce a run that you can r
 ## What you will learn
 
 - why `qit bench` is the canonical benchmark entrypoint
-- how `RunSpec` and `ExperimentSpec` are attached automatically
+- how `RunSpec` (metadata describing how a single run was configured) and `ExperimentSpec` (metadata grouping runs into an experiment) are attached automatically
 - what files to expect after a run
 - how to evaluate and inspect results with `qita`
 
@@ -32,7 +32,7 @@ If you want a real execution path instead of the default dry strategy, point `--
 
 ## Step 2: inspect the result row
 
-Every output line is normalized to `BenchmarkRunResult`.
+Every output line is normalized to `BenchmarkRunResult` (a standardized result row for one benchmark task).
 
 You should expect fields like:
 
@@ -49,7 +49,7 @@ You should expect fields like:
 - `trace_run_dir`
 - `run_spec_ref`
 
-That common shape is what makes cross-benchmark aggregation possible.
+This common shape makes cross-benchmark aggregation possible.
 
 ## Step 3: aggregate metrics
 
@@ -61,7 +61,7 @@ This gives you a normalized summary over the result rows instead of forcing each
 
 ## Step 4: inspect the trace
 
-When the run also produced a trace directory, inspect it with `qita`:
+When the run also produced a trace (a structured log of all run events and steps) directory, inspect it with `qita`:
 
 ```bash
 qit bench replay --run ./runs/<run_id>

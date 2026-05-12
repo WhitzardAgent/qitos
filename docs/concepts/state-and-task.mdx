@@ -62,7 +62,7 @@ def init_state(self, task: str, **kwargs: Any) -> ResearchState:
 
 ### Stopping the run
 
-Call `state.set_stop()` from within `reduce` to halt the run on the next stop check. It accepts a `StopReason` enum value or its string equivalent.
+Call `state.set_stop()` from within `reduce` (the hook that folds the step's observation and decision back into state) to halt the run on the next stop check. It accepts a `StopReason` enum value or its string equivalent.
 
 ```python
 from qitos import StopReason
@@ -158,7 +158,7 @@ Valid `kind` values: `"file"`, `"dir"`, `"url"`, `"artifact"`.
 
 ## Decision
 
-`Decision` represents the output of a single decide step — what the agent wants to do next. It has four modes, each with a factory method.
+`Decision` represents the output of a single decide step — the structured choice the agent makes about what to do next, whether that is calling tools, returning a final answer, waiting, or branching. It has four modes, each with a factory method.
 
 <Tabs>
   <Tab title="act">

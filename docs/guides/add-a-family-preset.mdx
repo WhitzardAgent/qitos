@@ -3,13 +3,13 @@ title: "Add a model-family preset"
 description: "How to extend QitOS v0.4 with a new family preset without forking the runtime."
 ---
 
-When you add a new family preset, do not start by writing a new runtime.
+A family preset (a configuration bundle that maps a model family to its default protocol, adapter, and tool delivery) lets you add support for a new model family without writing a new runtime. Do not start by writing one.
 
 Start by answering five questions:
 
 1. What model names should resolve to this family?
-2. Which transport builds the model object?
-3. What is the default protocol?
+2. Which transport (the adapter layer that handles API communication with the model provider) builds the model object?
+3. What is the default protocol (the output format the model is expected to follow)?
 4. What fallback protocol chain should remain stable?
 5. How should tools and context be delivered by default?
 
@@ -39,9 +39,7 @@ FamilyPreset(
 
 ## Reuse protocol objects instead of inventing new ones
 
-QitOS v0.4 deliberately reuses `ModelProtocol`.
-
-That means most new families should choose from:
+QitOS v0.4 reuses the existing `ModelProtocol` set, so most new families should choose from:
 
 - `react_text_v1`
 - `json_decision_v1`
@@ -71,12 +69,12 @@ The preset becomes valuable only if researchers can see it later.
 Make sure the resolved harness metadata is visible through:
 
 - `RunSpec.metadata`
-- trace manifest
+- trace manifest (the JSON record of the full run history)
 - `qita`
 
 ## Validation checklist
 
 - `resolve_family_preset(...)` resolves the family from both family id and model name
-- `build_harness_policy(...)` returns the right protocol and parser
+- `build_harness_policy(...)` returns the right protocol and parser (the component that converts raw model output into a structured `Decision`)
 - `infer_model_profile(...)` stays aligned with preset defaults
 - the flagship example can switch into the new family without changing agent code

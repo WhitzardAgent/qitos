@@ -3,7 +3,7 @@ title: "可观测性"
 description: "通过 qita web board 检查、回放并导出 agent runs。"
 ---
 
-默认情况下，每次 `agent.run()` 都会把 trace 写到 `./runs/<run_id>/`。`qita` CLI 会读取这些 traces，并通过本地 web board 提供 run inspection、step-by-step replay 与独立 HTML 导出。
+默认情况下，每次 `agent.run()` 都会把 trace（运行记录）写到 `./runs/<run_id>/`。`qita` CLI 会读取这些 traces，并通过本地 web board 提供 run inspection、step-by-step replay 与独立 HTML 导出。
 
 ## Trace artifacts
 
@@ -13,7 +13,7 @@ description: "通过 qita web board 检查、回放并导出 agent runs。"
 |---|---|
 | `manifest.json` | 运行元数据：`run_id`、`model_id`、`status`、`stop_reason`、`step_count`、`event_count`、`schema_version`、`prompt_hash`、`run_config_hash`、`seed`、`summary` |
 | `events.jsonl` | 每行一个 `RuntimeEvent`，包含 `step_id`、`phase`、`ts`、`ok`、`error` 与 `payload` |
-| `steps.jsonl` | 每行一个 `StepRecord`，包含 `step_id`、`decision`、`actions`、`action_results`、`observation` 与 `critic_outputs` |
+| `steps.jsonl` | 每行一个 `StepRecord`，包含 `step_id`、`decision`（决策）、`actions`（标准化工具调用）、`action_results`、`observation`（每步后 agent 接收的结构化观察结果）与 `critic_outputs` |
 
 `manifest.json` 会在初始化时写出，并在 Engine 退出时 finalize。`events.jsonl` 与 `steps.jsonl` 都是 append-only。
 
@@ -67,7 +67,7 @@ board 每 2.5 秒自动刷新一次。每个 run 会以卡片形式展示：
 
 页面顶部还会展示摘要指标，如 success rate、平均 steps、平均 events 和主要失败 stop reasons。
 
-这是最常用的总览界面：
+这是最常用的总览界面。
 
 ![qita board 总览](/images/qita-board.png)
 
@@ -81,11 +81,11 @@ board 每 2.5 秒自动刷新一次。每个 run 会以卡片形式展示：
 
 轨迹视图会把每一步显示成一张卡片，通常包含这些折叠区块：
 
-- **State**：当前 observation 中的关键状态字段
+- **State**：当前 observation（每步后 agent 接收的结构化观察结果）中的关键状态字段
 - **Thought**：模型推理文本
-- **Action**：本步调用的工具
+- **Action**：本步调用的 action（标准化工具调用）
 - **Direct Observation**：action results；搜索结果会表格化，错误会高亮
-- **Critic**：critic 输出
+- **Critic**：critic（评估器）输出
 - **Trace Events**：该 step 的原始 `RuntimeEvent`
 
 左侧 **Step Navigator** 支持：
@@ -103,7 +103,7 @@ board 每 2.5 秒自动刷新一次。每个 run 会以卡片形式展示：
 
 直接展示格式化后的 `manifest.json`。
 
-这是逐步检查 agent 行为时最重要的界面：
+这是逐步检查 agent 行为时最重要的界面。
 
 ![qita trajectory 视图](/images/qita-traj.png)
 
@@ -144,7 +144,7 @@ qita export --run ./runs/my_agent_20260407_120000_000001 --html out.html
 | `--run` | run 目录路径，必填 |
 | `--html` | 输出 HTML 文件路径，必填 |
 
-导出文件会内联全部 CSS、JavaScript 与 run 数据，因此可以直接作为审阅 artifact 发送给同事或审稿人。
+导出文件会内联全部 CSS、JavaScript 与 run 数据，因此可以直接作为审阅 artifact（持久化的输出文件）发送给同事或审稿人。
 
 ---
 
@@ -168,7 +168,7 @@ result = agent.run(
 result = agent.run(task="...", trace=False, return_state=True)
 ```
 
-也可以传入一个预配置 `TraceWriter`：
+也可以传入一个预配置（preset）的 `TraceWriter`：
 
 ```python
 from qitos.trace import TraceWriter

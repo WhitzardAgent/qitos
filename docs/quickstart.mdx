@@ -3,9 +3,9 @@ title: "Quickstart"
 description: "Run your first QitOS minimal coding agent in under 2 minutes, then inspect it with qita."
 ---
 
-This guide gets you from a fresh environment to a model-backed minimal coding agent and a live trace view in under 2 minutes.
+This guide takes you from a fresh environment to a model-backed minimal coding agent and a live trace view in under 2 minutes.
 
-This is what the runtime feels like when you actually watch it work:
+Here is what the runtime looks like when you watch it work:
 
 ![QitOS runtime snapshot](/images/qitos-cli.png)
 
@@ -45,7 +45,7 @@ Need a provider first? Read [Prerequisites](/prerequisites). It explains how to 
     qit demo minimal
     ```
 
-    This demo seeds a tiny buggy workspace, configures a real model, asks a minimal coding agent to fix the bug, runs verification, and writes a qita-ready trace. You should see output similar to:
+    This demo creates a small workspace with a buggy file, configures a real model, asks a minimal coding agent to fix the bug, runs verification, and writes a qita-ready trace. You should see output similar to:
 
     ```
     model_name: Qwen/Qwen3-8B
@@ -63,7 +63,7 @@ Need a provider first? Read [Prerequisites](/prerequisites). It explains how to 
     qita board --logdir runs
     ```
 
-    Open [http://127.0.0.1:8765](http://127.0.0.1:8765) in your browser. The board shows every run in your log directory with step counts, stop reasons, and final results. Click **view** on any run to inspect its step-by-step trajectory, or **replay** to play it back.
+    Open [http://127.0.0.1:8765](http://127.0.0.1:8765) in your browser. The board shows every run in your log directory with step counts, stop reasons, and final results. Click **view** on any run to inspect its step-by-step trajectory (the temporal sequence of prompts, decisions, tool calls, and observations), or **replay** to play it back.
 
     <Tip>
       The packaged demo and [`examples/quickstart/minimal_agent.py`](https://github.com/Qitor/qitos/blob/main/examples/quickstart/minimal_agent.py) follow the same minimal coding-agent path. Start from the example file when you want to read or customize the code directly.

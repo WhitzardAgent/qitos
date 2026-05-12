@@ -3,7 +3,7 @@ title: "教程：可复现的 Benchmark Runs"
 description: "如何通过官方 QitOS benchmark 路径运行 GAIA、Tau-Bench 或 CyBench，并检查产出的 artifacts。"
 ---
 
-这节课的目标不是“先拿一个分数”，而是产出一个真正可以 replay、diff、export 的 official QitOS benchmark run。
+这节课的目标不是先拿一个分数，而是产出一个真正可以 replay、diff、export 的 official QitOS benchmark run。
 
 ## 你会学到什么
 
@@ -45,7 +45,7 @@ qit bench run \
 - `trace_run_dir`
 - `run_spec_ref`
 
-这正是跨 benchmark 统一聚合的基础。
+这也是跨 benchmark 统一聚合的基础。
 
 ## 第三步：聚合指标
 
@@ -57,7 +57,7 @@ qit bench eval --input ./results/tau_retail_test.jsonl --json
 
 ## 第四步：检查 trace
 
-如果 run 同时生成了 trace 目录，就继续用 `qita`：
+如果 run 同时生成了 trace（运行记录）目录，就继续用 `qita`：
 
 ```bash
 qit bench replay --run ./runs/<run_id>
@@ -83,7 +83,7 @@ qita board --logdir ./runs
 - `parser_name`
 - `tool_manifest`
 
-如果缺失这些字段，trace 依然可能有用，但还没有达到 official run 契约。
+如果缺失这些字段，trace（运行记录）依然可能有用，但还没有达到 official run 契约。
 
 ## 什么时候还应该使用 examples
 

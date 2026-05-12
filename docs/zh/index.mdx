@@ -7,10 +7,10 @@ QitOS 是面向 agent 研究者的 torch-flavor 框架。你可以在同一个 `
 
 ## 两条 authoring path
 
-QitOS 会刻意保留两条顶层的 agent 编写路径：
+QitOS 保留两条顶层的 agent 编写路径：
 
-- `Research-first`：手写 prompt、parser、protocol、transport 和 tool surface，直接研究与优化 kernel。
-- `Preset-first`：从 family preset 和 preset tool builders 出发，快速得到稳定 baseline 与多模型切换能力。
+- `Research-first`：手写 prompt、parser、protocol（模型输出的格式契约）、transport（与模型 API 通信的客户端）和 tool surface，直接研究与优化 kernel（执行内核）。
+- `Preset-first`：从 family preset（预配置的模型家族默认值）和 preset tool builders 出发，快速得到稳定 baseline 与多模型切换能力。
 
 这两条路径都应该是一等公民。
 
@@ -19,13 +19,13 @@ QitOS 会刻意保留两条顶层的 agent 编写路径：
     2 分钟内跑起第一个 agent
   </Card>
   <Card title="构建第一个 Agent" icon="code" href="/zh/guides/build-your-first-agent">
-    按步骤理解 state、tools、run 和 trace
+    按步骤理解 state、tools、run 和 trace（运行记录）
   </Card>
   <Card title="教程课程" icon="graduation-cap" href="/zh/tutorials">
     通过四节课程式教程学习 QitOS 的 agent 设计方法
   </Card>
   <Card title="核心概念" icon="book" href="/zh/concepts/agent-module">
-    理解 AgentModule、Engine、State、Tools 与 Trace
+    理解 AgentModule、Engine、State、Tools 与 Trace（运行记录）
   </Card>
   <Card title="API 参考" icon="rectangle-terminal" href="/zh/reference/api">
     查看公开 Python API 与 CLI
@@ -65,7 +65,7 @@ QitOS 会刻意保留两条顶层的 agent 编写路径：
     ```bash
     qita board --logdir runs
     ```
-    打开 [http://127.0.0.1:8765](http://127.0.0.1:8765)，查看 trace、replay 和导出结果。
+    打开 [http://127.0.0.1:8765](http://127.0.0.1:8765)，查看 trace（运行记录）、replay 和导出结果。
   </Step>
 </Steps>
 
@@ -102,6 +102,6 @@ QitOS 会刻意保留两条顶层的 agent 编写路径：
     HistoryPolicy、CompactHistory 与 memory adapters 共同处理长时任务
   </Card>
   <Card title="以 qita 为核心的可追溯性" icon="chart-line" href="/zh/guides/observability">
-    board、replay 与 export 都建立在结构化 trace artifacts 之上
+    board、replay 与 export 都建立在结构化 trace artifacts（持久化的输出文件）之上
   </Card>
 </CardGroup>

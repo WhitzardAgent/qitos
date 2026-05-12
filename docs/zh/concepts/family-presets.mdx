@@ -3,7 +3,7 @@ title: "Family Presets"
 description: "理解 QitOS v0.4 为什么引入 family preset、harness policy 与 transport adapter。"
 ---
 
-QitOS v0.4 继续保留同一个 `AgentModule + Engine` kernel，但在模型接入层上新增了一层稳定抽象：
+QitOS v0.4 继续保留同一个 `AgentModule + Engine` kernel（执行内核），但在模型接入层上新增了一层稳定抽象：
 
 - `FamilyPreset`
 - `HarnessPolicy`
@@ -15,12 +15,12 @@ QitOS v0.4 继续保留同一个 `AgentModule + Engine` kernel，但在模型接
 
 ## 一句话理解
 
-family preset 就是一个模型家族的研究默认值。
+family preset（预配置的模型家族默认值）就是一个模型家族的研究默认值。
 
 它会回答：
 
-- 用什么 transport
-- 默认走什么 protocol
+- 用什么 transport（与模型 API 通信的客户端）
+- 默认走什么 protocol（模型输出的格式契约）
 - fallback protocol chain 是什么
 - tool schema 应该如何交付
 - context 默认策略是什么
@@ -73,7 +73,7 @@ QitOS v0.4 首批内建的 gold presets 是：
 - Qwen、Kimi、`gpt-oss`、Gemma 4 默认走 `json_decision_v1`
 - MiniMax 保留 `minimax_tool_call_v1`
 
-但 “默认 protocol” 并不总能完整描述模型侧行为。
+但默认 protocol（模型输出的格式契约）并不总能完整描述模型侧行为。
 
 现在 Qwen 在 OpenAI-compatible endpoint 返回结构化 `tool_calls` 时，会优先命中 **native tool-call lane**。
 
@@ -83,11 +83,11 @@ QitOS v0.4 首批内建的 gold presets 是：
 - 但 native tool calls 会在文本 parser chain 之前优先尝试
 - `xml_decision_v1 -> react_text_v1` 则继续作为稳定 fallback
 
-这正是 v0.4 的关键设计点：**模型家族** 和 **底层 transport** 被正式拆开了。
+这是 v0.4 的关键设计点：**模型家族** 和 **底层 transport** 被正式拆开了。
 
 ## 为什么不直接手写 `OpenAICompatibleModel(...)`
 
-当然仍然可以。
+当然仍然可以手写。
 
 如果你只是：
 

@@ -5,11 +5,11 @@ description: "解释 QitOS 如何拆分 framework capability、benchmark adapter
 
 # Benchmark 与 Recipe
 
-QitOS 现在有意把三层分开。
+QitOS 把三层明确分开。
 
 ## 1. Framework 层
 
-这是可复用的内核：
+这是可复用的内核（执行内核）：
 
 - `AgentModule + Engine`
 - `DesktopEnv`
@@ -28,7 +28,7 @@ QitOS 现在有意把三层分开。
 - `qitos.benchmark.osworld`：真实 OSWorld adapter path
 - benchmark-specific runtime
 - benchmark-specific evaluator/scorer
-- benchmark-native task metadata 与 artifact 处理
+- benchmark-native task metadata 与 artifact（持久化的输出文件）处理
 
 凡是 `test_all.json`、evaluator bridge、setup/postconfig、qcow2 boot input、benchmark-native scoring 这类内容，都应该放这里。
 
@@ -40,7 +40,7 @@ Recipe 是可复现的 baseline method：
 - benchmark baseline method
 - multimodal starter method
 
-现在 desktop baseline 已经下沉到：
+desktop baseline 已经下沉到：
 
 - `/Users/morinop/coding/yoga_framework/qitos/recipes/desktop/osworld_starter.py`
 
@@ -50,7 +50,7 @@ Recipe 是可复现的 baseline method：
 
 只保留成一个很薄的入口包装。
 
-同样的结构现在也已经扩展到：
+同样的结构也已扩展到：
 
 - `qitos.recipes.benchmarks.gaia`
 - `qitos.recipes.benchmarks.tau_bench`
@@ -64,6 +64,6 @@ Recipe 是可复现的 baseline method：
 - 同一个 baseline 可以被 example、docs 和 benchmark runner 共同复用
 - 未来独立 `qitos-recipes` 时，几乎只需要迁移打包边界，不需要重构设计
 
-这才是 research-first 框架该有的演进方式。
+这也是 research-first 框架应有的演进方式。
 
 如果你要新增 benchmark family，下一步请直接看 [第三方 Benchmark 接入规范](/zh/guides/third-party-benchmark-integration)。

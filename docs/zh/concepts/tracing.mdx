@@ -3,9 +3,7 @@ title: "Tracing"
 description: "QitOS 会为每次 run 写出结构化 trace artifacts，从而支持 replay、diff、export 与审计。"
 ---
 
-Tracing 是 QitOS observability 的持久化层。
-
-每次启用 trace 的 run 都会写出一个自包含目录：
+Tracing 是 QitOS observability 的持久化层。每次启用 trace（运行记录）的 run 都会写出一个自包含目录：
 
 ```text
 <trace_logdir>/<run_id>/
@@ -22,16 +20,16 @@ Tracing 是 QitOS observability 的持久化层。
 | `events.jsonl` | runtime phases 的事件流 |
 | `steps.jsonl` | 每个已完成 step 的结构化记录 |
 
-原始文件是事实来源，`qita` 是建立在这些 artifacts 之上的人工检查层。
+原始文件是事实来源，`qita` 是建立在这些 artifacts（持久化的输出文件）之上的人工检查层。
 
 ## 为什么 tracing 是一等特性
 
 QitOS 面向的是 agent 研究，而不仅是一次性 demo。
 
-这意味着框架必须保留下列问题的答案：
+这意味着框架必须能回答下列问题：
 
 - run 是怎么停下来的
-- 它用的是什么 prompt / parser 契约
+- 它用的是什么 prompt / parser（将原始模型输出解析为 Decision 的组件）契约
 - 它看到了哪些 tools
 - 上下文在长时运行中如何变化
 - 哪些配置字段决定了 replay 和 compare 的意义
@@ -71,7 +69,7 @@ QitOS 的 tracing 支持的是 **best-effort research replay**。
 - 导出审阅 artifact
 - replay benchmark failure
 
-但不应被理解为“远程模型永远返回完全相同的 tokens”。
+但不应被理解为远程模型永远返回完全相同的 tokens。
 
 ## 用 qita 检查 traces
 
@@ -81,7 +79,7 @@ qita replay --run ./runs/<run_id>
 qita export --run ./runs/<run_id> --html ./report.html
 ```
 
-`qita` 还支持 run compare，所以你可以直接回答“两次 run 为什么不同”，而不是手工读 JSON。
+`qita` 还支持 run compare，你可以直接回答两次 run 为什么不同，不需要手工读 JSON。
 
 ## 继续阅读
 

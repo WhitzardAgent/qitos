@@ -5,7 +5,7 @@ description: "Use qita board, replay, export, and diff to understand why an offi
 
 This tutorial starts after a run already exists.
 
-The question is no longer “did it finish?” The question is “why did it behave this way, and what changed between two runs?”
+The question is no longer whether it finished. The question is why it behaved this way, and what changed between two runs.
 
 ## Step 1: open the board
 
@@ -42,7 +42,7 @@ In the run overview, check these first:
 - `prompt protocol`
 - `parser`
 
-That tells you whether the run is comparable before you even read step content.
+This tells you whether the run is comparable before you even read step content.
 
 ## Step 3: inspect parser and context telemetry
 
@@ -91,7 +91,7 @@ When you need to share a failure with a collaborator:
 qit bench export --run ./runs/<run_id> --html ./reports/failed_run.html
 ```
 
-That keeps the investigation tied to the same trace artifact instead of screenshots or hand-written notes.
+This keeps the investigation tied to the same trace artifact (a persistent output file produced by a run) instead of screenshots or hand-written notes.
 
 ## Best-effort replay reminder
 

@@ -22,17 +22,17 @@ The desktop starter benchmark is the first path where QitOS can say:
 - one benchmark family is official
 - one baseline agent is canonical
 - one qita debugging workflow is documented
-- one artifact schema is reused end to end
+- one artifact (a persistent output from a run) schema is reused end to end
 
-That matters more than shipping several half-complete multimodal demos.
+Completing one path end to end matters more than shipping several half-complete multimodal demos.
 
 ## What the starter includes
 
 - OSWorld-inspired desktop task shape
-- screenshot-backed observations
+- screenshot-backed observations (the data returned by the environment after each action)
 - optional a11y / OCR / DOM / UI candidates
 - provider-neutral GUI actions
-- planner + grounding + action selector + critic baseline loop
+- planner + grounding + action selector + critic (a step-level validator that can allow, stop, or retry) baseline loop
 - qita screenshot timeline, playback preview, and basic overlays
 
 ## What it does not promise yet

@@ -3,15 +3,15 @@ title: "Introduction"
 description: "QitOS is a research-first agent framework for building reproducible LLM agents with a clean AgentModule + Engine kernel."
 ---
 
-QitOS gives you a stable `AgentModule + Engine` kernel for building reproducible LLM agents. Whether you're prototyping ReAct loops, running GAIA benchmarks, or shipping a production coding agent, QitOS keeps your runs traceable, your patterns composable, and your results reproducible.
+QitOS gives you a stable `AgentModule + Engine` kernel for building reproducible LLM agents. Whether you are prototyping ReAct loops, running GAIA benchmarks, or shipping a production coding agent, QitOS keeps your runs traceable, your patterns composable, and your results reproducible.
 
-A long-running QitOS coding run stays readable instead of turning into opaque glue code.
+A long-running QitOS coding run stays readable — it does not degrade into opaque glue code.
 
 ![QitOS live coding run](/images/demo.gif)
 
 ## Two ways to author agents in QitOS
 
-QitOS keeps two authoring paths on purpose.
+QitOS keeps two authoring paths intentionally.
 
 ### Research-first
 
@@ -20,22 +20,22 @@ This is the default path for researchers who want the most control.
 You handwrite:
 
 - the system prompt
-- the parser
-- the model protocol
-- the model transport
-- the tool surface
+- the parser (the component that converts raw model output into a structured Decision)
+- the model protocol (the output format contract expected from the model)
+- the model transport (the client that sends requests to the model API)
+- the tool surface (the set of tools the agent can call)
 
-This is the most torch-like path in the framework: direct, explicit, and easy to mutate for experiments.
+This is the most PyTorch-like path in the framework: direct, explicit, and easy to modify for experiments.
 
 ### Preset-first
 
-This is the fastest path when you want a stable baseline or fast model-family switching.
+This is the fastest path when you want a stable baseline or quick model-family switching.
 
 You start from:
 
-- family presets
-- harness policies
-- preset tool builders
+- family presets (pre-configured defaults for a model family, covering protocol, transport, and tool delivery)
+- harness policies (rules that control how the model harness resolves at runtime)
+- preset tool builders (pre-assembled tool bundles for common workflows)
 
 This path is especially useful when one agent should switch across Qwen, Kimi, MiniMax, `gpt-oss`, and Gemma 4 without rewriting the agent.
 
@@ -43,19 +43,19 @@ This path is especially useful when one agent should switch across Qwen, Kimi, M
 
 QitOS is built for three kinds of practitioners:
 
-- **Researchers** — prototype ReAct, PlanAct, Tree-of-Thought, Reflexion, and new agent methods with reproducible runs you can diff, replay, and publish.
-- **Agent builders** — build tool-using agents on a stable execution loop instead of piling framework glue code on top of raw LLM calls.
-- **Evaluators** — run GAIA, Tau-Bench, and CyBench-style workflows on the same kernel you use in product agents, so benchmark results actually transfer.
+- **Researchers** — prototype ReAct, PlanAct, Tree-of-Thought, Reflexion, and new agent methods, then diff, replay, and publish the runs.
+- **Agent builders** — build tool-using agents on a stable execution loop, instead of piling framework glue code on top of raw LLM calls.
+- **Evaluators** — run GAIA, Tau-Bench, and CyBench workflows on the same kernel you use in product agents, so benchmark results actually transfer to real use.
 
 ## Key capabilities
 
 ### Reproducible runs
 
-Every QitOS run writes a `manifest.json`, `events.jsonl`, and `steps.jsonl` to a local run directory. The manifest captures the model ID, prompt hash, config hash, seed, and tool manifest — everything you need to reproduce or compare runs exactly.
+Every QitOS run writes a `manifest.json`, `events.jsonl`, and `steps.jsonl` to a local run directory. The manifest captures the model ID, prompt hash, config hash, seed, and tool manifest (the serialized description of all tools available to the run) — everything you need to reproduce or compare runs exactly.
 
 ### Built-in observability with qita
 
-`qita` is QitOS's built-in trace viewer. After any run, launch the board to inspect step-by-step execution, replay the trajectory, and export traces to standalone HTML.
+`qita` is QitOS's built-in trace viewer. After any run, launch the board to inspect step-by-step execution, replay the trajectory (the temporal sequence of prompts, decisions, tool calls, and observations across steps), and export traces to standalone HTML.
 
 ```bash
 qita board --logdir runs
@@ -69,10 +69,10 @@ QitOS ships with canonical implementations of four established reasoning pattern
 
 | Pattern | Description |
 |---|---|
-| **ReAct** | Text protocol with one action per step |
-| **PlanAct** | Explicit plan first, then step-by-step execution |
-| **Tree-of-Thought** | Branch and score before acting |
-| **Reflexion** | Actor-critic loop with grounded retry behavior |
+| **ReAct** | A reasoning-acting loop where the model alternates between thinking and taking one action per step |
+| **PlanAct** | Generate an explicit plan first, then execute it step by step |
+| **Tree-of-Thought** | Branch into multiple candidate paths, score them, then choose the best one |
+| **Reflexion** | An actor-critic loop where a critic evaluates each step and the actor retries based on feedback |
 
 ### Benchmark adapters
 
@@ -80,28 +80,28 @@ QitOS includes adapters for GAIA, Tau-Bench, and CyBench that run on the same `A
 
 ## Featured designs
 
-These are the design decisions that make QitOS feel different from a pile of agent utilities.
+These are the design decisions that distinguish QitOS from a loose collection of agent utilities.
 
 ### Single-kernel architecture
 
 QitOS is opinionated about one thing above all: there is one runtime kernel per run.
 
-- `AgentModule` defines policy
-- `Engine` owns execution
-- tools, parsers, critics, memory, and tracing attach to that kernel instead of creating side orchestrators
+- `AgentModule` defines policy (what the agent should do at each step)
+- `Engine` owns execution (the actual step loop)
+- tools, parsers, critics, memory, and tracing attach to that kernel instead of spawning separate orchestrators
 
 This is what keeps examples, benchmarks, and production-style agents comparable.
 
 ### Protocol-aware prompting and parsing
 
-QitOS treats prompt format and parser choice as a first-class contract.
+QitOS treats prompt format and parser choice as a first-class contract — they must match each other.
 
 - ReAct prompts pair with `ReActTextParser`
 - JSON prompts pair with `JsonDecisionParser`
 - XML prompts pair with `XmlDecisionParser`
-- more structured variants such as Terminus and MiniMax tool-call parsers stay in the same model-response -> parser -> `Decision` path
+- more structured variants such as Terminus and MiniMax tool-call parsers follow the same model-response → parser → `Decision` path
 
-This is one of the main reasons traces stay understandable instead of collapsing into provider-specific glue.
+This is why traces stay understandable instead of collapsing into provider-specific glue code.
 
 ### Preset-first agent authoring
 
@@ -120,18 +120,18 @@ Long-running agents are a first-class concern in QitOS.
 
 You can control context growth through:
 
-- `HistoryPolicy` for message selection
+- `HistoryPolicy` for selecting which messages to send to the model
 - token-budget-aware summarization with `TokenBudgetSummaryHistory`
-- multi-stage compaction with `CompactHistory`
-- memory adapters for semantic or persistent recall
+- multi-stage compaction (gradually compressing older context while keeping recent messages intact) with `CompactHistory`
+- memory adapters for semantic or persistent recall across steps
 
-This is the practical side of the research story: the framework helps you study and shape long runs instead of pretending context is free.
+The framework helps you study and shape long runs instead of pretending context is free.
 
 ### Trace-first observability with qita
 
-QitOS assumes that if a run matters, it should be inspectable.
+QitOS assumes that if a run matters, it should be inspectable afterward.
 
-Every traced run produces structured artifacts, and `qita` turns them into:
+Every traced run produces structured artifacts (saved files that record what happened during the run), and `qita` turns them into:
 
 - a board for comparing runs
 - replay for step-by-step inspection
@@ -141,21 +141,21 @@ This trace-first design is why the same kernel works well for experiments, bench
 
 ### Domain specialization without a new runtime
 
-One of the strongest design features in QitOS is that domain agents are still ordinary QitOS agents.
+One of the strongest design features in QitOS is that domain agents are still ordinary QitOS agents — they do not need a separate runtime.
 
-The Claude Code-style agent, benchmark runners, and the code security audit agent all reuse the same runtime. Domain behavior lives in:
+The Claude Code-style agent, benchmark runners, and the code security audit agent all reuse the same runtime. Domain behavior is expressed through:
 
 - state design
 - prompt policy
 - tool composition
 - `reduce()` semantics
 
-That makes specialization easier to reason about and easier to reproduce.
+This makes specialization easier to reason about and easier to reproduce.
 
 ## Status
 
 <Warning>
-QitOS is currently **Alpha**. The stable foundation is the `AgentModule + Engine` kernel, the `qita` trace/observability flow, canonical examples, and benchmark adapters. Higher-level convenience APIs, some `kit` modules, and experimental toolsets are likely to evolve. If you are evaluating adoption, start from the kernel and examples rather than assuming frozen surface area.
+QitOS is currently **Alpha**. The stable foundation is the `AgentModule + Engine` kernel, the `qita` trace/observability flow, canonical examples, and benchmark adapters. Higher-level convenience APIs, some `kit` modules, and experimental toolsets are likely to evolve. If you are evaluating QitOS for adoption, start from the kernel and examples rather than assuming all higher-level APIs are frozen.
 </Warning>
 
 ## Where to go next

@@ -12,7 +12,7 @@ Both are optional. If you pass neither, the Engine uses an internal 24-message w
 
 ## The mental model
 
-When researchers say "context", they often mean several different things at once. QitOS keeps them separate on purpose.
+When researchers say "context", they often mean several different things at once. QitOS keeps them separate.
 
 | Concern | QitOS primitive | Typical use |
 |---|---|---|
@@ -20,7 +20,7 @@ When researchers say "context", they often mean several different things at once
 | What the agent wants to remember across steps | `Memory` | Recall of findings, artifacts, and prior observations |
 | What happens when context grows too large | `TokenBudgetSummaryHistory` / `CompactHistory` | Long-running control |
 
-This separation is one of QitOS's most practical design choices for long-running agents. You can adjust message-window behavior without redesigning memory, and you can change memory strategy without changing the prompt protocol.
+This separation makes long-running agents more manageable. You can adjust message-window behavior without redesigning memory, and you can change memory strategy without changing the prompt protocol (the output format the model is expected to follow).
 
 ## History
 
@@ -78,11 +78,11 @@ Choose it when:
 
 - the agent regularly runs long enough to hit context pressure
 - you want a simple summary fallback
-- you want token-budget behavior without the full multi-stage compaction system
+- you want token-budget behavior without the full multi-stage compaction (context reduction by summarizing or trimming older messages) system
 
 ### CompactHistory
 
-`CompactHistory` is the most advanced built-in context compactor.
+`CompactHistory` is the most advanced built-in context compactor (a strategy that reduces context size by summarizing or trimming older messages).
 
 It combines:
 
@@ -100,7 +100,7 @@ Choose it when:
 
 ## Context compaction in practice
 
-`CompactHistory` is worth understanding because it captures one of QitOS's most important design ideas: long-running behavior should be explicit and debuggable.
+`CompactHistory` is worth understanding because it reflects a core QitOS design idea: long-running behavior should be explicit and debuggable.
 
 Its main pieces are:
 
@@ -343,6 +343,6 @@ In long-running agents, inspect your runs with `qita` and look for:
 - context-history warning events
 - summary or compaction events
 - whether later steps lose important constraints
-- whether your chosen memory adapter is preserving the right artifacts
+- whether your chosen memory adapter is preserving the right artifacts (persistent output records from the run)
 
-That is the research workflow QitOS is designed to support: tune context behavior, then inspect it as part of the run itself.
+This research workflow -- tune context behavior, then inspect it as part of the run itself -- is what QitOS is designed to support.

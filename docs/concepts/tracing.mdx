@@ -3,7 +3,7 @@ title: "Tracing"
 description: "QitOS writes structured trace artifacts for every run so you can replay, diff, export, and audit agent behavior."
 ---
 
-Tracing is the persistence layer behind QitOS observability.
+Tracing is the persistence layer behind QitOS observability — every run writes structured artifacts (persistent output files like `manifest.json`, `steps.jsonl`, and `events.jsonl`) that capture what happened.
 
 Every traced run writes a self-contained directory:
 
@@ -26,9 +26,7 @@ The raw files are the source of truth. `qita` is the human inspection surface bu
 
 ## Why tracing is a first-class feature
 
-QitOS is built for agent research, not only one-off demos.
-
-That means the framework must preserve:
+QitOS is built for agent research, not only one-off demos, so the framework must preserve:
 
 - how a run stopped
 - what prompt/parser contract it used
@@ -36,7 +34,7 @@ That means the framework must preserve:
 - how context changed over time
 - which config fields matter for replay and comparison
 
-This is why tracing is enabled by default in `AgentModule.run(...)`.
+Tracing is enabled by default in `AgentModule.run(...)` for these reasons.
 
 ## Trace metadata in v0.3
 
@@ -56,13 +54,13 @@ The v0.3 closure adds stronger reproducibility metadata to the manifest, includi
 - `replay_mode`
 - token / latency / cost summaries
 
-These fields are what make qita compare and benchmark result normalization meaningful.
+These fields support qita comparison and benchmark result normalization.
 
 ## Best-effort replay
 
 Tracing in QitOS supports **best-effort research replay**.
 
-That means QitOS records enough information to inspect and compare runs well, but it does not promise strict deterministic re-execution for remote models or external environments.
+That means QitOS records enough information to inspect and compare runs well, but does not promise strict deterministic re-execution for remote models or external environments.
 
 Use traces for:
 
@@ -71,7 +69,7 @@ Use traces for:
 - exporting artifacts for review
 - replaying benchmark failures
 
-Do not assume a remote provider will always generate identical tokens forever.
+Do not rely on traces for exact token-level reproducibility from remote providers.
 
 ## qita on top of traces
 

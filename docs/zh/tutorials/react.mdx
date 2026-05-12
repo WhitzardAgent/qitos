@@ -5,15 +5,15 @@ description: "构建第一个真正的 QitOS agent，并完整理解 prompt、pa
 
 这是整条课程里第一个完整 agent。
 
-它刻意保持小巧，但并不“玩具化”。这一课里你会看到一个真正可运行的 coding agent，它具备：
+它故意保持小巧，但并不玩具化。这一课里你会看到一个真正可运行的 coding agent，它具备完整的组件链：
 
 - 强类型 state
-- 真实 LLM harness
+- 真实 LLM harness（模型适配层）
 - 真实 system prompt
-- 真实 parser
+- 真实 parser（将原始模型输出解析为 Decision 的组件）
 - 真实 tools
-- 真实 `reduce()` 循环
-- 真实 `qita` traces
+- 真实 `reduce()`（归约，将观察和决策归约回状态）循环
+- 真实 `qita` traces（运行记录）
 
 你会结合 `examples/patterns/react.py` 来学习，但这节课本身会把设计解释清楚，不要求你先反向阅读源码。
 
@@ -25,7 +25,7 @@ description: "构建第一个真正的 QitOS agent，并完整理解 prompt、pa
 - 修复 `add(a, b)`，让它返回 `a + b`
 - 运行验证命令
 
-正因为任务小，它特别适合拿来观察完整 QitOS 内核，而不会被额外 orchestration 噪音掩盖。
+正因为任务小，它特别适合拿来观察完整 QitOS 执行内核，而不会被额外 orchestration 噪音掩盖。
 
 ## 本课的设计选择
 
@@ -33,9 +33,9 @@ description: "构建第一个真正的 QitOS agent，并完整理解 prompt、pa
 |---|---|---|
 | 任务形态 | 单文件 bug fix + 单个验证命令 | 易验证、易追踪 |
 | State | `scratchpad`、`target_file`、`test_command` | 足够影响下一步决策，但不引入冗余状态 |
-| Model harness | 返回文本的 `OpenAICompatibleModel` | 简单、可迁移、provider-agnostic |
+| Model harness（模型适配层） | 返回文本的 `OpenAICompatibleModel` | 简单、可迁移、provider-agnostic |
 | Prompt 契约 | `REACT_SYSTEM_PROMPT` | 明确的一次一工具文本协议 |
-| Parser | `ReActTextParser` | 与 `Thought:` / `Action:` 完整对应 |
+| Parser（解析器） | `ReActTextParser` | 与 `Thought:` / `Action:` 完整对应 |
 | Tools | 手工 `ToolRegistry` + 紧凑 `CodingToolSet` | 先学清楚工具表面，再学 presets |
 | Memory | 不使用 | run 很短，没有引入单独 memory 的必要 |
 | History | 使用 Engine 默认行为 | 在理解内核之前不引入额外 context control |
@@ -59,7 +59,7 @@ model_parser=ReActTextParser()
 
 `messages -> text model output -> ReAct parser -> Decision -> tool execution`
 
-我们不从 native tool calling、XML、JSON 或 model-specific harness 开始，因为那些选择会在你还没理解核心 loop 之前，过早引入协议耦合。
+其中 parser 负责将原始模型输出解析为 Decision（agent 每步的结构化决策），而 protocol（模型输出的格式契约）定义了输出的格式约定。我们不从 native tool calling、XML、JSON 或 model-specific harness 开始，因为那些选择会在你还没理解核心 loop 之前，过早引入协议耦合。
 
 ## system prompt 是协议，不是装饰
 
@@ -90,7 +90,7 @@ def build_system_prompt(self, state: ReactState) -> str | None:
     )
 ```
 
-这一点很关键。`ReActTextParser` 不是在“猜”模型输出，它是在消费这份明确约定好的协议。
+这一点很关键。`ReActTextParser` 不是在猜模型输出，它是在消费这份明确约定好的协议。
 
 本课最重要的第一条经验就是：
 
@@ -112,18 +112,18 @@ def build_model() -> OpenAICompatibleModel:
     )
 ```
 
-为什么这里选这个 harness：
+为什么这里选这个 harness（模型适配层）：
 
 - 它适用于 OpenAI-compatible endpoints
 - 模型返回纯文本，便于观察
 - 与基于 prompt 注入 tool schema 的路径天然兼容
 - 让课程可以在不同 provider 与本地网关间迁移
 
-这节课你不是在选择“最强模型”，而是在选择“最能暴露内核结构的 harness”。
+这节课你不是在选择最强模型，而是在选择最能暴露内核结构的 harness（模型适配层）。
 
 <Steps>
   <Step title="围绕下一步决策来设计 state">
-    本课的 state 刻意很小：
+    本课的 state 故意很小：
 
     ```python
     @dataclass
@@ -139,7 +139,7 @@ def build_model() -> OpenAICompatibleModel:
 
     - `scratchpad`：保存压缩后的最近轨迹，供下一步决策使用
     - `target_file`：让 agent 始终围绕单一工件行动
-    - `test_command`：把“任务完成”变成一个可执行成功条件
+    - `test_command`：把任务完成变成一个可执行成功条件
 
     这是第一条 QitOS 习惯：
 
@@ -187,9 +187,9 @@ def build_model() -> OpenAICompatibleModel:
 
     要把这句话读成一个整体：
 
-    “这个 agent 要求模型输出 ReAct 文本，并由 ReAct parser 负责解析。”
+    这个 agent 要求模型输出 ReAct 文本，并由 ReAct parser（将原始模型输出解析为Decision的组件）负责解析。
 
-    在 QitOS 里，这个绑定本身就是 harness 的一部分。
+    在 QitOS 里，这个绑定本身就是 harness（模型适配层）的一部分。
   </Step>
 
   <Step title="prepare 只组织下一步真正需要的上下文">
@@ -215,7 +215,7 @@ def build_model() -> OpenAICompatibleModel:
   </Step>
 
   <Step title="让 reduce 决定 agent 记住什么">
-    ReAct 的“学习”发生在 `reduce()` 里：
+    ReAct 的学习发生在 `reduce()` 里：
 
     ```python
     def reduce(
@@ -244,13 +244,13 @@ def build_model() -> OpenAICompatibleModel:
 
     这一个函数里藏着三条原则：
 
-    - 不是每条 observation 都值得回灌进未来上下文
+    - 不是每条 observation（每步后agent接收的结构化观察结果）都值得回灌进未来上下文
     - state 是压缩工作记忆，而不是全量日志
     - `final_result` 是成功的显式信号
   </Step>
 
   <Step title="理解本课还没有引入什么">
-    第 1 课刻意不使用：
+    第 1 课不使用：
 
     - `decide()` overrides
     - explicit planning
@@ -259,7 +259,7 @@ def build_model() -> OpenAICompatibleModel:
     - context compaction
     - model-specific protocol overrides
 
-    不是因为 QitOS 没有这些能力，而是因为在你看清默认主路径之前，不应该过早弯折它。
+    不是因为 QitOS 没有这些能力，而是因为在你看清默认主路径之前，过早引入反而会模糊边界。
   </Step>
 
   <Step title="运行示例，并用 qita 检查内核">
@@ -286,15 +286,15 @@ def build_model() -> OpenAICompatibleModel:
 
 ## 为什么这一课不引入 memory 或 compaction
 
-本课最正确的 memory 选择就是：**不用**。
+本课最正确的 memory 选择就是不用。
 
 原因很简单：
 
 - run 很短
 - `scratchpad` 已足够容纳有效上下文
-- 过早引入 retrieval 或 compaction 会模糊架构边界
+- 过早引入 retrieval 或 compaction（上下文压缩策略）会模糊架构边界
 
-在 QitOS 中，memory 不是“高级 agent 的标配”，它是为真实长时运行问题准备的答案。
+在 QitOS 中，memory 不是高级 agent 的标配，它是为真实长时运行问题准备的答案。
 
 ## 完整示例
 
