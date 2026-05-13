@@ -5,7 +5,7 @@ QitOS public API surface.
 
 """
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 from .core.agent_module import AgentModule
 from .core.action import Action

@@ -15,7 +15,7 @@ How to update:
 - Move `Unreleased` notes into a dated or versioned section when publishing a release
 - Prefer user-facing changes, upgrade notes, and important engineering changes over low-level edit logs
 
-## Unreleased
+## v0.4.0 (2026-05-13)
 
 ### Added
 
