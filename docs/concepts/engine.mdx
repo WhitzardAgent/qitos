@@ -143,3 +143,79 @@ result = engine.run(task)
 ```
 
 This is equivalent to `Engine(agent=agent, ...)` and is what `agent.run()` calls internally.
+
+## AsyncEngine
+
+`AsyncEngine` provides non-blocking execution for agent workflows. It wraps the same `Engine` loop but runs blocking calls in a thread pool, making it safe to use inside `asyncio` event loops.
+
+```python
+from qitos import AsyncEngine
+
+async_engine = AsyncEngine(agent=agent, budget=RuntimeBudget(max_steps=20))
+```
+
+### `AsyncEngine.arun(task)`
+
+Run the agent loop asynchronously. Returns the same `EngineResult` as `Engine.run()`.
+
+```python
+result = await async_engine.arun("analyze the data")
+print(result.state.final_result)
+```
+
+### `AsyncEngine.arun_stream(task)`
+
+Run the agent loop and yield structured `EngineEvent` objects as they occur — ideal for real-time UI updates or streaming progress to a client.
+
+```python
+async for event in async_engine.arun_stream("analyze the data"):
+    print(event.event_type, event.step_id, event.payload)
+```
+
+Events are emitted at step boundaries (`step_start`, `step_end`), phase transitions (`decide`, `act`, `reduce`, `critic`, `check_stop`), and multi-agent events (`handoff`, `delegate`, `fanout`). The stream always begins with `run_start` and ends with `run_end`.
+
+### `EngineEvent`
+
+```python
+@dataclass
+class EngineEvent:
+    event_type: EngineEventType   # step_start, step_end, decide, act, ...
+    step_id: int
+    agent_id: str | None          # which agent produced this step
+    phase: RuntimePhase | None
+    ok: bool
+    payload: Dict[str, Any]
+    error: str | None
+    ts: str                       # ISO 8601 timestamp
+```
+
+### `EventStream`
+
+`EventStream` is the async queue that underpins `arun_stream()`. You can also use it standalone to fan out events to multiple consumers:
+
+```python
+from qitos.engine.events import EventStream
+
+stream = EventStream()
+q1 = stream.subscribe()  # asyncio.Queue for consumer 1
+q2 = stream.subscribe()  # asyncio.Queue for consumer 2
+```
+
+### Async models
+
+When the configured model implements `acall()` (from `AsyncModel`), `AsyncEngine` can invoke it without blocking the event loop. Built-in async model adapters:
+
+```python
+from qitos.models import AsyncOpenAICompatibleModel, AsyncOpenAIModel
+
+llm = AsyncOpenAICompatibleModel(
+    model="qwen-plus",
+    api_key="...",
+    base_url="https://...",
+)
+result = await llm.acall([{"role": "user", "content": "Hello"}])
+```
+
+<Tip>
+  `AsyncEngine.arun()` works with any model — sync models are automatically dispatched to a thread pool. Use async model adapters when you need true non-blocking I/O, e.g. in high-concurrency web servers.
+</Tip>

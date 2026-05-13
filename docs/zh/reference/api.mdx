@@ -200,7 +200,107 @@ class EngineResult(Generic[StateT]):
 
 </Accordion>
 
-<Accordion title="Decision">
+<Accordion title="AsyncEngine">
+
+`AsyncEngine` 提供非阻塞的智能体执行能力。它封装了同样的 `Engine` 循环，但把阻塞调用放到线程池中执行，适用于 `asyncio` 事件循环。
+
+```python
+class AsyncEngine(Generic[StateT, ObservationT, ActionT])
+```
+
+**构造函数**
+
+```python
+def __init__(
+    self,
+    agent: AgentModule[StateT, ObservationT, ActionT],
+    **engine_kwargs: Any,
+)
+```
+
+所有关键字参数会转发给内部的 `Engine` 构造函数（参数与 `Engine.__init__` 相同）。
+
+**方法**
+
+```python
+async def arun(self, task: str | Task, **kwargs: Any) -> EngineResult[StateT]
+```
+
+异步执行智能体循环，返回与 `Engine.run()` 相同的 `EngineResult`。
+
+---
+
+```python
+async def arun_stream(self, task: str | Task, **kwargs: Any) -> AsyncIterator[EngineEvent]
+```
+
+异步执行智能体循环，并实时产出 `EngineEvent` 对象。流以 `run_start` 开始，以 `run_end` 结束。
+
+---
+
+```python
+def run(self, task: str | Task, **kwargs: Any) -> EngineResult[StateT]
+```
+
+同步回退——委托给底层 `Engine.run()`。
+
+**属性**
+
+| 属性 | 类型 | 说明 |
+|------|------|------|
+| `engine` | `Engine` | 底层同步 Engine 实例 |
+| `agent` | `AgentModule` | 等同于 `engine.agent` |
+| `event_stream` | `EventStream \| None` | `arun_stream()` 运行期间的活动事件流，否则为 `None` |
+
+</Accordion>
+
+<Accordion title="EngineEvent / EngineEventType / EventStream">
+
+`EngineEvent` 是 `AsyncEngine.arun_stream()` 产出的结构化事件。
+
+```python
+class EngineEventType(str, Enum):
+    STEP_START = "step_start"
+    STEP_END = "step_end"
+    DECIDE = "decide"
+    ACT = "act"
+    REDUCE = "reduce"
+    CRITIC = "critic"
+    CHECK_STOP = "check_stop"
+    HANDOFF = "handoff"
+    DELEGATE = "delegate"
+    FANOUT = "fanout"
+    ERROR = "error"
+    RUN_START = "run_start"
+    RUN_END = "run_end"
+    # ... 完整列表见 EngineEventType
+```
+
+```python
+@dataclass
+class EngineEvent:
+    event_type: EngineEventType
+    step_id: int = 0
+    agent_id: Optional[str] = None
+    phase: Optional[RuntimePhase] = None
+    ok: bool = True
+    payload: Dict[str, Any] = field(default_factory=dict)
+    error: Optional[str] = None
+    ts: str
+```
+
+`EventStream` 是一个异步兼容的事件队列，用于消费引擎事件：
+
+```python
+class EventStream:
+    def emit(self, event: EngineEvent) -> None       # 线程安全发送
+    def emit_sync(self, event: EngineEvent) -> None   # 同步调用者别名
+    def close(self) -> None                            # 发出流结束信号
+    async def __aiter__(self) -> AsyncIterator[EngineEvent]
+    def subscribe(self) -> asyncio.Queue               # 扇出消费
+```
+
+</Accordion>
 
 `Decision` 是决策阶段的规范输出（智能体每步的结构化决策）。推荐用工厂方法构造：
 

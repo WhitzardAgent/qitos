@@ -84,7 +84,7 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
         if decision.mode == "branch":
             decision = self.select_branch(state, observation, decision)
 
-        if decision.mode not in {"act", "final", "wait"}:
+        if decision.mode not in {"act", "final", "wait", "handoff"}:
             raise ValueError(f"Invalid decision mode: {decision.mode}")
 
         decision.validate()

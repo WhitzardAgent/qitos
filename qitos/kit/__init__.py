@@ -70,6 +70,14 @@ from .tool import (
 )
 from .toolset import codebase_tools, coding_tools, editor_tools, report_tools, toolset_from_tools
 from .toolset import ComputerUseToolSet, computer_use_tools
+from .patterns import (
+    ManagerWorkerConfig,
+    build_manager_worker_system,
+    PlannerExecutorConfig,
+    build_planner_executor_system,
+    ProposerVerifierConfig,
+    build_proposer_verifier_system,
+)
 
 _LAZY_MODULE_EXPORTS = {
     "agent",

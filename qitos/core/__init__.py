@@ -60,6 +60,8 @@ from .multimodal import (
 from .tool_result import ToolResult
 from .tool import BaseTool, FunctionTool, ToolPermission, ToolSpec, tool
 from .tool_registry import ToolRegistry
+from .agent_spec import AgentSpec, AgentRegistry, ContextStrategy, HandoffContext, StateAdapter
+from .shared_memory import SharedMemory, InMemorySharedMemory, FileSharedMemory
 
 __all__ = [
     "AgentModule",
@@ -119,4 +121,12 @@ __all__ = [
     "ToolSpec",
     "tool",
     "ToolRegistry",
+    "AgentSpec",
+    "AgentRegistry",
+    "ContextStrategy",
+    "HandoffContext",
+    "StateAdapter",
+    "SharedMemory",
+    "InMemorySharedMemory",
+    "FileSharedMemory",
 ]

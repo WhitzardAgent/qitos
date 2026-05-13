@@ -1,0 +1,113 @@
+# Multi-Agent Patterns: DelegateTool vs FanOutTool vs Handoff
+
+QitOS provides three mechanisms for multi-agent coordination. This guide helps
+you choose the right one for your use case.
+
+## Decision Tree
+
+```
+Need multiple agents?
+├── 1:1 delegation (parent delegates, child returns result)
+│   └── Use DelegateTool
+├── 1:N parallel delegation (dispatch N tasks, aggregate results)
+│   └── Use FanOutTool
+└── Linear workflow (A → B → C, no return)
+    └── Use Decision.handoff()
+```
+
+## DelegateTool
+
+**Topology**: Tree (parent → child → grandchild)
+**Result flow**: Child result flows back to parent as tool output
+**Execution**: Synchronous, nested `Engine.run()`
+
+```python
+from qitos import AgentSpec, AgentRegistry, ContextStrategy
+
+registry = AgentRegistry()
+registry.register(AgentSpec(
+    name="researcher",
+    description="Researches a topic",
+    agent=ResearcherAgent(llm=llm),
+    context_strategy=ContextStrategy.SUMMARY,
+))
+tools = registry.get_delegate_tools()  # [DelegateTool(name="delegate_to_researcher")]
+```
+
+**When to use**:
+- A coordinator needs results back from a specialist
+- Sequential dependency: step 2 depends on step 1's output
+- Nested research → implementation → verification
+
+## FanOutTool
+
+**Topology**: Fan-out (1 → N parallel, then fan-in)
+**Result flow**: All N results aggregated into a summary
+**Execution**: Parallel via ThreadPoolExecutor
+
+```python
+registry = AgentRegistry()
+registry.register(AgentSpec(name="explorer", ...))
+fanout_tool = registry.get_fanout_tool(max_workers=4, per_task_timeout=120.0)
+```
+
+The LLM calls: `fanout(tasks=[{"agent":"explorer","task":"Explore /auth"}, {"agent":"explorer","task":"Explore /api"}])`
+
+**When to use**:
+- Parallel code exploration of different directories
+- Parallel testing of different endpoints
+- Any task where subtasks are independent
+
+**Key features**:
+- `max_workers`: Thread pool size (default 4)
+- `per_task_timeout`: Per-task timeout in seconds (default 120s)
+- Aggregated results with success/partial/failure breakdown
+
+## Decision.handoff()
+
+**Topology**: Chain (A → B → C)
+**Result flow**: No return — control transfers permanently
+**Execution**: Same Engine loop, agent swap
+
+```python
+from qitos import Decision
+
+# In the agent's decide() method:
+return Decision.handoff(target="coder", rationale="This needs code changes")
+```
+
+**When to use**:
+- Workflow-style pipelines (triage → code → review)
+- Linear processing stages
+- When the next agent doesn't need to report back
+
+## ContextStrategy
+
+Controls what context sub-agents receive:
+
+| Strategy | Parent context | Use case |
+|----------|---------------|----------|
+| `ISOLATED` | None | Sub-agent works independently |
+| `SUMMARY` | Last 4 scratchpad entries | Sub-agent needs brief context |
+| `FULL` | Last 16 scratchpad entries | Sub-agent needs full context |
+
+## Depth Guard
+
+Both DelegateTool and FanOutTool enforce `MAX_DELEGATE_DEPTH=3` to prevent
+unbounded recursive delegation. Handoff has `max_handoffs` (default 10, configurable
+via `ContextConfig.max_handoffs`) and cycle detection.
+
+## Pattern Templates
+
+QitOS provides built-in pattern templates:
+
+```python
+# Manager-Worker: parallel fan-out
+from qitos.kit.patterns import build_manager_worker_system, ManagerWorkerConfig
+
+# Planner-Executor: plan then hand off
+from qitos.kit.patterns import build_planner_executor_system, PlannerExecutorConfig
+
+# Proposer-Verifier: explore then validate
+from qitos.kit.patterns import build_proposer_verifier_system, ProposerVerifierConfig
+```

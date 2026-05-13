@@ -25,6 +25,7 @@ from ._control_runtime import _ControlRuntime
 from ._env_runtime import _EnvRuntime
 from ._loop_detector import ToolCallLoopDetector
 from ._model_runtime import _ModelRuntime
+from ._handoff_runtime import _HandoffRuntime
 from ._trace_runtime import _TraceRuntime
 from .action_executor import ActionExecutor
 from .branching import BranchSelector, FirstCandidateSelector
@@ -216,7 +217,10 @@ class Engine(Generic[StateT, ObservationT, ActionT]):
     def __init__(
         self,
         agent: AgentModule[StateT, ObservationT, ActionT],
+        agent_registry: Optional[Any] = None,
         budget: Optional[RuntimeBudget] = None,
+        delegate_depth: int = 0,
+        shared_memory: Any = None,
         validation_gate: Optional[StateValidationGate] = None,
         recovery_handler: Optional[RecoveryHandler] = None,
         recovery_policy: Optional[RecoveryPolicy] = None,
@@ -234,6 +238,9 @@ class Engine(Generic[StateT, ObservationT, ActionT]):
         context_config: Optional[ContextConfig | Dict[str, Any]] = None,
     ):
         self.agent = agent
+        self.agent_registry = agent_registry
+        self._delegate_depth = delegate_depth
+        self._shared_memory = shared_memory
         self.tool_registry = agent.tool_registry
         self.budget = budget or RuntimeBudget(max_steps=10)
         self._base_budget = RuntimeBudget(
@@ -270,7 +277,12 @@ class Engine(Generic[StateT, ObservationT, ActionT]):
             self.stop_criteria = list(stop_criteria)
 
         self.executor = (
-            ActionExecutor(tool_registry=self.tool_registry)
+            ActionExecutor(
+                tool_registry=self.tool_registry,
+                trace_writer=self.trace_writer,
+                delegate_depth=self._delegate_depth,
+                shared_memory=self._shared_memory,
+            )
             if self.tool_registry is not None
             else None
         )
@@ -301,6 +313,8 @@ class Engine(Generic[StateT, ObservationT, ActionT]):
             _ControlRuntime(self)
         )
         self._trace_runtime: _TraceRuntime[StateT] = _TraceRuntime(self)
+        self._handoff_runtime = _HandoffRuntime(self)
+        self._handoff_history: list[str] = []  # tracks agent names for loop detection
         self._context_runtime = _ContextRuntime(self)
         self._context_runtime.apply_config(self.context_config)
 
@@ -377,6 +391,13 @@ class Engine(Generic[StateT, ObservationT, ActionT]):
         self._last_context_telemetry = {}
         self._context_runtime.reset()
         self._resolved_protocol = self.resolve_protocol()
+        # Record multi-agent topology in trace metadata
+        if self.trace_writer is not None and self.agent_registry is not None:
+            self.trace_writer.metadata["agent_topology"] = {
+                "type": "multi_agent",
+                "agents": [s.name for s in self.agent_registry.list_available()],
+            }
+            self.trace_writer.metadata["agent_name"] = self.agent.name
         state = self.agent.init_state(task_text, **kwargs)
         self._memory_append(
             "task",
@@ -488,7 +509,7 @@ class Engine(Generic[StateT, ObservationT, ActionT]):
 
                 self.validation_gate.before_phase(state, RuntimePhase.DECIDE.value)
 
-                record = StepRecord(step_id=step_id)
+                record = StepRecord(step_id=step_id, agent_id=self.agent.name)
                 self.records.append(record)
 
                 self._dispatch_hook(
@@ -504,6 +525,103 @@ class Engine(Generic[StateT, ObservationT, ActionT]):
                 )
                 try:
                     decision = self._run_decide(state, current_observation, record)
+                except Exception as exc:
+                    failed_phase = self._infer_failed_phase(record)
+                    if not self._recover(state, failed_phase, exc):
+                        self._finalize_step(record, state)
+                        self._emit(
+                            step_id,
+                            RuntimePhase.END,
+                            ok=False,
+                            payload={"stop_reason": state.stop_reason},
+                        )
+                        break
+                    self._finalize_step(record, state)
+                    self._dispatch_hook(
+                        "on_after_step",
+                        HookContext(
+                            task=task_text,
+                            step_id=step_id,
+                            phase=RuntimePhase.RECOVER,
+                            state=state,
+                            record=record,
+                            stop_reason=state.stop_reason,
+                        ),
+                    )
+                    current_observation = self._build_initial_observation(
+                        state, step_id + 1, started_at
+                    )
+                    state.advance_step()
+                    step_id += 1
+                    continue
+
+                # Handoff: swap agent within the same loop, skip act/reduce/critic
+                if decision.mode == "handoff":
+                    if self.agent_registry is None:
+                        raise ValueError("handoff requires agent_registry on Engine")
+                    target_name = decision.meta.get("handoff_target", "")
+                    # Loop detection: reject if target already in history (cycle)
+                    if target_name in self._handoff_history:
+                        from ..core.errors import QitosRuntimeError, RuntimeErrorInfo
+                        raise QitosRuntimeError(RuntimeErrorInfo(
+                            category=ErrorCategory.SYSTEM,
+                            message=(
+                                f"Handoff loop detected: agent '{target_name}' already visited "
+                                f"in this run (history: {' -> '.join(self._handoff_history)})"
+                            ),
+                            phase="handoff",
+                            step_id=step_id,
+                            recoverable=False,
+                        ))
+                    # Max handoff count guard
+                    max_handoffs = self.context_config.max_handoffs
+                    if len(self._handoff_history) >= max_handoffs:
+                        from ..core.errors import QitosRuntimeError, RuntimeErrorInfo
+                        raise QitosRuntimeError(RuntimeErrorInfo(
+                            category=ErrorCategory.SYSTEM,
+                            message=f"Maximum handoff count ({max_handoffs}) exceeded",
+                            phase="handoff",
+                            step_id=step_id,
+                            recoverable=False,
+                        ))
+                    current_agent_name = self.agent.name
+                    self._handoff_history.append(current_agent_name)
+                    handoff_result = self._handoff_runtime.execute_handoff(
+                        state, decision, record,
+                    )
+                    self._finalize_step(record, state)
+                    self._dispatch_hook(
+                        "on_after_step",
+                        HookContext(
+                            task=task_text,
+                            step_id=step_id,
+                            phase=RuntimePhase.HANDOFF_END,
+                            state=state,
+                            record=record,
+                        ),
+                    )
+                    # Store handoff context in state.metadata for the new agent
+                    state.metadata["last_handoff"] = {
+                        "from": handoff_result.from_agent,
+                        "to": handoff_result.to_agent,
+                    }
+                    # Increment handoff_count in trace metadata
+                    if self.trace_writer is not None:
+                        hc = self.trace_writer.metadata.get("handoff_count", 0) or 0
+                        self.trace_writer.metadata["handoff_count"] = hc + 1
+                    # Observation after handoff carries handoff info for reduce()
+                    current_observation = {
+                        "action_results": [{
+                            "handoff": True,
+                            "from": handoff_result.from_agent,
+                            "to": handoff_result.to_agent,
+                        }],
+                    }
+                    state.advance_step()
+                    step_id += 1
+                    continue
+
+                try:
                     action_results = self._run_act(state, decision, record)
                     observation = self._build_observation_after_action(
                         state=state,
@@ -1126,6 +1244,7 @@ class Engine(Generic[StateT, ObservationT, ActionT]):
         self._resolved_protocol_source = ""
         self._last_prompt_metadata = {}
         self._tool_loop_detector.reset()
+        self._handoff_history = []
 
     def _harness_mismatch_diagnostics(self) -> Dict[str, Any]:
         llm = getattr(self.agent, "llm", None)

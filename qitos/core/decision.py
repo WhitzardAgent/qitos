@@ -7,7 +7,7 @@ from typing import Any, Dict, Generic, List, Literal, Optional, TypeVar
 
 
 ActionT = TypeVar("ActionT")
-DecisionMode = Literal["act", "final", "wait", "branch"]
+DecisionMode = Literal["act", "final", "wait", "branch", "handoff"]
 
 
 @dataclass
@@ -58,6 +58,17 @@ class Decision(Generic[ActionT]):
             mode="branch", candidates=candidates, rationale=rationale, meta=meta or {}
         )
 
+    @classmethod
+    def handoff(
+        cls,
+        target: str,
+        rationale: Optional[str] = None,
+        meta: Optional[Dict[str, Any]] = None,
+    ) -> "Decision[ActionT]":
+        combined_meta = meta or {}
+        combined_meta["handoff_target"] = target
+        return cls(mode="handoff", rationale=rationale, meta=combined_meta)
+
     def validate(self) -> None:
         if not isinstance(self.meta, dict):
             raise ValueError("Decision.meta must be a dict")
@@ -74,3 +85,5 @@ class Decision(Generic[ActionT]):
                         "Decision(mode='branch') requires Decision candidates"
                     )
                 candidate.validate()
+        if self.mode == "handoff" and not self.meta.get("handoff_target"):
+            raise ValueError("Decision(mode='handoff') requires meta['handoff_target']")

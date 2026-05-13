@@ -36,7 +36,13 @@ from .profile_registry import (
 from .anthropic import AnthropicModel
 from .gemini import GeminiModel
 from .litellm import LiteLLMModel
-from .openai import OpenAIModel, OpenAICompatibleModel, AzureOpenAIModel
+from .openai import (
+    OpenAIModel,
+    OpenAICompatibleModel,
+    AzureOpenAIModel,
+    AsyncOpenAIModel,
+    AsyncOpenAICompatibleModel,
+)
 from .local import OllamaModel, OllamaGenerateModel, LMStudioModel, VLLMModel
 
 __all__ = [
@@ -53,6 +59,8 @@ __all__ = [
     "OpenAIModel",
     "OpenAICompatibleModel",
     "AzureOpenAIModel",
+    "AsyncOpenAIModel",
+    "AsyncOpenAICompatibleModel",
     "AnthropicModel",
     "GeminiModel",
     "LiteLLMModel",

@@ -186,3 +186,66 @@ result = agent.run(task="...", trace=writer, return_state=True)
 <Note>
   `qita` 发现运行至少需要三个文件：`manifest.json`、`events.jsonl` 和 `steps.jsonl`。缺少 `manifest.json` 的目录会被 `qita board` 静默跳过。
 </Note>
+
+---
+
+## 实时流式推送（SSE）
+
+qita 为每个运行提供了 Server-Sent Events（SSE）端点，可以实时流式推送步骤事件。这对构建自定义仪表盘或对接外部监控系统非常有用。
+
+### SSE 端点
+
+```
+GET /api/stream/{run_id}
+```
+
+该端点以 SSE 格式发出带类型名称的事件：
+
+| 事件类型 | 何时发出 |
+|---|---|
+| `run_start` | 运行开始（包含 `run_id`、`task`、`agent_name`） |
+| `step_start` | 一个步骤开始（包含 `step_id`、`agent_id`） |
+| `step_end` | 一个步骤完成 |
+| `phase` | 运行时阶段事件（decide、act、reduce 等） |
+| `handoff` | 智能体切换事件 |
+| `delegate` | 委托事件（1:1 子任务） |
+| `fanout` | 扇出事件（1:N 并行子任务） |
+| `run_end` | 运行结束（包含 `step_count`、`stop_reason`） |
+
+### 客户端消费
+
+在任何网页中：
+
+```javascript
+const es = new EventSource('/api/stream/my_run_id');
+es.addEventListener('step_start', e => {
+    const data = JSON.parse(e.data);
+    console.log('步骤', data.step_id, '智能体:', data.agent_id);
+});
+es.addEventListener('handoff', e => {
+    console.log('切换:', JSON.parse(e.data));
+});
+es.addEventListener('run_end', e => {
+    es.close();
+});
+```
+
+### 实时流按钮
+
+qita 运行详情页包含一个 **live stream** 按钮，点击后会连接 SSE 端点并在浏览器控制台输出事件日志。这对于调试和理解已完成运行的事件流很有用。
+
+### 使用 AsyncEngine 流式推送
+
+对于实时运行，使用 `AsyncEngine.arun_stream()` 以编程方式消费事件：
+
+```python
+from qitos import AsyncEngine
+
+engine = AsyncEngine(agent=agent, budget=RuntimeBudget(max_steps=10))
+
+async for event in engine.arun_stream("分析数据"):
+    if event.event_type == "step_end":
+        print(f"步骤 {event.step_id} 完成")
+    elif event.event_type == "handoff":
+        print(f"智能体切换: {event.payload}")
+```

@@ -44,6 +44,15 @@ class TraceSchemaValidator:
         "critic_outputs",
         "state_diff",
     }
+    OPTIONAL_MANIFEST_MULTI_AGENT_FIELDS = {
+        "parent_run_id",
+        "agent_topology",
+        "agent_name",
+        "handoff_count",
+    }
+    OPTIONAL_STEP_MULTI_AGENT_FIELDS = {
+        "agent_id",
+    }
     REQUIRED_SUMMARY_FIELDS = {"stop_reason", "final_result", "steps", "failure_report"}
 
     def validate_manifest(self, manifest: Dict[str, Any]) -> None:

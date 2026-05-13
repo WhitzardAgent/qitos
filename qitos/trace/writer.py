@@ -95,6 +95,10 @@ class TraceWriter:
             "token_usage": token_usage,
             "latency_seconds": latency_seconds,
             "cost": cost,
+            "parent_run_id": self.metadata.get("parent_run_id"),
+            "agent_topology": self.metadata.get("agent_topology"),
+            "agent_name": self.metadata.get("agent_name"),
+            "handoff_count": self.metadata.get("handoff_count"),
         }
         with open(self.manifest_path, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
@@ -165,6 +169,7 @@ def runtime_step_to_trace(step: Any) -> TraceStep:
 
     return TraceStep(
         step_id=int(getattr(step, "step_id", 0)),
+        agent_id=getattr(step, "agent_id", None),
         observation=_normalize(getattr(step, "observation", None)),
         decision=_normalize(decision_payload),
         model_response=_normalize(dict(getattr(step, "model_response", {}) or {})),

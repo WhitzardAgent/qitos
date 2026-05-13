@@ -143,3 +143,79 @@ result = engine.run(task)
 ```
 
 这与直接写 `Engine(agent=agent, ...)` 等价，也是 `agent.run()` 在内部采用的路径。
+
+## AsyncEngine
+
+`AsyncEngine` 提供非阻塞的智能体执行能力。它封装了同样的 `Engine` 循环，但把阻塞调用放到线程池中执行，因此在 `asyncio` 事件循环中使用是安全的。
+
+```python
+from qitos import AsyncEngine
+
+async_engine = AsyncEngine(agent=agent, budget=RuntimeBudget(max_steps=20))
+```
+
+### `AsyncEngine.arun(task)`
+
+异步运行智能体循环，返回与 `Engine.run()` 相同的 `EngineResult`。
+
+```python
+result = await async_engine.arun("分析数据")
+print(result.state.final_result)
+```
+
+### `AsyncEngine.arun_stream(task)`
+
+异步运行智能体循环，并在事件发生时产出结构化的 `EngineEvent` 对象——非常适合实时 UI 更新或将进度流式推送给客户端。
+
+```python
+async for event in async_engine.arun_stream("分析数据"):
+    print(event.event_type, event.step_id, event.payload)
+```
+
+事件在步骤边界（`step_start`、`step_end`）、阶段切换（`decide`、`act`、`reduce`、`critic`、`check_stop`）和多智能体事件（`handoff`、`delegate`、`fanout`）时产出。流总是以 `run_start` 开始、以 `run_end` 结束。
+
+### `EngineEvent`
+
+```python
+@dataclass
+class EngineEvent:
+    event_type: EngineEventType   # step_start, step_end, decide, act, ...
+    step_id: int
+    agent_id: str | None          # 产出此步骤的智能体
+    phase: RuntimePhase | None
+    ok: bool
+    payload: Dict[str, Any]
+    error: str | None
+    ts: str                       # ISO 8601 时间戳
+```
+
+### `EventStream`
+
+`EventStream` 是支撑 `arun_stream()` 的异步队列。你也可以独立使用它，将事件扇出到多个消费者：
+
+```python
+from qitos.engine.events import EventStream
+
+stream = EventStream()
+q1 = stream.subscribe()  # 消费者 1 的 asyncio.Queue
+q2 = stream.subscribe()  # 消费者 2 的 asyncio.Queue
+```
+
+### 异步模型
+
+当配置的模型实现了 `acall()`（来自 `AsyncModel`）时，`AsyncEngine` 可以在不阻塞事件循环的情况下调用它。内置的异步模型适配器：
+
+```python
+from qitos.models import AsyncOpenAICompatibleModel, AsyncOpenAIModel
+
+llm = AsyncOpenAICompatibleModel(
+    model="qwen-plus",
+    api_key="...",
+    base_url="https://...",
+)
+result = await llm.acall([{"role": "user", "content": "你好"}])
+```
+
+<Tip>
+  `AsyncEngine.arun()` 与任何模型都兼容——同步模型会自动调度到线程池。当你需要真正的非阻塞 I/O（例如在高并发 Web 服务器中）时，才需要使用异步模型适配器。
+</Tip>

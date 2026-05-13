@@ -155,6 +155,16 @@ def _build_handler(root: Path):
                     return
                 self._send_json(_load_run_payload(run_dir))
                 return
+            if route.startswith("/api/stream/"):
+                run_id = _slug_run_id(route.split("/", 3)[-1])
+                run_dir = _resolve_run(root, run_id)
+                if run_dir is None:
+                    self._send_json(
+                        {"error": "run not found", "run_id": run_id}, status=404
+                    )
+                    return
+                self._send_sse_events(run_dir)
+                return
             if route == "/asset":
                 path = str((qs.get("path") or [""])[0]).strip()
                 if not path:
@@ -301,6 +311,76 @@ def _build_handler(root: Path):
             self.end_headers()
             self.wfile.write(body)
 
+        def _send_sse_events(self, run_dir: Path) -> None:
+            """Stream run events as Server-Sent Events for real-time UI updates."""
+            import time as _time
+
+            payload = _load_run_payload(run_dir)
+            steps = payload.get("steps", [])
+            events = payload.get("events", [])
+
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "keep-alive")
+            self.send_header("X-Accel-Buffering", "no")
+            self.end_headers()
+
+            # Emit run_start
+            self._sse_write("run_start", {
+                "run_id": payload.get("run_id", ""),
+                "task": payload.get("task", ""),
+                "agent_name": payload.get("agent_name", ""),
+            })
+
+            # Emit step events with small delays for visual effect
+            for step in steps:
+                step_id = step.get("step_id", 0)
+                agent_id = step.get("agent_id")
+                self._sse_write("step_start", {
+                    "step_id": step_id,
+                    "agent_id": agent_id,
+                })
+
+                # Emit phase events for this step
+                step_events = [
+                    e for e in events
+                    if e.get("step_id") == step_id
+                ]
+                for event in step_events:
+                    phase = event.get("phase", "")
+                    if "HANDOFF" in phase:
+                        self._sse_write("handoff", event)
+                    elif "DELEGATE" in phase:
+                        self._sse_write("delegate", event)
+                    elif "FANOUT" in phase:
+                        self._sse_write("fanout", event)
+                    else:
+                        self._sse_write("phase", event)
+
+                self._sse_write("step_end", {
+                    "step_id": step_id,
+                    "agent_id": agent_id,
+                })
+
+            # Emit run_end
+            self._sse_write("run_end", {
+                "step_count": len(steps),
+                "stop_reason": payload.get("stop_reason", ""),
+            })
+
+        def _sse_write(self, event_type: str, data: Any) -> None:
+            """Write a single SSE event to the response stream."""
+            import struct
+
+            payload = json.dumps(data, ensure_ascii=False, default=str)
+            msg = f"event: {event_type}\ndata: {payload}\n\n"
+            try:
+                self.wfile.write(msg.encode("utf-8"))
+                self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError, struct.error):
+                pass
+
     return QitaHandler
 
 
@@ -327,6 +407,12 @@ def _discover_runs(logdir: Path) -> List[Dict[str, Any]]:
             continue
         manifest = _load_json(manifest_path)
         summary = manifest.get("summary") or {}
+        agent_topology = manifest.get("agent_topology")
+        agent_names = []
+        if isinstance(agent_topology, dict):
+            agent_names = agent_topology.get("agents", [])
+        elif manifest.get("agent_name"):
+            agent_names = [manifest["agent_name"]]
         runs.append(
             {
                 "id": p.name,
@@ -337,6 +423,10 @@ def _discover_runs(logdir: Path) -> List[Dict[str, Any]]:
                 "event_count": manifest.get("event_count", 0),
                 "stop_reason": summary.get("stop_reason"),
                 "final_result": summary.get("final_result"),
+                "agent_name": manifest.get("agent_name"),
+                "agent_topology": agent_topology,
+                "handoff_count": manifest.get("handoff_count"),
+                "agent_count": len(agent_names) if agent_names else 0,
                 "manifest_meta": {
                     "schema_version": manifest.get("schema_version"),
                     "model_id": manifest.get("model_id"),
@@ -750,11 +840,17 @@ function paint(){
     el.className = 'card';
     const status = (r.status || 'unknown');
     const m = r.manifest_meta || {};
+    const agentCount = r.agent_count || 0;
+    const agentBadge = agentCount > 1 ? `<span class="state" style="background:#1a2744;color:#7eb8ff;border-color:#2d4a7a">[${agentCount} agents]</span>` : (r.agent_name ? `<span class="state" style="background:#1a2744;color:#7eb8ff;border-color:#2d4a7a">[${esc(r.agent_name)}]</span>` : '');
+    const handoffBadge = r.handoff_count ? `<span class="state" style="background:#2a1f0a;color:#f7b955;border-color:#5a4320">handoffs=${r.handoff_count}</span>` : '';
+    const topoInfo = (r.agent_topology && typeof r.agent_topology === 'object') ? (r.agent_topology.type || '') : '';
+    const topoBadge = topoInfo ? `<div class="meta">topology=${esc(topoInfo)}${r.agent_topology.agents ? ' agents=' + esc(r.agent_topology.agents.join(',')) : ''}</div>` : '';
     el.innerHTML = `
-      <div class="id">${r.id}</div>
+      <div class="id">${r.id} ${agentBadge} ${handoffBadge}</div>
       <div class="meta"><span class="state">${status}</span> steps=${r.step_count||0} events=${r.event_count||0}</div>
       <div class="meta">stop=${r.stop_reason||''}</div>
       <div class="meta">updated=${r.updated_at||''}</div>
+      ${topoBadge}
       <div class="manifest-mini">
         <div class="meta">manifest meta</div>
         <div class="meta">model=${m.model_id||''}</div>
@@ -951,6 +1047,7 @@ def _render_run_html(payload: Dict[str, Any], embedded: bool) -> str:
             f'<a class="btn" href="/export/raw/{run_id}">export raw</a>'
             f'<a class="btn" href="/export/html/{run_id}">export html</a>'
             f'<a class="btn" href="/replay/{run_id}">replay</a>'
+            f'<button class="btn" id="streamBtn" onclick="startStream()">live stream</button>'
             '<a class="btn ghost" href="/">board</a>'
         )
     return f"""<!doctype html>
@@ -1013,7 +1110,8 @@ def _render_run_html(payload: Dict[str, Any], embedded: bool) -> str:
 .card{{break-inside:avoid;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px;margin:0 0 12px;box-shadow:0 8px 20px rgba(0,0,0,.2)}}
 .kind-thinking{{border-left:4px solid #9b8cff}} .kind-action{{border-left:4px solid #3dd68c}}
 .kind-observation{{border-left:4px solid #4db5ff}} .kind-critic{{border-left:4px solid #f7b955}}
-.kind-other{{border-left:4px solid #7287ad}}
+.kind-handoff{{border-left:4px solid #f7b955}} .kind-delegation{{border-left:4px solid #7eb8ff}}
+.kind-fanout{{border-left:4px solid #c78dff}} .kind-other{{border-left:4px solid #7287ad}}
 .card-head{{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}}
 .step{{font-weight:800}}
 h4{{margin:8px 0 6px;font-size:12px;color:#95add8;text-transform:uppercase;letter-spacing:.3px;display:flex;justify-content:space-between;align-items:center}}
@@ -1059,6 +1157,7 @@ pre{{margin:0;background:#0b1220;border:1px solid #1c2b44;padding:10px;border-ra
         <div class="controls">
           <input id="q" placeholder="Filter by text in observation/decision/action/critic/events"/>
           <select id="eventFilter"><option value="">All events</option></select>
+          <select id="agentFilter"><option value="">All agents</option></select>
           <select id="sort"><option value="asc">step asc</option><option value="desc">step desc</option></select>
           <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:#a7b8da"><input type="checkbox" id="showObs" checked/>obs</label>
           <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:#a7b8da"><input type="checkbox" id="showCritic" checked/>critic</label>
@@ -1340,6 +1439,39 @@ function renderState(obs){{
 function renderDirectObservation(actionResults){{
   const ars = Array.isArray(actionResults) ? actionResults : [];
   if(!ars.length) return '<div class="muted">No direct observation from action.</div>';
+  // Check for delegate/fanout structured results
+  for(const item of ars){{
+    if(!item || typeof item !== 'object') continue;
+    // Delegate result
+    if(item.handoff === true || (item.status && item.agent_name)){{
+      const rows = [];
+      if(item.agent_name) rows.push(kvRow('agent', item.agent_name));
+      if(item.status) rows.push(kvRow('status', item.status));
+      if(item.final_result) rows.push(kvRow('result', truncateText(String(item.final_result), 300)));
+      if(item.stop_reason) rows.push(kvRow('stop_reason', item.stop_reason));
+      if(item.steps) rows.push(kvRow('steps', item.steps));
+      return '<div style="margin-bottom:12px"><div style="font-weight:600;margin-bottom:6px;color:#7eb8ff">↗ Delegate Result</div>' + (rows.length ? kvBlock(rows) : '<div class="muted">No details.</div>') + '</div>';
+    }}
+    // Fanout result
+    if(item.succeeded !== undefined && (item.failed !== undefined || item.partial !== undefined)){{
+      const ok = Number(item.succeeded) || 0;
+      const fail = Number(item.failed) || 0;
+      const partial = Number(item.partial) || 0;
+      const rows = [
+        kvRow('succeeded', '<span style="color:#3dd68c">' + ok + '</span>'),
+        kvRow('failed', '<span style="color:#ff6b6b">' + fail + '</span>'),
+      ];
+      if(partial) rows.push(kvRow('partial', '<span style="color:#f7b955">' + partial + '</span>'));
+      if(Array.isArray(item.results)){{
+        const taskRows = item.results.slice(0, 5).map(function(r, i){{
+          if(!r || typeof r !== 'object') return kvRow('task ' + i, truncateText(JSON.stringify(r), 100));
+          return kvRow('task ' + i, (r.status || 'done') + (r.agent_name ? ' (' + r.agent_name + ')' : '') + (r.final_result ? ': ' + truncateText(String(r.final_result), 80) : ''));
+        }});
+        rows.push(...taskRows);
+      }}
+      return '<div style="margin-bottom:12px"><div style="font-weight:600;margin-bottom:6px;color:#c78dff">⊛ FanOut Result</div>' + kvBlock(rows) + '</div>';
+    }}
+  }}
   const picked = pickObservation(actionResults);
   if(!picked) return '<div class="muted">No direct observation from action.</div>';
   const blocks = [];
@@ -1467,9 +1599,30 @@ function renderThought(decision, events, step){{
   return '<div style="white-space:pre-wrap;line-height:1.6;background:#0b1220;border:1px solid #1c2b44;border-radius:8px;padding:10px;color:#cfe6ff">'+esc(thought)+'</div>' + summary;
 }}
 function renderAction(actions){{
+  if(!Array.isArray(actions) || !actions.length) return '<div class="muted">No action.</div>';
+  const first = actions[0] || {{}};
+  const tool = first.tool || first.name || first.action || first.type || 'action';
+  const args = (first.args && typeof first.args === 'object') ? first.args : (first.kwargs && typeof first.kwargs === 'object') ? first.kwargs : {{}};
+  // Special rendering for delegate/fanout
+  if(String(tool).toLowerCase() === 'delegate'){{
+    const agent = args.agent_name || args.agent || '?';
+    const task = args.task || '';
+    return '<div style="font-size:13px;color:#7eb8ff">↗ <b>Delegate:</b> → <b>' + esc(agent) + '</b>' + (task ? '<div style="margin-top:4px;font-size:12px;color:#9fb2d8">' + esc(truncateText(task, 300)) + '</div>' : '') + '</div>';
+  }}
+  if(String(tool).toLowerCase() === 'fanout'){{
+    const tasks = Array.isArray(args.tasks) ? args.tasks : [];
+    const count = tasks.length || args.num_tasks || args.task_count || 0;
+    const taskList = tasks.slice(0, 5).map(function(t){{ return '<div style="font-size:11px;color:#9fb2d8;padding:2px 0">· ' + esc(truncateText(String(t), 120)) + '</div>'; }}).join('');
+    return '<div style="font-size:13px;color:#c78dff">⊛ <b>FanOut:</b> ' + esc(String(count)) + ' task(s)' + (taskList ? '<div style="margin-top:4px">' + taskList + '</div>' : '') + '</div>';
+  }}
+  // General action with full params
   const label = firstActionLabel(actions);
-  if(!label) return '<div class="muted">No action.</div>';
-  return '<div style="font-size:13px;color:#f4df8f">🛠️ <b>Action:</b> ' + esc(label) + '</div>';
+  const argKeys = Object.keys(args);
+  let paramHtml = '';
+  if(argKeys.length > 1){{
+    paramHtml = '<details style="margin-top:4px"><summary style="cursor:pointer;color:#9fb2d8;font-size:11px">Show all params (' + argKeys.length + ')</summary><div class="kv" style="margin-top:4px">' + argKeys.map(function(k){{ return kvRow(k, args[k]); }}).join('') + '</div></details>';
+  }}
+  return '<div style="font-size:13px;color:#f4df8f">🛠️ <b>Action:</b> ' + esc(label) + '</div>' + paramHtml;
 }}
 function renderMemoryUpdate(observeOut){{
   const mem = observeOut && typeof observeOut === 'object' ? observeOut.memory : null;
@@ -1594,8 +1747,18 @@ function parseTs(ts){{
   const v = Date.parse(String(ts||''));
   return Number.isNaN(v) ? null : v;
 }}
+function agentColor(agentId){{
+  if(!agentId) return '#7eb8ff';
+  let hash = 0;
+  for(let i = 0; i < agentId.length; i++) hash = agentId.charCodeAt(i) + ((hash << 5) - hash);
+  const colors = ['#7eb8ff','#f7b955','#3dd68c','#c78dff','#ff8a8a','#46d1c2','#ff9d9d','#8fe0ff'];
+  return colors[Math.abs(hash) % colors.length];
+}}
 function phaseColor(phase){{
   const p = String(phase||'').toLowerCase();
+  if(p.includes('handoff')) return '#f7b955';
+  if(p.includes('delegate')) return '#7eb8ff';
+  if(p.includes('fanout')) return '#c78dff';
   if(p.includes('state') || p.includes('observe')) return '#4db5ff';
   if(p.includes('decide') || p.includes('model')) return '#9b8cff';
   if(p.includes('action') || p.includes('tool')) return '#3dd68c';
@@ -1608,6 +1771,9 @@ function inferPrimaryKind(events){{
   const es = Array.isArray(events) ? events : [];
   for(let i = es.length - 1; i >= 0; i -= 1){{
     const p = String(es[i] && es[i].phase || '').toLowerCase();
+    if(p.includes('fanout')) return 'fanout';
+    if(p.includes('handoff')) return 'handoff';
+    if(p.includes('delegate')) return 'delegation';
     if(p.includes('critic')) return 'critic';
     if(p.includes('act') || p.includes('tool')) return 'action';
     if(p.includes('state') || p.includes('observe')) return 'observation';
@@ -1652,6 +1818,26 @@ function paintOverview(items){{
   const rs = (m.run_spec && typeof m.run_spec === 'object') ? m.run_spec : {{}};
   const total = items.length;
   const avgEvents = total ? (items.reduce((a,it)=>a + (it.events||[]).length, 0) / total).toFixed(1) : '0.0';
+  const agentIds = new Set(items.map(function(it){{ return it.step && it.step.agent_id; }}).filter(Boolean));
+  const agentList = Array.from(agentIds);
+  const topo = (m.agent_topology && typeof m.agent_topology === 'object') ? m.agent_topology : null;
+  const handoffCount = m.handoff_count || 0;
+  const multiAgentRows = [];
+  if(agentList.length > 0) multiAgentRows.push(['agents', agentList.join(', ')]);
+  if(topo) multiAgentRows.push(['agent_topology', (topo.type || '') + (topo.agents ? ' (' + topo.agents.join(', ') + ')' : '')]);
+  if(handoffCount) multiAgentRows.push(['handoff_count', String(handoffCount)]);
+  // Count delegate/fanout events
+  let delegateCount = 0, fanoutCount = 0;
+  for(const it of items){{
+    const es = it.events || [];
+    for(const e of es){{
+      const ph = String(e.phase||'').toLowerCase();
+      if(ph.includes('delegate') && ph.includes('start')) delegateCount++;
+      if(ph.includes('fanout') && ph.includes('start')) fanoutCount++;
+    }}
+  }}
+  if(delegateCount) multiAgentRows.push(['delegate_count', String(delegateCount)]);
+  if(fanoutCount) multiAgentRows.push(['fanout_count', String(fanoutCount)]);
   overview.innerHTML = [
     ['run', payload.run_id || '-'],
     ['status', m.status || '-'],
@@ -1660,6 +1846,7 @@ function paintOverview(items){{
     ['stop', s.stop_reason || '-'],
     ['steps', String(total)],
     ['avg events/step', String(avgEvents)],
+  ].concat(multiAgentRows).concat([
     ['model', m.model_id || '-'],
     ['model family', m.model_family || rs.model_family || '-'],
     ['family preset', ((rs.metadata || {{}}).family_preset) || (((s.run_meta || {{}}).harness || {{}}).family_preset) || '-'],
@@ -1676,7 +1863,7 @@ function paintOverview(items){{
     ['parser errors', String(p.error_count || 0)],
     ['parser salvage', String(p.salvage_count || 0)],
     ['replay note', m.replay_note || '-'],
-  ].map(([k,v])=>'<div class="ov"><div class="k">'+esc(k)+'</div><div class="v">'+esc(v)+'</div></div>').join('');
+  ]).map(([k,v])=>'<div class="ov"><div class="k">'+esc(k)+'</div><div class="v">'+esc(v)+'</div></div>').join('');
 }}
 function buildTimeline(items){{
   const rows = [];
@@ -1763,7 +1950,25 @@ function buildContextTimeline(items){{
     const y = yAt(p.ratio);
     poly.push(x + ',' + y);
     area.push((index === 0 ? 'M' : 'L') + x + ' ' + y);
-    circles.push('<circle class="context-point" cx="' + x + '" cy="' + y + '" r="4"></circle>');
+    // Check for multi-agent events at this step
+    const step = steps.find(function(s){{ return String(s.step_id) === p.sid; }});
+    const stepEvents = step ? (eventsByStep[p.sid] || []) : [];
+    let hasHandoff = false, hasDelegate = false, hasFanout = false;
+    for(const e of stepEvents){{
+      const ph = String(e.phase||'').toLowerCase();
+      if(ph.includes('handoff')) hasHandoff = true;
+      if(ph.includes('delegate')) hasDelegate = true;
+      if(ph.includes('fanout')) hasFanout = true;
+    }}
+    const agentId = step ? (step.agent_id || '') : '';
+    const maColor = hasHandoff ? '#f7b955' : hasDelegate ? '#7eb8ff' : hasFanout ? '#c78dff' : '';
+    if(maColor){{
+      // Draw a diamond marker for multi-agent events
+      const s = 6;
+      circles.push('<polygon points="' + x + ',' + (y-s) + ' ' + (x+s) + ',' + y + ' ' + x + ',' + (y+s) + ' ' + (x-s) + ',' + y + '" fill="' + maColor + '" stroke="#0f1930" stroke-width="1.5"><title>' + esc('STEP ' + p.sid + (agentId ? ' agent=' + agentId : '') + (hasHandoff ? ' HANDOFF' : '') + (hasDelegate ? ' DELEGATE' : '') + (hasFanout ? ' FANOUT' : '')) + '</title></polygon>');
+    }} else {{
+      circles.push('<circle class="context-point" cx="' + x + '" cy="' + y + '" r="4"' + (agentId ? ' fill="' + agentColor(agentId) + '"' : '') + '><title>' + esc('STEP ' + p.sid + (agentId ? ' agent=' + agentId : '')) + '</title></circle>');
+    }}
     labels.push('<text class="context-label" x="' + (x - 14) + '" y="' + (height - 10) + '">S' + esc(p.sid) + '</text>');
     if(Array.isArray(p.events) && p.events.length){{
       const seen = new Set();
@@ -1799,6 +2004,7 @@ function buildContextTimeline(items){{
     '<div>peak ' + esc((peak * 100).toFixed(1) + '%') + '</div>' +
     '<div>latest ' + esc(((Number(latest.ratio) || 0) * 100).toFixed(1) + '%') + ' · ' + esc(String(latest.tokens || 0)) + ' tokens</div>' +
     '<div>compact markers ' + esc(String(compactCount)) + '</div>' +
+    '<div style="display:flex;gap:10px;font-size:11px"><span style="color:#f7b955">◆ handoff</span> <span style="color:#7eb8ff">◆ delegate</span> <span style="color:#c78dff">◆ fanout</span></div>' +
     '</div>';
   const list = compactRows.length ? ('<div class="compact-list">' + compactRows.join('') + '</div>') : '<div class="muted">No compact or warning markers recorded.</div>';
   contextTimelineRoot.innerHTML = '<div class="context-chart">' + head + svg + list + '</div>';
@@ -1841,14 +2047,46 @@ function renderPromptMetadata(meta){{
   if(meta.continuation_injected !== undefined) rows.push(kvRow('continuation injected', String(!!meta.continuation_injected)));
   return rows.length ? rows.join('') : '<div class="muted">No prompt metadata recorded.</div>';
 }}
+function renderMultiAgentEvent(events){{
+  let html = '';
+  for(const e of events){{
+    const ph = String(e.phase||'').toLowerCase();
+    const pl = (e.payload && typeof e.payload === 'object') ? e.payload : {{}};
+    if(ph === 'handoff_start'){{
+      const from = pl.from || '?';
+      const to = pl.to || '?';
+      html += '<div style="padding:8px 10px;margin:4px 0;border-radius:8px;background:#1a1f0a;border:1px solid #3a4a1a;font-size:12px;color:#f7b955">&#x21C4; <b>Handoff</b> ' + esc(from) + ' &rarr; ' + esc(to) + '</div>';
+    }} else if(ph === 'handoff_end'){{
+      html += '<div style="padding:6px 10px;margin:4px 0;border-radius:8px;background:#0d182c;border:1px solid #1c2b44;font-size:11px;color:#9fb2d8">&#x21C4; Handoff complete</div>';
+    }} else if(ph === 'delegate_start'){{
+      const agent = pl.agent_name || pl.agent || '?';
+      const task = pl.task ? truncateText(pl.task, 120) : '';
+      html += '<div style="padding:8px 10px;margin:4px 0;border-radius:8px;background:#0d1a31;border:1px solid #1c3366;font-size:12px;color:#7eb8ff">&#x2197; <b>Delegate</b> &rarr; ' + esc(agent) + (task ? ' <span style="color:#9fb2d8">' + esc(task) + '</span>' : '') + '</div>';
+    }} else if(ph === 'delegate_end'){{
+      const status = pl.status || 'done';
+      const color = status === 'done' ? '#3dd68c' : '#ff6b6b';
+      html += '<div style="padding:6px 10px;margin:4px 0;border-radius:8px;background:#0d182c;border:1px solid #1c2b44;font-size:11px;color:' + color + '">&#x2197; Delegate result: ' + esc(status) + '</div>';
+    }} else if(ph === 'fanout_start'){{
+      const tc = pl.task_count || pl.num_tasks || 0;
+      html += '<div style="padding:8px 10px;margin:4px 0;border-radius:8px;background:#1a0d2e;border:1px solid #3a1c66;font-size:12px;color:#c78dff">&#x229B; <b>FanOut</b> ' + esc(String(tc)) + ' task(s) dispatched</div>';
+    }} else if(ph === 'fanout_end'){{
+      const ok = pl.succeeded || 0;
+      const fail = pl.failed || 0;
+      html += '<div style="padding:6px 10px;margin:4px 0;border-radius:8px;background:#0d182c;border:1px solid #1c2b44;font-size:11px">&#x229B; FanOut: <span style="color:#3dd68c">' + ok + ' ok</span>, <span style="color:#ff6b6b">' + fail + ' fail</span></div>';
+    }}
+  }}
+  return html;
+}}
 function render(){{
   const q = (document.getElementById('q').value||'').toLowerCase();
   const eventFilter = document.getElementById('eventFilter').value;
+  const agentFilter = document.getElementById('agentFilter').value;
   const sort = document.getElementById('sort').value;
   const showObs = document.getElementById('showObs').checked;
   const showCritic = document.getElementById('showCritic').checked;
   let items = steps.map(function(s){{ return {{step:s, sid:String(s.step_id), events:(eventsByStep[String(s.step_id)]||[])}}; }});
   if(eventFilter) items = items.filter(function(it){{ return it.events.some(function(e){{ return String(e.phase||'')===eventFilter; }}); }});
+  if(agentFilter) items = items.filter(function(it){{ return (it.step.agent_id || '') === agentFilter; }});
   if(q) items = items.filter(function(it){{ return cardText(it.step,it.events).includes(q); }});
   items.sort(function(a,b){{ return sort==='desc' ? Number(b.sid)-Number(a.sid) : Number(a.sid)-Number(b.sid); }});
   paintOverview(items);
@@ -1858,6 +2096,7 @@ function render(){{
   buildParserTimeline(items);
   flow.innerHTML = '';
   toc.innerHTML = '';
+  let lastAgentId = null;
   for(const it of items){{
     const d = it.step.decision || {{}};
     const obsInput = {{
@@ -1867,7 +2106,17 @@ function render(){{
     const card = document.createElement('article');
     card.className = 'card kind-' + inferPrimaryKind(it.events);
     card.id = 'step-' + it.sid;
-    let h = '<div class="card-head"><div class="step">STEP ' + it.sid + '</div><div class="muted">events ' + it.events.length + '</div></div>';
+    const agentId = it.step.agent_id || '';
+    const agentBadge = agentId ? '<span style="display:inline-block;padding:1px 8px;border-radius:999px;font-size:11px;background:' + agentColor(agentId) + '22;border:1px solid ' + agentColor(agentId) + '66;color:' + agentColor(agentId) + ';margin-left:8px">' + esc(agentId) + '</span>' : '';
+    let agentSwitch = '';
+    if(agentId && lastAgentId && lastAgentId !== agentId){{
+      agentSwitch = '<div style="padding:6px 12px;margin:0 0 4px;border-radius:8px;background:#1a1f0a;border:1px solid #3a4a1a;font-size:12px;color:#f7b955">&#x26A1; Agent switched: <b>' + esc(lastAgentId) + '</b> &rarr; <b>' + esc(agentId) + '</b></div>';
+    }}
+    lastAgentId = agentId || lastAgentId;
+    let h = agentSwitch + '<div class="card-head"><div class="step">STEP ' + it.sid + agentBadge + '</div><div class="muted">events ' + it.events.length + '</div></div>';
+    // Multi-agent event banners
+    const maHtml = renderMultiAgentEvent(it.events);
+    if(maHtml) h += '<div style="margin-bottom:8px">' + maHtml + '</div>';
     if(showObs) h += sectionHtml('State', renderState(obsInput), obsInput, 'state', collapsedAll);
     h += sectionHtml('Prompt', renderPromptMetadata(it.step.prompt_metadata || {{}}), it.step.prompt_metadata || {{}}, 'prompt', collapsedAll);
     h += sectionHtml('Visual Assets', renderVisualAssets(it.step), {{visual_assets: it.step.visual_assets || [], observation_modalities: it.step.observation_modalities || [], model_input_modalities: it.step.model_input_modalities || [], model_input_visual_count: it.step.model_input_visual_count || 0}}, 'visual_assets', collapsedAll);
@@ -1883,7 +2132,8 @@ function render(){{
     const b = document.createElement('button');
     b.className = 'toc-item';
     b.type = 'button';
-    b.textContent = 'STEP ' + it.sid;
+    const tocLabel = 'STEP ' + it.sid + (agentId ? ' [' + agentId + ']' : '');
+    b.textContent = tocLabel;
     b.onclick = function(){{ const target = document.getElementById('step-' + it.sid); if(target) target.scrollIntoView({{behavior:'smooth',block:'start'}}); highlightToc(b); }};
     toc.appendChild(b);
   }}
@@ -1902,6 +2152,21 @@ function render(){{
     ef.appendChild(op);
   }});
   if(keep) ef.value = keep;
+  // Agent filter
+  const agentIds = new Set();
+  for(const s of steps){{
+    if(s.agent_id) agentIds.add(String(s.agent_id));
+  }}
+  const af = document.getElementById('agentFilter');
+  const keepAgent = af.value;
+  af.innerHTML = '<option value="">All agents</option>';
+  Array.from(agentIds).sort().forEach(function(a){{
+    const op = document.createElement('option');
+    op.value = a;
+    op.textContent = a;
+    af.appendChild(op);
+  }});
+  if(keepAgent) af.value = keepAgent;
 }}
 function highlightToc(el){{
   document.querySelectorAll('.toc-item').forEach(function(x){{ x.classList.remove('active'); }});
@@ -1909,6 +2174,7 @@ function highlightToc(el){{
 }}
 document.getElementById('q').addEventListener('input', render);
 document.getElementById('eventFilter').addEventListener('change', render);
+document.getElementById('agentFilter').addEventListener('change', render);
 document.getElementById('sort').addEventListener('change', render);
 document.getElementById('showObs').addEventListener('change', render);
 document.getElementById('showCritic').addEventListener('change', render);
@@ -1935,6 +2201,31 @@ document.addEventListener('click', function(e){{
 applyFontScale();
 applyTab();
 render();
+
+/* SSE live stream */
+let _sse = null;
+function startStream(){{
+  if(_sse){{ _sse.close(); _sse = null; document.getElementById('streamBtn').textContent = 'live stream'; return; }}
+  const runId = location.pathname.split('/run/')[1] || '';
+  _sse = new EventSource('/api/stream/' + runId);
+  document.getElementById('streamBtn').textContent = 'stop stream';
+  _sse.addEventListener('run_start', e => {{ console.log('[SSE] run_start', JSON.parse(e.data)); }});
+  _sse.addEventListener('step_start', e => {{ const d = JSON.parse(e.data); console.log('[SSE] step_start', d.step_id); }});
+  _sse.addEventListener('step_end', e => {{ const d = JSON.parse(e.data); console.log('[SSE] step_end', d.step_id); }});
+  _sse.addEventListener('handoff', e => {{ const d = JSON.parse(e.data); console.log('[SSE] handoff', d); }});
+  _sse.addEventListener('delegate', e => {{ const d = JSON.parse(e.data); console.log('[SSE] delegate', d); }});
+  _sse.addEventListener('fanout', e => {{ const d = JSON.parse(e.data); console.log('[SSE] fanout', d); }});
+  _sse.addEventListener('phase', e => {{ const d = JSON.parse(e.data); console.log('[SSE] phase', d.phase); }});
+  _sse.addEventListener('run_end', e => {{
+    console.log('[SSE] run_end', JSON.parse(e.data));
+    _sse.close(); _sse = null;
+    document.getElementById('streamBtn').textContent = 'live stream';
+  }});
+  _sse.onerror = () => {{
+    _sse.close(); _sse = null;
+    document.getElementById('streamBtn').textContent = 'live stream';
+  }};
+}}
 </script>
 </body></html>"""
 
@@ -1979,6 +2270,7 @@ def _build_replay_records(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
                 "ok": ev.get("ok"),
                 "error": ev.get("error"),
                 "ts": ev.get("ts"),
+                "agent_id": step.get("agent_id"),
                 "title": f"[step={sid}] {phase}",
                 "body": body,
             }
@@ -2003,6 +2295,12 @@ def _infer_kind(phase: str, node: str, error: Any) -> str:
     if error:
         return "error"
     key = f"{phase} {node}".lower()
+    if "fanout" in key:
+        return "fanout"
+    if "handoff" in key:
+        return "handoff"
+    if "delegate" in key:
+        return "delegation"
     if "parser" in key:
         return "parser"
     if "plan" in key:
@@ -2059,6 +2357,7 @@ body{{margin:0;background:radial-gradient(circle at 20% 0%,#12233f,#090d16 62%);
 .tag{{font-size:10px;border:1px solid var(--line);padding:1px 6px;border-radius:999px;color:#a8bbdf}}
 .kind-plan{{border-color:#8393ff}} .kind-thinking{{border-color:#ae8dff}} .kind-action{{border-color:#3dd68c}}
 .kind-parser{{border-color:#f7b955}} .kind-memory{{border-color:#46d1c2}} .kind-observation{{border-color:#4db5ff}} .kind-critic{{border-color:#f7b955}}
+.kind-handoff{{border-color:#f7b955}} .kind-delegation{{border-color:#7eb8ff}} .kind-fanout{{border-color:#c78dff}}
 .kind-done{{border-color:#ff9d9d}} .kind-error{{border-color:#ff6b6b}}
 .cbody{{white-space:pre-wrap;word-break:break-word;background:#081021;border:1px solid #1b2a44;padding:8px;border-radius:8px;font-size:12px}}
 .cursor{{display:inline-block;width:8px;height:16px;background:var(--ok);margin-left:3px;animation:blink 1s steps(2,start) infinite}}
@@ -2222,6 +2521,23 @@ function renderRecordBody(r){{
   if(r.kind === 'action') return '🛠️ <b>Action:</b> ' + esc(actionLabel(r.body && r.body.actions)) + '<br/>✅ <b>Direct Observation:</b> ' + esc(observationSummary(r.body && r.body.action_results));
   if(r.kind === 'observation') return '✅ <b>Direct Observation:</b> ' + esc(observationSummary(r.body && r.body.action_results));
   if(r.kind === 'memory') return '💾 <b>Memory Update:</b> ' + esc('memory context updated');
+  if(r.kind === 'handoff'){{
+    const pl = (r.body && r.body.event && r.body.event.payload) || {{}};
+    const from = pl.from || '?';
+    const to = pl.to || '?';
+    return '⇄ <b>Handoff:</b> ' + esc(from) + ' → ' + esc(to);
+  }}
+  if(r.kind === 'delegation'){{
+    const pl = (r.body && r.body.event && r.body.event.payload) || {{}};
+    const agent = pl.agent_name || pl.agent || '?';
+    const task = pl.task ? truncateText(pl.task, 180) : '';
+    return '↗ <b>Delegate:</b> → ' + esc(agent) + (task ? ' <span style="color:#8aa2c7">' + esc(task) + '</span>' : '');
+  }}
+  if(r.kind === 'fanout'){{
+    const pl = (r.body && r.body.event && r.body.event.payload) || {{}};
+    const tc = pl.task_count || pl.num_tasks || 0;
+    return '⊛ <b>FanOut:</b> ' + esc(String(tc)) + ' task(s) dispatched';
+  }}
   if(r.kind === 'critic') return '🧪 <b>Critic:</b> ' + esc(criticSummary(r.body && r.body.critic_outputs));
   if(r.kind === 'done') return '🏁 <b>Done:</b> ' + esc(truncateText(JSON.stringify((r.body && r.body.summary) || {{}}), 220));
   if(r.error) return '❌ <b>Error:</b> ' + esc(truncateText(r.error, 220));
@@ -2230,8 +2546,9 @@ function renderRecordBody(r){{
 function fmt(r){{
   const err = r.error ? '<span class="tag kind-error">error</span>' : '';
   const raw = esc(JSON.stringify(r.body, null, 2));
+  const agentTag = r.agent_id ? '<span class="tag" style="border-color:#2d4a7a;color:#7eb8ff">'+esc(r.agent_id)+'</span>' : '';
   return '<article class="card kind-'+esc(r.kind)+'">' +
-    '<div class="ctitle"><span>'+esc(r.title)+'</span><span><span class="tag">'+esc(r.phase||'')+'</span> <span class="tag kind-'+esc(r.kind)+'">'+esc(r.kind)+'</span> '+err+'</span></div>' +
+    '<div class="ctitle"><span>'+esc(r.title)+'</span><span><span class="tag">'+esc(r.phase||'')+'</span> <span class="tag kind-'+esc(r.kind)+'">'+esc(r.kind)+'</span> '+agentTag+' '+err+'</span></div>' +
     '<div class="cbody">'+renderRecordBody(r)+'</div>' +
     '<details style="margin-top:8px"><summary style="cursor:pointer;color:#8aa2c7">Raw</summary><pre style="white-space:pre-wrap;background:#081021;border:1px solid #1b2a44;border-radius:8px;padding:8px">'+raw+'</pre></details>' +
     '</article>';

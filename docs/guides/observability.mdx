@@ -190,3 +190,66 @@ result = agent.run(task="...", trace=writer, return_state=True)
 <Note>
 Three files are required per run for `qita` to discover it: `manifest.json`, `events.jsonl`, and `steps.jsonl`. A run directory missing `manifest.json` is silently skipped by `qita board`.
 </Note>
+
+---
+
+## Real-time streaming with SSE
+
+qita provides a Server-Sent Events (SSE) endpoint for each run that streams step events in real time. This is useful for building custom dashboards or integrating with external monitoring.
+
+### SSE endpoint
+
+```
+GET /api/stream/{run_id}
+```
+
+The endpoint emits events in SSE format with typed event names:
+
+| Event type | When emitted |
+|---|---|
+| `run_start` | Run begins (includes `run_id`, `task`, `agent_name`) |
+| `step_start` | A step begins (includes `step_id`, `agent_id`) |
+| `step_end` | A step completes |
+| `phase` | A runtime phase event (decide, act, reduce, etc.) |
+| `handoff` | An agent handoff event |
+| `delegate` | A delegate event (1:1 sub-task) |
+| `fanout` | A fanout event (1:N parallel sub-tasks) |
+| `run_end` | Run finishes (includes `step_count`, `stop_reason`) |
+
+### Client-side consumption
+
+From any web page:
+
+```javascript
+const es = new EventSource('/api/stream/my_run_id');
+es.addEventListener('step_start', e => {
+    const data = JSON.parse(e.data);
+    console.log('Step', data.step_id, 'agent:', data.agent_id);
+});
+es.addEventListener('handoff', e => {
+    console.log('Handoff:', JSON.parse(e.data));
+});
+es.addEventListener('run_end', e => {
+    es.close();
+});
+```
+
+### Live stream button
+
+The qita run detail page includes a **live stream** button that connects to the SSE endpoint and logs events to the browser console. This is useful for debugging and understanding the event flow of a completed run.
+
+### Streaming with AsyncEngine
+
+For live runs, use `AsyncEngine.arun_stream()` to consume events programmatically:
+
+```python
+from qitos import AsyncEngine
+
+engine = AsyncEngine(agent=agent, budget=RuntimeBudget(max_steps=10))
+
+async for event in engine.arun_stream("analyze the data"):
+    if event.event_type == "step_end":
+        print(f"Step {event.step_id} done")
+    elif event.event_type == "handoff":
+        print(f"Handoff: {event.payload}")
+```

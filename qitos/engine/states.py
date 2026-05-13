@@ -19,6 +19,12 @@ class RuntimePhase(str, Enum):
     DECIDE_ERROR = "DECIDE_ERROR"
     ACT_ERROR = "ACT_ERROR"
     RECOVER = "RECOVER"
+    DELEGATE_START = "DELEGATE_START"
+    DELEGATE_END = "DELEGATE_END"
+    HANDOFF_START = "HANDOFF_START"
+    HANDOFF_END = "HANDOFF_END"
+    FANOUT_START = "FANOUT_START"
+    FANOUT_END = "FANOUT_END"
 
 
 @dataclass
@@ -41,6 +47,7 @@ class ContextConfig:
     tool_result_max_chars: int = 4000
     conversation_max_rounds: int = 10
     loop_max_repeats: int = 3
+    max_handoffs: int = 10
     strict_overflow: bool = True
     show_ui: bool = True
 
@@ -113,6 +120,7 @@ class StepRecord:
     parser_contract: Optional[str] = None
     parser_salvage_applied: bool = False
     decision_source: Optional[str] = None
+    agent_id: Optional[str] = None
     native_tool_call_used: bool = False
     native_tool_call_fallback_reason: Optional[str] = None
     visual_assets: List[Dict[str, Any]] = field(default_factory=list)

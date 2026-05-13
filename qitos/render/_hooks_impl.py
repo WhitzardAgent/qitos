@@ -130,11 +130,12 @@ class RenderStreamHook(RenderHook):
         )
 
     def on_before_step(self, ctx: HookContext, engine: "Engine") -> None:
+        agent_id = getattr(ctx.record, "agent_id", None) if ctx.record else None
         self._emit(
             "lifecycle",
             "step_start",
             step_id=ctx.step_id,
-            payload={"phase": ctx.phase.value},
+            payload={"phase": ctx.phase.value, "agent_id": agent_id},
         )
 
     def on_after_decide(self, ctx: HookContext, engine: "Engine") -> None:
@@ -220,6 +221,14 @@ class RenderStreamHook(RenderHook):
         )
 
     def on_event(self, event, state, record, engine) -> None:
+        # Promote multi-agent RuntimePhase events to first-class render nodes.
+        phase_val = event.phase.value if hasattr(event.phase, "value") else str(event.phase)
+        if phase_val in ("HANDOFF_START", "HANDOFF_END", "DELEGATE_START", "DELEGATE_END",
+                         "FANOUT_START", "FANOUT_END"):
+            channel = "handoff" if phase_val.startswith("HANDOFF") else "delegation"
+            node = phase_val.lower()
+            self._emit(channel, node, step_id=event.step_id, payload=dict(event.payload or {}))
+
         # Promote key model I/O events to first-class render nodes.
         if event.phase.value.lower() == "decide" and isinstance(event.payload, dict):
             stage = str(event.payload.get("stage", ""))
@@ -331,6 +340,7 @@ class ClaudeStyleHook(RenderStreamHook):
         self.console = Console()
         self.max_preview_chars = max_preview_chars
         self._last_step: Optional[int] = None
+        self._last_agent_id: Optional[str] = None
         self._status: Any = None
         chosen = _CLAUDE_THEME_PRESETS.get(theme, _CLAUDE_THEME_PRESETS["research"])
         self.theme_name = theme if theme in _CLAUDE_THEME_PRESETS else "research"
@@ -387,7 +397,17 @@ class ClaudeStyleHook(RenderStreamHook):
 
         if event.node == "step_start":
             self._last_step = event.step_id
-            self.console.print(Rule(f"STEP {event.step_id + 1}", style="gray23"))
+            agent_id = (event.payload or {}).get("agent_id")
+            label = f"STEP {event.step_id + 1}"
+            if agent_id:
+                label += f" ── agent: {agent_id}"
+                if self._last_agent_id is not None and self._last_agent_id != agent_id:
+                    self._rail(
+                        "yellow",
+                        f"⚡ Agent switched: [bold]{self._last_agent_id}[/bold] → [bold]{agent_id}[/bold]",
+                    )
+                self._last_agent_id = agent_id
+            self.console.print(Rule(label, style="gray23"))
             return
 
         if event.channel == "thinking":
@@ -590,6 +610,57 @@ class ClaudeStyleHook(RenderStreamHook):
                 self._memory_steps.add(event.step_id)
             return
 
+        if event.channel == "handoff":
+            payload = event.payload or {}
+            if event.node == "handoff_start":
+                from_agent = payload.get("from", "?")
+                to_agent = payload.get("to", "?")
+                self._rail(
+                    "yellow",
+                    f"[bold yellow]⇄ HANDOFF[/bold yellow] [dim]{from_agent}[/dim] → [bold]{to_agent}[/bold]",
+                )
+            elif event.node == "handoff_end":
+                self._rail(
+                    "yellow",
+                    f"[dim]⇄ Handoff complete[/dim]",
+                )
+            return
+
+        if event.channel == "delegation":
+            payload = event.payload or {}
+            if event.node.startswith("delegate"):
+                agent_name = payload.get("agent_name", payload.get("agent", "?"))
+                task = payload.get("task", "")
+                task_preview = (task[:80] + "...") if len(task) > 80 else task
+                if event.node == "delegate_start":
+                    self._rail(
+                        "blue",
+                        f"[bold blue]↗ DELEGATE[/bold blue] → [bold]{agent_name}[/bold]"
+                        + (f" [dim]{task_preview}[/dim]" if task_preview else ""),
+                    )
+                elif event.node == "delegate_end":
+                    status = payload.get("status", "done")
+                    color = "green" if status == "done" else "red"
+                    self._rail(
+                        color,
+                        f"[dim]↗ Delegate result:[/dim] [bold]{agent_name}[/bold] [dim]({status})[/dim]",
+                    )
+            elif event.node.startswith("fanout"):
+                task_count = payload.get("task_count", payload.get("num_tasks", 0))
+                if event.node == "fanout_start":
+                    self._rail(
+                        "bright_magenta",
+                        f"[bold bright_magenta]⊛ FANOUT[/bold bright_magenta] [dim]{task_count} task(s) dispatched[/dim]",
+                    )
+                elif event.node == "fanout_end":
+                    succeeded = payload.get("succeeded", 0)
+                    failed = payload.get("failed", 0)
+                    self._rail(
+                        "bright_magenta",
+                        f"[dim]⊛ FanOut complete:[/dim] [green]{succeeded} succeeded[/green], [red]{failed} failed[/red]",
+                    )
+            return
+
         if event.node == "step_end":
             self.console.print()
             return
@@ -675,6 +746,25 @@ class ClaudeStyleHook(RenderStreamHook):
             ("planning", planning_name),
             ("tools", f"{tools_desc} ({len(tools)})"),
         ]
+        # Multi-agent info
+        agent_registry = getattr(engine, "agent_registry", None)
+        if agent_registry is not None and hasattr(agent_registry, "list_available"):
+            available = list(agent_registry.list_available())
+            if available:
+                agent_names = ", ".join(s.name for s in available)
+                rows.append(("agents", agent_names))
+                # Determine mode from tool registry
+                tool_names = set(tools)
+                mode_parts = []
+                if any("delegate" in t.lower() for t in tool_names):
+                    mode_parts.append("delegate")
+                if any("fanout" in t.lower() for t in tool_names):
+                    mode_parts.append("fanout")
+                has_handoff = any("handoff" in t.lower() for t in tool_names)
+                if has_handoff or len(available) > 1:
+                    mode_parts.append("handoff")
+                mode = "multi-agent (" + "+".join(mode_parts) + ")" if mode_parts else "multi-agent"
+                rows.append(("mode", mode))
         for key, value in rows:
             self._rail("gray50", self._composition_row(key, value))
         self.console.print()

@@ -24,6 +24,7 @@ class TraceEvent:
 @dataclass
 class TraceStep:
     step_id: int
+    agent_id: Optional[str] = None
     observation: Any = None
     decision: Any = None
     model_response: Dict[str, Any] = field(default_factory=dict)

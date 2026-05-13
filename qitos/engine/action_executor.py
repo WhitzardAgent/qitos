@@ -19,10 +19,18 @@ class ActionExecutor:
     """Executes normalized actions against a tool registry."""
 
     def __init__(
-        self, tool_registry: Any, policy: Optional[ActionExecutionPolicy] = None
+        self,
+        tool_registry: Any,
+        policy: Optional[ActionExecutionPolicy] = None,
+        trace_writer: Any = None,
+        delegate_depth: int = 0,
+        shared_memory: Any = None,
     ):
         self.tool_registry = tool_registry
         self.policy = policy or ActionExecutionPolicy()
+        self.trace_writer = trace_writer
+        self.delegate_depth = delegate_depth
+        self.shared_memory = shared_memory
 
     def execute(
         self, actions: Sequence[Action], env: Optional[Env] = None, state: Any = None
@@ -195,6 +203,10 @@ class ActionExecutor:
             "artifacts": artifacts,
             "emit_progress": _emit_progress,
             "record_artifact": _record_artifact,
+            "delegate_depth": self.delegate_depth,
+            "parent_run_id": "",
+            "trace_writer": self.trace_writer,
+            "shared_memory": self.shared_memory,
         }
 
     def _resolve_tool(self, name: str) -> Optional[BaseTool]:

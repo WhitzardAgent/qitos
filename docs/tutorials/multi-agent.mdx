@@ -1,0 +1,153 @@
+# Build Your First Multi-Agent System in QitOS
+
+This tutorial walks through building a multi-agent code exploration system that
+dispatches parallel sub-agents to investigate different parts of a codebase.
+
+## What You'll Build
+
+A coordinator agent that uses the `fanout` tool to spawn multiple explorer
+agents in parallel, each investigating a different directory. Results are
+aggregated and synthesized.
+
+## Prerequisites
+
+- QitOS installed (`pip install qitos`)
+- An OpenAI-compatible API key
+
+## Step 1: Define Your Sub-Agent
+
+First, create an explorer agent that can investigate directories:
+
+```python
+from dataclasses import dataclass, field
+from typing import Any
+from qitos import Action, AgentModule, Decision, StateSchema, ToolRegistry
+from qitos.kit import CodingToolSet, REACT_SYSTEM_PROMPT, ReActTextParser, format_action, render_prompt
+
+@dataclass
+class ExplorerState(StateSchema):
+    scratchpad: list[str] = field(default_factory=list)
+
+EXPLORER_PROMPT = """\
+You are a code explorer agent. Investigate directories and report findings.
+
+Output contract (strict):
+Thought: <reasoning>
+Action: <tool_name>(arg=value, ...)
+or
+Final Answer: <summary>
+"""
+
+class ExplorerAgent(AgentModule[ExplorerState, dict[str, Any], Action]):
+    def __init__(self, llm, workspace_root):
+        registry = ToolRegistry()
+        registry.include(CodingToolSet(
+            workspace_root=workspace_root,
+            include_notebook=False,
+            enable_lsp=False,
+            enable_tasks=False,
+            enable_web=False,
+            expose_modern_names=False,
+        ))
+        super().__init__(tool_registry=registry, llm=llm, model_parser=ReActTextParser())
+
+    def init_state(self, task, **kwargs):
+        return ExplorerState(task=task, max_steps=5)
+
+    def build_system_prompt(self, state):
+        return render_prompt(EXPLORER_PROMPT, {"tool_schema": self.tool_registry.get_tool_descriptions()})
+
+    def prepare(self, state):
+        lines = [f"Task: {state.task}", f"Step: {state.current_step}/{state.max_steps}"]
+        if state.scratchpad:
+            lines.extend(state.scratchpad[-8:])
+        return "\n".join(lines)
+
+    def reduce(self, state, observation, decision):
+        action_results = observation.get("action_results", []) if isinstance(observation, dict) else []
+        if decision.rationale:
+            state.scratchpad.append(f"Thought: {decision.rationale}")
+        if decision.actions:
+            state.scratchpad.append(f"Action: {format_action(decision.actions[0])}")
+        if action_results:
+            state.scratchpad.append(f"Observation: {action_results[0]}")
+        state.scratchpad = state.scratchpad[-20:]
+        return state
+```
+
+## Step 2: Register the Agent
+
+Use `AgentSpec` and `AgentRegistry` to register your sub-agent:
+
+```python
+from qitos import AgentRegistry, AgentSpec, ContextStrategy
+
+llm = ...  # your model instance
+
+explorer_spec = AgentSpec(
+    name="explorer",
+    description="Explores a directory and reports its structure",
+    agent=ExplorerAgent(llm=llm, workspace_root="./my-project"),
+    context_strategy=ContextStrategy.ISOLATED,  # sub-agents don't need parent context
+    max_steps_override=5,
+)
+
+registry = AgentRegistry()
+registry.register(explorer_spec)
+```
+
+## Step 3: Create the Coordinator
+
+The coordinator agent has coding tools plus the `fanout` tool:
+
+```python
+from qitos.kit import CodingToolSet
+
+class CoordinatorAgent(AgentModule[ExplorerState, dict[str, Any], Action]):
+    def __init__(self, llm, workspace_root, agent_registry):
+        registry = ToolRegistry()
+        registry.include(CodingToolSet(workspace_root=workspace_root, ...))
+        # Register delegation and fanout tools
+        for delegate_tool in agent_registry.get_delegate_tools():
+            registry.register(delegate_tool)
+        registry.register(agent_registry.get_fanout_tool())
+
+        super().__init__(tool_registry=registry, llm=llm, model_parser=ReActTextParser())
+    # ... (same init_state, build_system_prompt, prepare, reduce as ExplorerAgent)
+```
+
+## Step 4: Run It
+
+```python
+coordinator = CoordinatorAgent(llm=llm, workspace_root="./my-project", agent_registry=registry)
+result = coordinator.run(
+    task="Analyze this codebase. Investigate the auth, api, and db modules in parallel.",
+    max_steps=12,
+)
+print(result.state.final_result)
+```
+
+The LLM will call `fanout(tasks=[{"agent":"explorer","task":"Explore /auth"}, ...])`,
+spawning three parallel explorers.
+
+## Quick Start with Patterns
+
+For common patterns, use the built-in templates:
+
+```python
+from qitos.kit.patterns import build_manager_worker_system, ManagerWorkerConfig
+
+config = ManagerWorkerConfig(
+    worker_name="explorer",
+    workspace_root="./my-project",
+    llm=llm,
+)
+coordinator, registry = build_manager_worker_system(config)
+result = coordinator.run(task="Explore the codebase structure")
+```
+
+## What's Next
+
+- Try `ContextStrategy.FULL` to pass parent context to sub-agents
+- Use `DelegateTool` for 1:1 delegation with result return
+- Use `Decision.handoff()` for workflow-style agent chains

@@ -261,6 +261,109 @@ Remove all registered hooks.
 
 </Accordion>
 
+<Accordion title="AsyncEngine">
+
+`AsyncEngine` provides non-blocking execution for agent workflows. It wraps the same `Engine` loop but runs blocking calls in a thread pool, making it safe to use inside `asyncio` event loops.
+
+```python
+class AsyncEngine(Generic[StateT, ObservationT, ActionT])
+```
+
+**Constructor**
+
+```python
+def __init__(
+    self,
+    agent: AgentModule[StateT, ObservationT, ActionT],
+    **engine_kwargs: Any,
+)
+```
+
+All keyword arguments are forwarded to the internal `Engine` constructor (same parameters as `Engine.__init__`).
+
+**Methods**
+
+```python
+async def arun(self, task: str | Task, **kwargs: Any) -> EngineResult[StateT]
+```
+
+Execute the agent loop asynchronously. Returns the same `EngineResult` as `Engine.run()`.
+
+---
+
+```python
+async def arun_stream(self, task: str | Task, **kwargs: Any) -> AsyncIterator[EngineEvent]
+```
+
+Execute the agent loop and yield `EngineEvent` objects in real time. The stream begins with `run_start` and ends with `run_end`.
+
+---
+
+```python
+def run(self, task: str | Task, **kwargs: Any) -> EngineResult[StateT]
+```
+
+Synchronous fallback — delegates to the underlying `Engine.run()`.
+
+**Properties**
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `engine` | `Engine` | The underlying sync Engine instance |
+| `agent` | `AgentModule` | Same as `engine.agent` |
+| `event_stream` | `EventStream \| None` | Active event stream during `arun_stream()`, otherwise `None` |
+
+</Accordion>
+
+<Accordion title="EngineEvent, EngineEventType, EventStream">
+
+`EngineEvent` is the structured event emitted by `AsyncEngine.arun_stream()`.
+
+```python
+class EngineEventType(str, Enum):
+    STEP_START = "step_start"
+    STEP_END = "step_end"
+    PHASE_START = "phase_start"
+    PHASE_END = "phase_end"
+    DECIDE = "decide"
+    ACT = "act"
+    REDUCE = "reduce"
+    CRITIC = "critic"
+    CHECK_STOP = "check_stop"
+    HANDOFF = "handoff"
+    DELEGATE = "delegate"
+    FANOUT = "fanout"
+    ERROR = "error"
+    RUN_START = "run_start"
+    RUN_END = "run_end"
+```
+
+```python
+@dataclass
+class EngineEvent:
+    event_type: EngineEventType
+    step_id: int = 0
+    agent_id: Optional[str] = None
+    phase: Optional[RuntimePhase] = None
+    ok: bool = True
+    payload: Dict[str, Any] = field(default_factory=dict)
+    error: Optional[str] = None
+    ts: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+```
+
+`EventStream` is an async-compatible event queue for consuming engine events.
+
+```python
+class EventStream:
+    def emit(self, event: EngineEvent) -> None       # thread-safe emit
+    def emit_sync(self, event: EngineEvent) -> None   # alias for sync callers
+    def close(self) -> None                            # signal end of stream
+    async def __aiter__(self) -> AsyncIterator[EngineEvent]
+    def subscribe(self) -> asyncio.Queue               # fan-out consumption
+```
+
+</Accordion>
+
 <Accordion title="EngineResult">
 
 `EngineResult` is the dataclass returned by `Engine.run()`.

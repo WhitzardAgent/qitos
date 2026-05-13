@@ -1,6 +1,8 @@
 """Stable engine exports."""
 
 from .engine import Engine, EngineResult, StepSummary
+from .async_engine import AsyncEngine
+from .events import EngineEvent, EngineEventType, EventStream
 from .hooks import EngineHook, HookContext
 from .states import (
     ContextConfig,
@@ -12,11 +14,15 @@ from .states import (
 )
 
 __all__ = [
+    "AsyncEngine",
     "Engine",
+    "EngineEvent",
+    "EngineEventType",
     "EngineResult",
-    "StepSummary",
     "EngineHook",
+    "EventStream",
     "HookContext",
+    "StepSummary",
     "ContextConfig",
     "ContextTelemetry",
     "RuntimeBudget",

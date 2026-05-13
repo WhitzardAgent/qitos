@@ -604,9 +604,115 @@ class AzureOpenAIModel(OpenAICompatibleModel):
             return f"Error: {str(e)}"
 
 
+class AsyncOpenAICompatibleModel(OpenAICompatibleModel):
+    """
+    Async version of OpenAICompatibleModel using openai.AsyncOpenAI.
+
+    Supports any service compatible with the OpenAI API format.
+    Use ``await model.acall(messages)`` for non-blocking calls.
+
+    Example::
+
+        llm = AsyncOpenAICompatibleModel(
+            model="qwen-turbo",
+            base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        )
+        result = await llm.acall([{"role": "user", "content": "Hello"}])
+    """
+
+    async def _acall_api(self, messages: List[Dict[str, Any]], **kwargs: Any) -> str:
+        """Async call to OpenAI-compatible API."""
+        import openai
+
+        try:
+            client = openai.AsyncOpenAI(
+                api_key=self.api_key, base_url=self.base_url, timeout=self.timeout
+            )
+            response = await self._achat_completion(client, messages, **kwargs)
+            return self._parse_response(response)
+        except openai.APIError as e:
+            return f"API Error: {str(e)}"
+        except Exception as e:
+            return f"Error: {str(e)}"
+
+    async def _achat_completion(
+        self, client: Any, messages: List[Dict[str, Any]], **kwargs: Any
+    ) -> Any:
+        response = await client.chat.completions.create(
+            model=self.model,
+            messages=cast(Any, _to_openai_messages(messages)),
+            temperature=self.temperature,
+            max_tokens=self.max_tokens,
+            **kwargs,
+        )
+        self._set_last_usage(self._usage_from_response(response))
+        return response
+
+    async def acall_raw(self, messages: List[Dict[str, Any]], **kwargs: Any) -> Any:
+        """Async version of call_raw returning provider-native response."""
+        import openai
+
+        self._last_usage = None
+        client = openai.AsyncOpenAI(
+            api_key=self.api_key, base_url=self.base_url, timeout=self.timeout
+        )
+        return await self._achat_completion(client, messages, **kwargs)
+
+
+class AsyncOpenAIModel(OpenAIModel):
+    """
+    Async version of OpenAIModel using openai.AsyncOpenAI.
+
+    Example::
+
+        llm = AsyncOpenAIModel(model="gpt-4")
+        result = await llm.acall([{"role": "user", "content": "Hello"}])
+    """
+
+    async def _acall_api(self, messages: List[Dict[str, Any]], **kwargs: Any) -> str:
+        """Async call to OpenAI API."""
+        import openai
+
+        try:
+            client = openai.AsyncOpenAI(
+                api_key=self.api_key, base_url=self.base_url, timeout=self.timeout
+            )
+            response = await self._achat_completion(client, messages, **kwargs)
+            return self._parse_response(response)
+        except openai.APIError as e:
+            return f"API Error: {str(e)}"
+        except Exception as e:
+            return f"Error: {str(e)}"
+
+    async def _achat_completion(
+        self, client: Any, messages: List[Dict[str, Any]], **kwargs: Any
+    ) -> Any:
+        response = await client.chat.completions.create(
+            model=self.model,
+            messages=cast(Any, _to_openai_messages(messages)),
+            temperature=self.temperature,
+            max_tokens=self.max_tokens,
+            **kwargs,
+        )
+        self._set_last_usage(self._usage_from_response(response))
+        return response
+
+    async def acall_raw(self, messages: List[Dict[str, Any]], **kwargs: Any) -> Any:
+        """Async version of call_raw returning provider-native response."""
+        import openai
+
+        self._last_usage = None
+        client = openai.AsyncOpenAI(
+            api_key=self.api_key, base_url=self.base_url, timeout=self.timeout
+        )
+        return await self._achat_completion(client, messages, **kwargs)
+
+
 # Register to factory
 from .base import ModelFactory
 
 ModelFactory.register("openai")(OpenAIModel)
 ModelFactory.register("azure")(AzureOpenAIModel)
 ModelFactory.register("openai-compatible")(OpenAICompatibleModel)
+ModelFactory.register("async-openai")(AsyncOpenAIModel)
+ModelFactory.register("async-openai-compatible")(AsyncOpenAICompatibleModel)
