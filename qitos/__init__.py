@@ -26,6 +26,7 @@ from .core.task import (
     TaskResult,
 )
 from .core.tool import (
+    BaseTool,
     ToolPermissionContext,
     ToolPermissionDecision,
     ToolPermissionRule,
@@ -67,6 +68,7 @@ __all__ = [
     "BenchmarkRunResult",
     "Env",
     "EnvSpec",
+    "BaseTool",
     "tool",
     "ToolPermissionContext",
     "ToolPermissionDecision",

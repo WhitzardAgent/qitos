@@ -1,5 +1,7 @@
 """Canonical example: build a code security audit agent with QitOS presets."""
 
+# This full application is scheduled to move to qitos-zoo and is not part of QitOS core examples.
+
 from __future__ import annotations
 
 import os
@@ -11,12 +13,12 @@ from qitos import Action, AgentModule, Decision, HistoryPolicy, StateSchema
 from qitos.kit import (
     CodingToolSet,
     ReActTextParser,
-    SECURITY_AUDIT_SYSTEM_PROMPT,
-    SecurityAuditToolSet,
     TaskToolSet,
     format_action,
     render_prompt,
 )
+from qitos.kit.prompts import SECURITY_AUDIT_SYSTEM_PROMPT
+from qitos.kit.tool.experimental.security_research import SecurityAuditToolSet
 from qitos.models import OpenAICompatibleModel
 
 TASK = "Audit this repository for meaningful code security risks. Prioritize entrypoints, dangerous sinks, secrets, configuration, and dependency clues."

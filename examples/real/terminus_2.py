@@ -1,5 +1,7 @@
 """Faithful Terminus-2-style terminal agent built with QiTOS."""
 
+# This full application is scheduled to move to qitos-zoo and is not part of QitOS core examples.
+
 from __future__ import annotations
 
 import os

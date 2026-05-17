@@ -141,8 +141,8 @@ def test_tool_package_does_not_export_uncurated_cyber_toolsets():
     exported = set(getattr(tool_pkg, "__all__", []))
     assert "ReportToolSet" in exported
     assert "CodingToolSet" in exported
-    assert "SecurityAuditToolSet" in exported
-    assert "security_audit_tools" in exported
+    assert "SecurityAuditToolSet" not in exported
+    assert "security_audit_tools" not in exported
     assert "EditorToolSet" not in exported
     assert "CodebaseToolSet" not in exported
     assert "RunCommand" not in exported

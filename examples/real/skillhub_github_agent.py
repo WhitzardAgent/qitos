@@ -13,6 +13,8 @@ Supported flows:
 2. runtime prompt-driven installation with `search_skills` / `install_skill`
 """
 
+# This full application is scheduled to move to qitos-zoo and is not part of QitOS core examples.
+
 from __future__ import annotations
 
 import argparse

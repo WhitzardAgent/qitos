@@ -26,6 +26,7 @@ class DelegateTool(BaseTool):
     def __init__(self, spec: AgentSpec, agent_registry: AgentRegistry):
         self.agent_spec = spec
         self.agent_registry = agent_registry
+        self._execution_context: str = ""
         tool_spec = ToolSpec(
             name=f"delegate_to_{spec.name}",
             description=spec.description,
@@ -72,6 +73,10 @@ class DelegateTool(BaseTool):
 
         try:
             sub_engine = self._build_sub_engine(runtime_context, current_depth)
+            # Inject execution context into the sub-agent before running
+            sub_agent = self.agent_spec.agent
+            if sub_agent is not None and self._execution_context:
+                setattr(sub_agent, '_execution_context', self._execution_context)
             prepared_task = self._prepare_task(task, runtime_context)
             result = sub_engine.run(prepared_task)
         except Exception as exc:
@@ -115,6 +120,7 @@ class DelegateTool(BaseTool):
     ) -> Engine:
         from ...engine.engine import Engine
         from ...engine.states import RuntimeBudget
+        from ...engine.stop_criteria import FinalResultCriteria
 
         sub_agent = self.agent_spec.agent
         env = runtime_context.get("env") if self.agent_spec.shared_env else None
@@ -132,6 +138,7 @@ class DelegateTool(BaseTool):
             trace_writer=sub_trace_writer,
             delegate_depth=current_depth + 1,
             shared_memory=self.agent_spec.shared_memory,
+            stop_criteria=[FinalResultCriteria()],
         )
 
     def _build_sub_trace_writer(

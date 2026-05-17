@@ -1,5 +1,7 @@
 """Practical EPUB reader: Tree-of-Thought search over chapter evidence."""
 
+# This full application is scheduled to move to qitos-zoo and is not part of QitOS core examples.
+
 from __future__ import annotations
 
 import json

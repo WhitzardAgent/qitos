@@ -7,7 +7,7 @@ Supports environment variable configuration: OPENAI_API_KEY, OPENAI_BASE_URL
 
 import json
 import os
-from typing import Any, Dict, List, Optional, cast
+from typing import Any, AsyncIterator, Dict, Iterator, List, Optional, cast
 
 from ..core.multimodal import (
     ensure_data_url,
@@ -16,7 +16,7 @@ from ..core.multimodal import (
     normalize_content_block,
     normalize_messages,
 )
-from .base import Model
+from .base import Model, ModelStreamChunk
 
 
 def _to_openai_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -216,6 +216,73 @@ class OpenAIModel(Model):
             api_key=self.api_key, base_url=self.base_url, timeout=self.timeout
         )
         return self._chat_completion(client, messages, **kwargs)
+
+    def stream(self, messages: List[Dict[str, Any]], **kwargs: Any) -> Iterator[ModelStreamChunk]:
+        """Stream OpenAI response as chunks, yielding token-level text."""
+        import openai
+
+        self._last_usage = None
+        try:
+            client = openai.OpenAI(
+                api_key=self.api_key, base_url=self.base_url, timeout=self.timeout
+            )
+            response = client.chat.completions.create(
+                model=self.model,
+                messages=cast(Any, _to_openai_messages(messages)),
+                temperature=self.temperature,
+                max_tokens=self.max_tokens,
+                stream=True,
+                **kwargs,
+            )
+            accumulated_tool_calls: List[Dict[str, Any]] = []
+            for chunk in response:
+                if not chunk.choices:
+                    continue
+                delta = chunk.choices[0].delta
+                text = delta.content or ""
+                if text:
+                    yield ModelStreamChunk(text=text, done=False)
+                # Accumulate streaming tool call deltas
+                delta_tool_calls = getattr(delta, "tool_calls", None)
+                if delta_tool_calls:
+                    for dtc in delta_tool_calls:
+                        idx = getattr(dtc, "index", len(accumulated_tool_calls))
+                        while len(accumulated_tool_calls) <= idx:
+                            accumulated_tool_calls.append(
+                                {"id": None, "type": "function", "function": {"name": "", "arguments": ""}}
+                            )
+                        tc = accumulated_tool_calls[idx]
+                        tc_id = getattr(dtc, "id", None)
+                        if tc_id:
+                            tc["id"] = tc_id
+                        tc_type = getattr(dtc, "type", None)
+                        if tc_type:
+                            tc["type"] = tc_type
+                        fn = getattr(dtc, "function", None)
+                        if fn:
+                            fn_name = getattr(fn, "name", None)
+                            if fn_name:
+                                tc["function"]["name"] = fn_name
+                            fn_args = getattr(fn, "arguments", None)
+                            if fn_args:
+                                tc["function"]["arguments"] = tc["function"].get("arguments", "") + fn_args
+                if chunk.choices[0].finish_reason is not None:
+                    usage_data = None
+                    if hasattr(chunk, "usage") and chunk.usage:
+                        usage_data = {
+                            "prompt_tokens": getattr(chunk.usage, "prompt_tokens", None),
+                            "completion_tokens": getattr(chunk.usage, "completion_tokens", None),
+                            "total_tokens": getattr(chunk.usage, "total_tokens", None),
+                        }
+                        self._set_last_usage(usage_data)
+                    yield ModelStreamChunk(
+                        text="", done=True, usage=usage_data,
+                        tool_calls=accumulated_tool_calls if accumulated_tool_calls else None,
+                    )
+        except openai.APIError as e:
+            yield ModelStreamChunk(text=f"API Error: {str(e)}", done=True)
+        except Exception as e:
+            yield ModelStreamChunk(text=f"Error: {str(e)}", done=True)
 
     def _usage_from_response(self, response: Any) -> Optional[Dict[str, Any]]:
         usage = getattr(response, "usage", None)
@@ -500,6 +567,99 @@ class OpenAICompatibleModel(Model):
             "total_tokens": total_tokens,
         }
 
+    def stream(self, messages: List[Dict[str, Any]], **kwargs: Any) -> Iterator[ModelStreamChunk]:
+        """Stream OpenAI-compatible response as chunks, yielding token-level text."""
+        import openai
+
+        self._last_usage = None
+        try:
+            client = openai.OpenAI(
+                api_key=self.api_key, base_url=self.base_url, timeout=self.timeout
+            )
+            # Build stream options — request usage in final chunk
+            # Not all OpenAI-compatible APIs support this, so we wrap it
+            create_kwargs: Dict[str, Any] = dict(kwargs)
+            if "stream_options" not in create_kwargs:
+                create_kwargs["stream_options"] = {"include_usage": True}
+            try:
+                response = client.chat.completions.create(
+                    model=self.model,
+                    messages=cast(Any, _to_openai_messages(messages)),
+                    temperature=self.temperature,
+                    max_tokens=self.max_tokens,
+                    stream=True,
+                    **create_kwargs,
+                )
+            except (openai.BadRequestError, openai.APIError):
+                # Retry without stream_options if the API doesn't support it
+                create_kwargs.pop("stream_options", None)
+                response = client.chat.completions.create(
+                    model=self.model,
+                    messages=cast(Any, _to_openai_messages(messages)),
+                    temperature=self.temperature,
+                    max_tokens=self.max_tokens,
+                    stream=True,
+                    **create_kwargs,
+                )
+            accumulated_tool_calls: List[Dict[str, Any]] = []
+            for chunk in response:
+                if not chunk.choices:
+                    # Empty choices chunk may carry usage data (OpenAI sends it last)
+                    if hasattr(chunk, "usage") and chunk.usage:
+                        usage_data = {
+                            "prompt_tokens": getattr(chunk.usage, "prompt_tokens", None),
+                            "completion_tokens": getattr(chunk.usage, "completion_tokens", None),
+                            "total_tokens": getattr(chunk.usage, "total_tokens", None),
+                        }
+                        self._set_last_usage(usage_data)
+                    continue
+                delta = chunk.choices[0].delta
+                text = delta.content or ""
+                if text:
+                    yield ModelStreamChunk(text=text, done=False)
+                # Accumulate streaming tool call deltas
+                delta_tool_calls = getattr(delta, "tool_calls", None)
+                if delta_tool_calls:
+                    for dtc in delta_tool_calls:
+                        idx = getattr(dtc, "index", len(accumulated_tool_calls))
+                        # Extend list if needed
+                        while len(accumulated_tool_calls) <= idx:
+                            accumulated_tool_calls.append(
+                                {"id": None, "type": "function", "function": {"name": "", "arguments": ""}}
+                            )
+                        tc = accumulated_tool_calls[idx]
+                        tc_id = getattr(dtc, "id", None)
+                        if tc_id:
+                            tc["id"] = tc_id
+                        tc_type = getattr(dtc, "type", None)
+                        if tc_type:
+                            tc["type"] = tc_type
+                        fn = getattr(dtc, "function", None)
+                        if fn:
+                            fn_name = getattr(fn, "name", None)
+                            if fn_name:
+                                tc["function"]["name"] = fn_name
+                            fn_args = getattr(fn, "arguments", None)
+                            if fn_args:
+                                tc["function"]["arguments"] = tc["function"].get("arguments", "") + fn_args
+                if chunk.choices[0].finish_reason is not None:
+                    usage_data = None
+                    if hasattr(chunk, "usage") and chunk.usage:
+                        usage_data = {
+                            "prompt_tokens": getattr(chunk.usage, "prompt_tokens", None),
+                            "completion_tokens": getattr(chunk.usage, "completion_tokens", None),
+                            "total_tokens": getattr(chunk.usage, "total_tokens", None),
+                        }
+                        self._set_last_usage(usage_data)
+                    yield ModelStreamChunk(
+                        text="", done=True, usage=usage_data,
+                        tool_calls=accumulated_tool_calls if accumulated_tool_calls else None,
+                    )
+        except openai.APIError as e:
+            yield ModelStreamChunk(text=f"API Error: {str(e)}", done=True)
+        except Exception as e:
+            yield ModelStreamChunk(text=f"Error: {str(e)}", done=True)
+
 
 class AzureOpenAIModel(OpenAICompatibleModel):
     """
@@ -658,6 +818,45 @@ class AsyncOpenAICompatibleModel(OpenAICompatibleModel):
         )
         return await self._achat_completion(client, messages, **kwargs)
 
+    async def astream(self, messages: List[Dict[str, Any]], **kwargs: Any) -> AsyncIterator[ModelStreamChunk]:
+        """Async stream OpenAI-compatible response as chunks."""
+        import openai
+
+        self._last_usage = None
+        try:
+            client = openai.AsyncOpenAI(
+                api_key=self.api_key, base_url=self.base_url, timeout=self.timeout
+            )
+            response = await client.chat.completions.create(
+                model=self.model,
+                messages=cast(Any, _to_openai_messages(messages)),
+                temperature=self.temperature,
+                max_tokens=self.max_tokens,
+                stream=True,
+                **kwargs,
+            )
+            async for chunk in response:
+                if not chunk.choices:
+                    continue
+                delta = chunk.choices[0].delta
+                text = delta.content or ""
+                if text:
+                    yield ModelStreamChunk(text=text, done=False)
+                if chunk.choices[0].finish_reason is not None:
+                    usage_data = None
+                    if hasattr(chunk, "usage") and chunk.usage:
+                        usage_data = {
+                            "prompt_tokens": getattr(chunk.usage, "prompt_tokens", None),
+                            "completion_tokens": getattr(chunk.usage, "completion_tokens", None),
+                            "total_tokens": getattr(chunk.usage, "total_tokens", None),
+                        }
+                        self._set_last_usage(usage_data)
+                    yield ModelStreamChunk(text="", done=True, usage=usage_data)
+        except openai.APIError as e:
+            yield ModelStreamChunk(text=f"API Error: {str(e)}", done=True)
+        except Exception as e:
+            yield ModelStreamChunk(text=f"Error: {str(e)}", done=True)
+
 
 class AsyncOpenAIModel(OpenAIModel):
     """
@@ -706,6 +905,45 @@ class AsyncOpenAIModel(OpenAIModel):
             api_key=self.api_key, base_url=self.base_url, timeout=self.timeout
         )
         return await self._achat_completion(client, messages, **kwargs)
+
+    async def astream(self, messages: List[Dict[str, Any]], **kwargs: Any) -> AsyncIterator[ModelStreamChunk]:
+        """Async stream OpenAI response as chunks."""
+        import openai
+
+        self._last_usage = None
+        try:
+            client = openai.AsyncOpenAI(
+                api_key=self.api_key, base_url=self.base_url, timeout=self.timeout
+            )
+            response = await client.chat.completions.create(
+                model=self.model,
+                messages=cast(Any, _to_openai_messages(messages)),
+                temperature=self.temperature,
+                max_tokens=self.max_tokens,
+                stream=True,
+                **kwargs,
+            )
+            async for chunk in response:
+                if not chunk.choices:
+                    continue
+                delta = chunk.choices[0].delta
+                text = delta.content or ""
+                if text:
+                    yield ModelStreamChunk(text=text, done=False)
+                if chunk.choices[0].finish_reason is not None:
+                    usage_data = None
+                    if hasattr(chunk, "usage") and chunk.usage:
+                        usage_data = {
+                            "prompt_tokens": getattr(chunk.usage, "prompt_tokens", None),
+                            "completion_tokens": getattr(chunk.usage, "completion_tokens", None),
+                            "total_tokens": getattr(chunk.usage, "total_tokens", None),
+                        }
+                        self._set_last_usage(usage_data)
+                    yield ModelStreamChunk(text="", done=True, usage=usage_data)
+        except openai.APIError as e:
+            yield ModelStreamChunk(text=f"API Error: {str(e)}", done=True)
+        except Exception as e:
+            yield ModelStreamChunk(text=f"Error: {str(e)}", done=True)
 
 
 # Register to factory

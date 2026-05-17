@@ -1,5 +1,7 @@
 """Practical SWE agent: dynamic planning, branch search, and verification."""
 
+# This full application is scheduled to move to qitos-zoo and is not part of QitOS core examples.
+
 from __future__ import annotations
 
 import os

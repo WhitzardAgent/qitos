@@ -149,6 +149,36 @@ _PRESETS: tuple[FamilyPreset, ...] = (
         notes="Compatibility preset retained for profile inference; served Gemma 4 uses a separate preset.",
         recommended_models=("gemini-2.5-pro",),
     ),
+    FamilyPreset(
+        id="deepseek",
+        display_name="DeepSeek",
+        model_matchers=("deepseek", "ds-v4", "ds-v3", "deepseek-"),
+        adapter_kind="openai-compatible",
+        default_protocol="json_decision_v1",
+        fallback_protocols=("tool_use_xml_v1", "react_text_v1"),
+        tool_policy=ToolPolicy(
+            primary_delivery="api_parameter",
+            fallback_delivery="prompt_injection",
+        ),
+        context_policy=ContextPolicy(context_window_hint=128_000),
+        notes="DeepSeek models work best with JSON decision protocol, falling back to tool_use_xml for models that emit XML.",
+        recommended_models=("ds-v4-pro", "ds-v4-flash", "deepseek-chat"),
+    ),
+    FamilyPreset(
+        id="glm",
+        display_name="GLM",
+        model_matchers=("glm", "chatglm"),
+        adapter_kind="openai-compatible",
+        default_protocol="tool_use_xml_v1",
+        fallback_protocols=("xml_decision_v1", "json_decision_v1", "react_text_v1"),
+        tool_policy=ToolPolicy(
+            primary_delivery="prompt_injection",
+            fallback_delivery="api_parameter",
+        ),
+        context_policy=ContextPolicy(context_window_hint=128_000),
+        notes="GLM models emit <tool_use> XML format. Use tool_use_xml_v1 protocol.",
+        recommended_models=("glm5.1-w4a8-4maas", "glm-4"),
+    ),
 )
 
 

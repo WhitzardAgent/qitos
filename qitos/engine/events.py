@@ -27,6 +27,7 @@ class EngineEventType(str, Enum):
     ERROR = "error"
     RUN_START = "run_start"
     RUN_END = "run_end"
+    STEP_STREAM = "step_stream"  # Token-level streaming chunk
 
 
 @dataclass

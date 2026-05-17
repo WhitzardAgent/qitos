@@ -7,3 +7,6 @@ recursive-include qitos/benchmark/tau_bench/port/envs/airline/data *.json
 recursive-include qitos/benchmark/tau_bench/port/envs/retail *.md
 recursive-include qitos/benchmark/tau_bench/port/envs/airline *.md
 recursive-include qitos/benchmark/desktop/data *.json
+
+prune plans/qitos_zoo_migration
+prune qitos/examples

@@ -60,6 +60,15 @@ Before opening a PR:
 - Update [CHANGELOG.md](CHANGELOG.md) for high-signal user-facing changes
 - Avoid unrelated cleanup in the same PR unless it directly unblocks the change
 
+Boundary checklist:
+
+- Is this generic framework code or product-specific app code?
+- Does this belong in `qitos-zoo` instead?
+- Does this add heavy dependencies to core?
+- Does this expand the public API surface?
+- Does this introduce security-sensitive behavior?
+- Are tests and docs updated?
+
 Before requesting review, run:
 
 ```bash

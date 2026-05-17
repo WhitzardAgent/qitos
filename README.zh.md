@@ -12,6 +12,8 @@ QitOS 是面向 agent 研究者的 torch-flavor 框架。
 
 你可以在同一个 `AgentModule + Engine` 内核上原型化方法、运行 benchmark，并用内建 `qita` 检查长时轨迹。
 
+QitOS 主仓库是小而清晰的核心框架。产品级 / 展示级应用会进入独立的 `qitos-zoo`，包括计划中的 `qitos-coder` 与 `qitos-cyber-agent`。
+
 [快速开始](https://qitor.mintlify.app/zh/quickstart) · [教程课程](https://qitor.mintlify.app/zh/tutorials) · [基准测试](https://qitor.mintlify.app/zh/benchmarks/overview) · [CLI 参考](https://qitor.mintlify.app/zh/reference/cli) · [English README](README.md)
 
 ## v0.3.0 最新进展
@@ -84,9 +86,10 @@ export QITOS_MODEL="Qwen/Qwen3-8B"
 ### 真实 Agent
 
 - **Coding agent**：编辑器、shell、memory 组成的实用编码循环。
-- **SWE agent**：更强的规划型软件工程工作流。
-- **Computer-use agent**：偏网页研究与 computer-use 风格。
-- **EPUB reader**：文档驱动、带分支推理的阅读 agent。
+- **Research harness agent**：面向研究者的 prompt/parser/protocol 手写路径。
+- **Desktop smoke**：最小、确定性的 desktop env 循环。
+
+完整应用、产品 clone、网络安全 agent 与长工作流 showcase 应进入 `qitos-zoo`，而不是作为 QitOS core 的 canonical examples。
 
 ### 评测
 
@@ -162,7 +165,7 @@ QitOS 当前处于 **Alpha**。
 
 ## 参与贡献
 
-欢迎贡献，尤其是 benchmark adapters、memory/history 工作流、qita UX 和 cyber-agent use cases。开发环境、文档工作流和 PR 约定见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+欢迎贡献 benchmark adapters、memory/history 工作流、qita UX 与核心框架能力。产品级 agent 应优先进入 `qitos-zoo`。开发环境、文档工作流和 PR 约定见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 ## License
 

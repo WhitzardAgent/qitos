@@ -5,7 +5,8 @@ from typing import Any
 import pytest
 
 from qitos.core.memory import MemoryRecord
-from qitos.kit import MemdirMemory, SecurityAuditAgent
+from qitos.kit import MemdirMemory
+from qitos.kit.agent import SecurityAuditAgent
 from qitos.kit.planning import PhaseEngine, PhaseSpec, TransitionRule
 from qitos.kit.tool import WorkspaceAwareMixin
 

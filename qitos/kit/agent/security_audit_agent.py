@@ -10,7 +10,8 @@ from qitos.kit.planning import PhaseEngine, PhaseSpec, TransitionRule
 from qitos.kit.planning.state_ops import format_action
 from qitos.kit.prompts import SECURITY_AUDIT_SYSTEM_PROMPT, render_prompt
 from qitos.kit.parser import ReActTextParser
-from qitos.kit.tool import CodingToolSet, SecurityAuditToolSet, TaskToolSet
+from qitos.kit.tool import CodingToolSet, TaskToolSet
+from qitos.kit.tool.experimental.security_research import SecurityAuditToolSet
 from qitos.kit.tool.workspace_aware import WorkspaceAwareMixin
 
 

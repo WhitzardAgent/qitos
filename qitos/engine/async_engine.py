@@ -13,6 +13,7 @@ from ..core.state import StateSchema
 from .engine import Engine, EngineResult
 from .events import EngineEvent, EngineEventType, EventStream
 from .states import ContextConfig, RuntimeBudget, RuntimePhase, StepRecord
+from ..models.base import ModelStreamChunk
 
 StateT = TypeVar("StateT", bound=StateSchema)
 ObservationT = TypeVar("ObservationT")
@@ -91,6 +92,57 @@ class AsyncEngine(Generic[StateT, ObservationT, ActionT]):
     def run(self, task: str, **kwargs: Any) -> EngineResult[StateT]:
         """Synchronous run (delegates to underlying Engine)."""
         return self._engine.run(task, **kwargs)
+
+    async def arun_stream_tokens(
+        self, task: str, **kwargs: Any
+    ) -> AsyncIterator[EngineEvent]:
+        """Run the agent loop with token-level streaming.
+
+        Yields EngineEvents including STEP_STREAM events that carry
+        ModelStreamChunk payloads for real-time token display.
+
+        Falls back to arun_stream() if the model does not support streaming.
+        """
+        stream = EventStream()
+        self.event_stream = stream
+
+        hook = _StreamBridgeHook(stream)
+        self._engine.hooks.append(hook)
+
+        # Check if model supports streaming
+        llm = getattr(self.agent, "llm", None)
+        supports_streaming = hasattr(llm, "astream") if llm else False
+
+        if supports_streaming:
+            # Use streaming model path
+            from .states import RuntimePhase
+
+            def _run_stream() -> EngineResult[StateT]:
+                try:
+                    return self._engine.run(task, **kwargs)
+                finally:
+                    stream.close()
+
+            run_task = asyncio.ensure_future(asyncio.to_thread(_run_stream))
+
+            try:
+                async for event in stream:
+                    yield event
+            finally:
+                self._engine.hooks = [
+                    h for h in self._engine.hooks if h is not hook
+                ]
+                self.event_stream = None
+                if not run_task.done():
+                    run_task.cancel()
+                    try:
+                        await run_task
+                    except (asyncio.CancelledError, Exception):
+                        pass
+        else:
+            # Fallback: no streaming, just use arun_stream
+            async for event in self.arun_stream(task, **kwargs):
+                yield event
 
 
 class _StreamBridgeHook:

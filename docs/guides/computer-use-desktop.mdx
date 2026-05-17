@@ -126,17 +126,17 @@ The design principle is the same one used elsewhere in QitOS: adapt the scaffold
 
 The main reference example is:
 
-- `/Users/morinop/coding/yoga_framework/examples/real/openai_cua_agent.py`
+- `examples/real/openai_cua_agent.py`
 
 It keeps the file name close to OSWorld’s original `openai_cua_agent.py` so the lineage is easy to follow, but the implementation is intentionally QitOS-native.
 
 The actual baseline implementation now lives in the recipe layer:
 
-- `/Users/morinop/coding/yoga_framework/qitos/recipes/desktop/osworld_starter.py`
+- `qitos/recipes/desktop/osworld_starter.py`
 
 The public example file is now only a thin entrypoint:
 
-- `/Users/morinop/coding/yoga_framework/examples/real/openai_cua_agent.py`
+- `examples/real/openai_cua_agent.py`
 
 It is now the **benchmark-grade starter baseline**, not just a thin demo loop:
 

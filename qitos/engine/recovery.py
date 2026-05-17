@@ -14,6 +14,8 @@ class RecoveryDecision:
     continue_run: bool
     stop_reason: Optional[StopReason] = None
     note: Optional[str] = None
+    state_patch: Optional[Dict[str, Any]] = None
+    instruction_patch: Optional[str] = None
 
 
 @dataclass

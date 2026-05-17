@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import time
-from typing import Any, Dict, List, Optional, Sequence
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from ..core.action import Action, ActionExecutionPolicy, ActionResult, ActionStatus
 from ..core.env import Env
@@ -13,6 +14,16 @@ from ..core.tool import (
     ToolPermissionDecision,
     ToolValidationResult,
 )
+from .states import RuntimePhase
+
+
+# Tools that are safe to run concurrently (read-only, no side effects)
+_CONCURRENCY_SAFE_TOOLS = frozenset({
+    "file_read_v2", "read_file", "Read", "view",
+    "Glob", "Grep", "glob_v2", "grep_v2",
+    "WebFetch", "web_fetch_v2",
+    "task_list", "task_get",
+})
 
 
 class ActionExecutor:
@@ -25,21 +36,94 @@ class ActionExecutor:
         trace_writer: Any = None,
         delegate_depth: int = 0,
         shared_memory: Any = None,
+        engine: Any = None,
+        permission_pipeline: Any = None,
+        read_before_write_enforcer: Any = None,
+        permission_interaction_callback: Optional[Any] = None,
     ):
         self.tool_registry = tool_registry
         self.policy = policy or ActionExecutionPolicy()
         self.trace_writer = trace_writer
         self.delegate_depth = delegate_depth
         self.shared_memory = shared_memory
+        self._engine = engine
+        self._pipeline = permission_pipeline
+        self._rbw_enforcer = read_before_write_enforcer
+        self._permission_interaction_callback = permission_interaction_callback
 
     def execute(
         self, actions: Sequence[Action], env: Optional[Env] = None, state: Any = None
     ) -> List[ActionResult]:
-        if self.policy.mode == "parallel":
-            raise NotImplementedError(
-                "ActionExecutionPolicy.mode='parallel' is not implemented in the canonical executor"
-            )
+        if not actions:
+            return []
+
+        # Single action: execute directly
+        if len(actions) == 1:
+            return [self._execute_one(actions[0], env=env, state=state)]
+
+        # Multiple actions: classify and run safe tools in parallel
+        safe_count = sum(1 for a in actions if a.name in _CONCURRENCY_SAFE_TOOLS)
+        if safe_count >= 2:
+            return self._execute_concurrent(actions, env=env, state=state)
+
+        # All exclusive or only one safe: run sequentially
         return [self._execute_one(action, env=env, state=state) for action in actions]
+
+    def _execute_concurrent(
+        self, actions: Sequence[Action], env: Optional[Env] = None, state: Any = None
+    ) -> List[ActionResult]:
+        """Execute actions with concurrency-safe tools running in parallel.
+
+        Read-only tools (Read, Glob, Grep, etc.) are run concurrently.
+        Exclusive tools (Edit, Write, Bash) are run sequentially.
+        Results are returned in the original order.
+        """
+        # Classify actions into safe (parallel) and exclusive (sequential)
+        safe_indices: List[int] = []
+        exclusive_indices: List[int] = []
+        for i, action in enumerate(actions):
+            if action.name in _CONCURRENCY_SAFE_TOOLS:
+                safe_indices.append(i)
+            else:
+                exclusive_indices.append(i)
+
+        # If all actions are exclusive or only one safe action, run sequentially
+        if len(safe_indices) <= 1:
+            return [self._execute_one(action, env=env, state=state) for action in actions]
+
+        # Run safe actions in parallel, exclusive actions sequentially
+        results: List[Optional[ActionResult]] = [None] * len(actions)
+
+        # Execute safe (read-only) actions in parallel
+        max_workers = min(10, len(safe_indices))
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures: Dict[Any, int] = {}
+            for idx in safe_indices:
+                future = pool.submit(self._execute_one, actions[idx], env=env, state=state)
+                futures[future] = idx
+            for future in as_completed(futures):
+                idx = futures[future]
+                results[idx] = future.result()
+
+        # Execute exclusive (write/bash) actions sequentially
+        for idx in exclusive_indices:
+            results[idx] = self._execute_one(actions[idx], env=env, state=state)
+
+        # All slots should be filled
+        return [r if r is not None else self._error_result(actions[i], "concurrent_execution_failed") for i, r in enumerate(results)]
+
+    def _error_result(self, action: Action, message: str) -> ActionResult:
+        """Create an error ActionResult for a failed concurrent execution slot."""
+        return ActionResult(
+            name=action.name,
+            status=ActionStatus.ERROR,
+            output=None,
+            error=message,
+            action_id=action.action_id,
+            attempts=1,
+            latency_ms=0.0,
+            metadata={"error_category": "concurrent_execution_error"},
+        )
 
     def _execute_one(
         self, action: Action, env: Optional[Env] = None, state: Any = None
@@ -74,8 +158,17 @@ class ActionExecutor:
                         },
                     )
 
+                # Read-before-write check for file editing tools
+                rbw_blocked = self._check_read_before_write(action)
+                if rbw_blocked is not None:
+                    return rbw_blocked
+
                 permission = self._check_permissions(tool, action.args, runtime_context)
                 if permission.decision == "deny":
+                    self._dispatch_tool_hook(
+                        "on_permission_denied", action.name, action.args,
+                        tool_result=None, permission_decision="deny",
+                    )
                     return self._finish_result(
                         action=action,
                         status=ActionStatus.SKIPPED,
@@ -93,6 +186,45 @@ class ActionExecutor:
                         },
                     )
                 if permission.decision == "ask":
+                    # Try interactive resolution if callback is set
+                    if self._permission_interaction_callback is not None:
+                        try:
+                            user_decision = self._permission_interaction_callback(
+                                tool_name=action.name,
+                                args=action.args,
+                                permission=permission,
+                            )
+                            if user_decision == "allow":
+                                permission = ToolPermissionDecision.allow()
+                            elif user_decision == "deny":
+                                self._dispatch_tool_hook(
+                                    "on_permission_denied", action.name, action.args,
+                                    tool_result=None, permission_decision="deny",
+                                )
+                                return self._finish_result(
+                                    action=action,
+                                    status=ActionStatus.SKIPPED,
+                                    start=start,
+                                    attempts=attempts,
+                                    tool_meta=tool_meta,
+                                    output={
+                                        "status": "denied",
+                                        "message": "User denied permission",
+                                        "scope": permission.scope,
+                                    },
+                                    extra_metadata={
+                                        "error_category": "permission_denied",
+                                        "permission": self._permission_payload(permission),
+                                    },
+                                )
+                            # else: fall through to SKIPPED
+                        except Exception:
+                            pass  # Callback failed, fall through to SKIPPED
+
+                    self._dispatch_tool_hook(
+                        "on_permission_denied", action.name, action.args,
+                        tool_result=None, permission_decision="ask",
+                    )
                     return self._finish_result(
                         action=action,
                         status=ActionStatus.SKIPPED,
@@ -111,9 +243,19 @@ class ActionExecutor:
                     )
 
                 effective_args = dict(permission.updated_args or action.args)
+                self._dispatch_tool_hook(
+                    "on_before_tool_use", action.name, effective_args,
+                    tool_result=None, permission_decision=permission.decision,
+                )
                 output = self._call_tool(
                     tool, action.name, effective_args, runtime_context=runtime_context
                 )
+                self._dispatch_tool_hook(
+                    "on_after_tool_use", action.name, effective_args,
+                    tool_result=output, permission_decision=permission.decision,
+                )
+                # Track reads / invalidate writes for read-before-write
+                self._track_file_access(action.name, effective_args, output)
                 normalized_output = self._normalize_output(tool, output)
                 latency = (time.monotonic() - start) * 1000
                 return ActionResult(
@@ -244,6 +386,16 @@ class ActionExecutor:
         args: Dict[str, Any],
         runtime_context: Dict[str, Any],
     ) -> ToolPermissionDecision:
+        # Use permission pipeline if available
+        if self._pipeline is not None:
+            tool_spec = getattr(tool, "spec", None) if tool is not None else None
+            return self._pipeline.evaluate(
+                tool_name=getattr(tool, "name", "") if tool else "",
+                args=dict(args),
+                tool_spec=tool_spec,
+                runtime_context=runtime_context,
+            )
+        # Fallback: use tool's own permission check
         if tool is None or not hasattr(tool, "check_permissions"):
             return ToolPermissionDecision.allow()
         result = tool.check_permissions(dict(args), runtime_context=runtime_context)
@@ -398,3 +550,105 @@ class ActionExecutor:
             "toolset_version": None,
             "source": "unknown",
         }
+
+    def _dispatch_tool_hook(
+        self,
+        hook_method: str,
+        tool_name: str,
+        tool_args: Dict[str, Any],
+        tool_result: Any = None,
+        permission_decision: Optional[str] = None,
+    ) -> None:
+        """Dispatch a tool-level hook to all registered engine hooks."""
+        if self._engine is None:
+            return
+        hooks = getattr(self._engine, "hooks", None)
+        if not hooks:
+            return
+        from .hooks import ToolHookContext
+        ctx = ToolHookContext(
+            task="",
+            step_id=0,
+            phase=RuntimePhase.ACT,
+            state=None,
+            tool_name=tool_name,
+            tool_args=tool_args,
+            tool_result=tool_result,
+            permission_decision=permission_decision,
+        )
+        for hook in hooks:
+            method = getattr(hook, hook_method, None)
+            if method is not None:
+                try:
+                    method(ctx, self._engine)
+                except Exception:
+                    pass
+
+    # ── Read-before-write support ──────────────────────────────────────────────
+
+    _WRITE_TOOL_NAMES = frozenset({
+        "file_edit_v2", "write_file", "Edit", "Write",
+        "str_replace", "insert", "replace_lines", "append_file",
+    })
+
+    _READ_TOOL_NAMES = frozenset({
+        "file_read_v2", "read_file", "Read", "view",
+    })
+
+    def _check_read_before_write(self, action: Action) -> Optional[ActionResult]:
+        """Check read-before-write enforcement for file editing tools.
+
+        Returns an ActionResult if the action should be blocked, None otherwise.
+        """
+        if self._rbw_enforcer is None:
+            return None
+        if action.name not in self._WRITE_TOOL_NAMES:
+            return None
+
+        path = action.args.get("path") or action.args.get("file_path", "")
+        if not path:
+            return None
+
+        allowed, reason = self._rbw_enforcer.check_write(path)
+        if allowed:
+            return None
+
+        start = time.monotonic()
+        return self._finish_result(
+            action=action,
+            status=ActionStatus.SKIPPED,
+            start=start,
+            attempts=1,
+            tool_meta=self._tool_meta(action.name),
+            output={
+                "status": "error",
+                "message": reason,
+                "error_category": "read_before_write",
+            },
+            extra_metadata={
+                "error_category": "read_before_write",
+            },
+        )
+
+    def _track_file_access(
+        self, tool_name: str, args: Dict[str, Any], output: Any
+    ) -> None:
+        """Track file reads and invalidate cache on writes for RBW enforcement."""
+        if self._rbw_enforcer is None:
+            return
+
+        # Record successful file reads
+        if tool_name in self._READ_TOOL_NAMES:
+            path = args.get("path") or args.get("file_path", "")
+            if path and isinstance(output, dict):
+                content = output.get("content", "")
+                if content:
+                    self._rbw_enforcer.record_read(path, content)
+                elif isinstance(output, str) and output:
+                    self._rbw_enforcer.record_read(path, output)
+
+        # Invalidate cache after successful writes
+        if tool_name in self._WRITE_TOOL_NAMES:
+            path = args.get("path") or args.get("file_path", "")
+            if path:
+                self._rbw_enforcer.invalidate(path)

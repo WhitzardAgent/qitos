@@ -12,6 +12,35 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import parse_qs, urlparse
 
 
+# ---------------------------------------------------------------------------
+# Design tokens — DESIGN.md Linear-inspired visual system
+# ---------------------------------------------------------------------------
+
+_DESIGN_HEAD = """\
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">"""
+
+_DESIGN_TOKENS = """\
+:root{
+  --bg:#010102;--surface-1:#0f1011;--surface-2:#141516;--surface-3:#18191a;--surface-4:#191a1b;
+  --accent:#5e6ad2;--accent-hover:#828fff;--accent-focus:#5e69d1;
+  --txt:#f7f8f8;--muted:#d0d6e0;--subtle:#8a8f98;--tertiary:#62666d;
+  --line:#23252a;--line-strong:#34343a;--line-tertiary:#3e3e44;
+  --ok:#27a644;--err:#e5484d;--warn:#e5c100;
+  --kind-thinking:#8b8fe0;--kind-action:#2da46a;--kind-observation:#5a8fbf;
+  --kind-critic:#bfa04e;--kind-handoff:#bfa04e;--kind-delegation:#6b8fc4;
+  --kind-fanout:#9b7fd4;--kind-parser:#bfa04e;--kind-memory:#3da89c;
+  --kind-done:#c47070;--kind-error:#e5484d;--kind-other:#5a6578;--kind-plan:#7a80cc;
+  --radius-xs:4px;--radius-sm:6px;--radius-md:8px;--radius-lg:12px;--radius-xl:16px;--radius-pill:9999px;
+  --font-body:'Inter','SF Pro Display',-apple-system,system-ui,'Segoe UI',Roboto,sans-serif;
+  --font-mono:'JetBrains Mono','Geist Mono',ui-monospace,'SF Mono',Menlo,monospace;
+}"""
+
+_DESIGN_FONT_BODY = "var(--font-body)"
+_DESIGN_FONT_MONO = "var(--font-mono)"
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(prog="qita", description="QitOS trace tools")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -697,34 +726,35 @@ def _render_board_html() -> str:
     return """<!doctype html>
 <html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
 <title>qita board</title>
+""" + _DESIGN_HEAD + """
 <style>
-:root{--bg:#090d16;--panel:#10192a;--panel2:#0d1422;--line:#1f2f4d;--txt:#e7edf9;--muted:#9fb0d4;--ok:#3dd68c;--warn:#f7b955;--bad:#ff6b6b;--accent:#4db5ff}
-*{box-sizing:border-box} body{margin:0;font-family:ui-sans-serif,system-ui;background:radial-gradient(circle at 20% 0%,#132340 0,#090d16 60%);color:var(--txt)}
+""" + _DESIGN_TOKENS + """
+*{box-sizing:border-box} body{margin:0;font-family:var(--font-body);background:var(--bg);color:var(--txt)}
 .wrap{max-width:1320px;margin:0 auto;padding:24px 18px 32px}
 .head{display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:16px}
-.title{font-size:28px;font-weight:800;letter-spacing:.2px}.sub{color:var(--muted);font-size:13px;margin-top:4px}
-.chip{border:1px solid var(--line);background:var(--panel2);border-radius:999px;padding:8px 12px;font-size:12px;color:var(--muted)}
+.title{font-size:28px;font-weight:700;letter-spacing:-.6px}.sub{color:var(--muted);font-size:13px;margin-top:4px}
+.chip{border:1px solid var(--line);background:var(--surface-2);border-radius:var(--radius-pill);padding:8px 12px;font-size:12px;color:var(--muted)}
 .toolbar{display:grid;grid-template-columns:1.2fr .9fr .9fr 1fr 1fr auto auto;gap:10px;margin:12px 0 18px}
-.toolbar input,.toolbar select{border:1px solid var(--line);background:var(--panel2);color:var(--txt);border-radius:10px;padding:9px 10px;font-size:13px}
+.toolbar input,.toolbar select{border:1px solid var(--line);background:var(--surface-1);color:var(--txt);border-radius:var(--radius-md);padding:9px 10px;font-size:13px}
 .toolbar label{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--muted)}
 .toolbar .btn{justify-content:center}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:14px}
-.card{background:linear-gradient(180deg,rgba(255,255,255,.03),rgba(255,255,255,.00));border:1px solid var(--line);border-radius:14px;padding:14px;box-shadow:0 10px 30px rgba(0,0,0,.15)}
+.card{background:var(--surface-1);border:1px solid var(--line);border-radius:var(--radius-lg);padding:14px}
 .id{font-weight:700;font-size:16px}
 .meta{font-size:12px;color:var(--muted);margin-top:6px}
 .row{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
-.btn{display:inline-flex;align-items:center;border:1px solid var(--line);color:var(--txt);background:#13203a;padding:6px 10px;border-radius:8px;font-size:12px;text-decoration:none;cursor:pointer}
+.btn{display:inline-flex;align-items:center;border:1px solid var(--line);color:var(--txt);background:var(--surface-1);padding:6px 10px;border-radius:var(--radius-md);font-size:12px;text-decoration:none;cursor:pointer}
 .btn:hover{border-color:var(--accent)}
-.state{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;background:#13342b;color:var(--ok);border:1px solid #1d5f4b}
-.manifest-mini{margin-top:8px;border:1px dashed #27416a;border-radius:10px;padding:8px;background:#0d182c}
+.state{display:inline-block;padding:2px 8px;border-radius:var(--radius-pill);font-size:11px;background:var(--surface-2);color:var(--ok);border:1px solid var(--line)}
+.manifest-mini{margin-top:8px;border:1px dashed var(--line-strong);border-radius:var(--radius-md);padding:8px;background:var(--surface-1)}
 .manifest-mini .meta{margin-top:2px}
-.manifest-meta-tree{margin-top:6px;padding-top:6px;border-top:1px dashed #27416a}
+.manifest-meta-tree{margin-top:6px;padding-top:6px;border-top:1px dashed var(--line-strong)}
 .manifest-meta-tree details{margin:4px 0}
-.manifest-meta-tree summary{cursor:pointer;color:#b7cdf4;font-size:12px}
+.manifest-meta-tree summary{cursor:pointer;color:var(--muted);font-size:12px}
 .manifest-meta-leaf{display:grid;grid-template-columns:110px 1fr;gap:8px;margin:4px 0}
-.manifest-meta-k{font-size:11px;color:#8ea4cf}
-.manifest-meta-v{font-size:11px;color:#dce8ff;word-break:break-word}
-.empty{padding:18px;border:1px dashed var(--line);border-radius:12px;color:var(--muted)}
+.manifest-meta-k{font-size:11px;color:var(--subtle)}
+.manifest-meta-v{font-size:11px;color:var(--txt);word-break:break-word}
+.empty{padding:18px;border:1px dashed var(--line);border-radius:var(--radius-lg);color:var(--muted)}
 @media (max-width:980px){.toolbar{grid-template-columns:1fr 1fr}}
 </style></head>
 <body>
@@ -841,8 +871,8 @@ function paint(){
     const status = (r.status || 'unknown');
     const m = r.manifest_meta || {};
     const agentCount = r.agent_count || 0;
-    const agentBadge = agentCount > 1 ? `<span class="state" style="background:#1a2744;color:#7eb8ff;border-color:#2d4a7a">[${agentCount} agents]</span>` : (r.agent_name ? `<span class="state" style="background:#1a2744;color:#7eb8ff;border-color:#2d4a7a">[${esc(r.agent_name)}]</span>` : '');
-    const handoffBadge = r.handoff_count ? `<span class="state" style="background:#2a1f0a;color:#f7b955;border-color:#5a4320">handoffs=${r.handoff_count}</span>` : '';
+    const agentBadge = agentCount > 1 ? `<span class="state" style="background:var(--surface-2);color:var(--accent);border-color:var(--line-strong)">[${agentCount} agents]</span>` : (r.agent_name ? `<span class="state" style="background:var(--surface-2);color:var(--accent);border-color:var(--line-strong)">[${esc(r.agent_name)}]</span>` : '');
+    const handoffBadge = r.handoff_count ? `<span class="state" style="background:var(--surface-2);color:var(--kind-handoff);border-color:var(--line-strong)">handoffs=${r.handoff_count}</span>` : '';
     const topoInfo = (r.agent_topology && typeof r.agent_topology === 'object') ? (r.agent_topology.type || '') : '';
     const topoBadge = topoInfo ? `<div class="meta">topology=${esc(topoInfo)}${r.agent_topology.agents ? ' agents=' + esc(r.agent_topology.agents.join(',')) : ''}</div>` : '';
     el.innerHTML = `
@@ -945,16 +975,18 @@ loadRuns().catch((e)=>{document.getElementById('runs').innerHTML=`<div class="em
 
 def _render_not_found(run_id: str) -> str:
     safe = html.escape(run_id)
-    return f"""<!doctype html><html><head><meta charset="utf-8"/><title>run not found</title></head>
-<body style="font-family:ui-sans-serif,system-ui;background:#101522;color:#dfe8fb;padding:24px">
-<h2>Run not found: {safe}</h2><a href="/" style="color:#83c4ff">Back to board</a></body></html>"""
+    return f"""<!doctype html><html><head><meta charset="utf-8"/><title>run not found</title>
+<style>{_DESIGN_TOKENS}</style></head>
+<body style="font-family:var(--font-body);background:var(--bg);color:var(--txt);padding:24px">
+<h2>Run not found: {safe}</h2><a href="/" style="color:var(--accent)">Back to board</a></body></html>"""
 
 
 def _render_compare_prompt() -> str:
-    return """<!doctype html><html><head><meta charset="utf-8"/><title>qita compare</title></head>
-<body style="font-family:ui-sans-serif,system-ui;background:#101522;color:#dfe8fb;padding:24px">
+    return f"""<!doctype html><html><head><meta charset="utf-8"/><title>qita compare</title>
+<style>{_DESIGN_TOKENS}</style></head>
+<body style="font-family:var(--font-body);background:var(--bg);color:var(--txt);padding:24px">
 <h2>Missing compare target</h2><p>Provide <code>?left=RUN_A&amp;right=RUN_B</code> to compare two runs.</p>
-<a href="/" style="color:#83c4ff">Back to board</a></body></html>"""
+<a href="/" style="color:var(--accent)">Back to board</a></body></html>"""
 
 
 def _render_diff_html(diff: Dict[str, Any], embedded: bool) -> str:
@@ -1003,15 +1035,16 @@ def _render_diff_html(diff: Dict[str, Any], embedded: bool) -> str:
     return f"""<!doctype html>
 <html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
 <title>qita diff {left_id} vs {right_id}</title>
+{_DESIGN_HEAD}
 <style>
-:root{{--bg:#090d16;--panel:#111a2c;--line:#223352;--txt:#e7edf9;--muted:#a7b8da;--accent:#50b6ff}}
-*{{box-sizing:border-box}} body{{margin:0;background:linear-gradient(160deg,#0a0f1d,#0a152b);color:var(--txt);font-family:ui-sans-serif,system-ui}}
+{_DESIGN_TOKENS}
+*{{box-sizing:border-box}} body{{margin:0;background:var(--bg);color:var(--txt);font-family:var(--font-body)}}
 .wrap{{max-width:1240px;margin:0 auto;padding:18px}} .top{{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:center}}
-.btn{{display:inline-block;border:1px solid var(--line);padding:7px 11px;border-radius:8px;text-decoration:none;color:var(--txt);background:#172643;font-size:12px}}
-.btn.ghost{{background:transparent}} .grid{{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:14px}}
-.card{{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px}} .meta{{color:var(--muted);font-size:12px}}
-table{{width:100%;border-collapse:collapse;margin-top:10px}} td,th{{border-bottom:1px solid #1c2b44;padding:8px;text-align:left;vertical-align:top;font-size:12px}}
-th{{color:#9fb2d8;font-weight:700}} .full{{margin-top:12px}} code{{background:#0b1220;padding:2px 5px;border-radius:6px}}
+.btn{{display:inline-block;border:1px solid var(--line);padding:7px 11px;border-radius:var(--radius-md);text-decoration:none;color:var(--txt);background:var(--surface-1);font-size:12px}}
+.btn:hover{{border-color:var(--accent)}} .btn.ghost{{background:transparent}} .grid{{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:14px}}
+.card{{background:var(--surface-1);border:1px solid var(--line);border-radius:var(--radius-lg);padding:12px}} .meta{{color:var(--muted);font-size:12px}}
+table{{width:100%;border-collapse:collapse;margin-top:10px}} td,th{{border-bottom:1px solid var(--line);padding:8px;text-align:left;vertical-align:top;font-size:12px}}
+th{{color:var(--muted);font-weight:700}} .full{{margin-top:12px}} code{{background:var(--surface-2);padding:2px 5px;border-radius:var(--radius-sm)}}
 @media (max-width:980px){{.grid{{grid-template-columns:1fr}}}}
 </style></head><body>
 <div class="wrap">
@@ -1053,88 +1086,89 @@ def _render_run_html(payload: Dict[str, Any], embedded: bool) -> str:
     return f"""<!doctype html>
 <html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
 <title>qita run {run_id}</title>
+{_DESIGN_HEAD}
 <style>
-:root{{--bg:#090d16;--panel:#111a2c;--line:#223352;--txt:#e7edf9;--muted:#a7b8da;--accent:#50b6ff}}
-*{{box-sizing:border-box}} body{{margin:0;background:linear-gradient(160deg,#0a0f1d,#0a152b);color:var(--txt);font-family:ui-sans-serif,system-ui}}
+{_DESIGN_TOKENS}
+*{{box-sizing:border-box}} body{{margin:0;background:var(--bg);color:var(--txt);font-family:var(--font-body)}}
 .wrap{{max-width:1460px;margin:0 auto;padding:18px}}
-.top{{position:sticky;top:0;background:rgba(9,13,22,.9);backdrop-filter:blur(8px);padding:12px 0 14px;z-index:10;border-bottom:1px solid var(--line)}}
-.title{{font-size:22px;font-weight:800}} .muted{{color:var(--muted);font-size:12px}}
+.top{{position:sticky;top:0;background:rgba(1,1,2,.9);backdrop-filter:blur(8px);padding:12px 0 14px;z-index:10;border-bottom:1px solid var(--line)}}
+.title{{font-size:22px;font-weight:700;letter-spacing:-.4px}} .muted{{color:var(--muted);font-size:12px}}
 .toolbar{{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}}
-.btn{{display:inline-block;border:1px solid var(--line);padding:7px 11px;border-radius:8px;text-decoration:none;color:var(--txt);background:#172643;font-size:12px}}
+.btn{{display:inline-block;border:1px solid var(--line);padding:7px 11px;border-radius:var(--radius-md);text-decoration:none;color:var(--txt);background:var(--surface-1);font-size:12px}}
 .btn:hover{{border-color:var(--accent)}} .btn.ghost{{background:transparent}}
 .layout{{display:grid;grid-template-columns:260px 1fr;gap:12px;margin-top:12px}}
-.side{{position:sticky;top:84px;height:calc(100vh - 120px);overflow:auto;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:10px}}
+.side{{position:sticky;top:84px;height:calc(100vh - 120px);overflow:auto;background:var(--surface-1);border:1px solid var(--line);border-radius:var(--radius-lg);padding:10px}}
 .main{{min-width:0}}
-.manifest{{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px;margin-top:0}}
+.manifest{{background:var(--surface-1);border:1px solid var(--line);border-radius:var(--radius-lg);padding:12px;margin-top:0}}
 .tabs{{display:flex;gap:8px;margin-bottom:10px}}
-.tab{{border:1px solid var(--line);background:#0f1930;color:var(--txt);padding:8px 12px;border-radius:999px;cursor:pointer;font-size:13px}}
-.tab.active{{background:#1a335b;border-color:var(--accent)}}
+.tab{{border:1px solid var(--line);background:var(--surface-1);color:var(--txt);padding:8px 12px;border-radius:var(--radius-pill);cursor:pointer;font-size:13px}}
+.tab.active{{background:var(--surface-2);border-color:var(--accent)}}
 .panel{{display:none}}
 .panel.active{{display:block}}
 .controls{{display:grid;grid-template-columns:1.2fr .8fr .8fr .8fr .8fr auto auto auto;gap:8px;margin:12px 0}}
-.controls input,.controls select{{border:1px solid var(--line);background:#0d1527;color:var(--txt);border-radius:8px;padding:8px 10px;font-size:12px}}
+.controls input,.controls select{{border:1px solid var(--line);background:var(--surface-1);color:var(--txt);border-radius:var(--radius-md);padding:8px 10px;font-size:12px}}
 .overview{{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:8px;margin:10px 0 12px}}
-.ov{{background:linear-gradient(180deg,rgba(255,255,255,.04),rgba(255,255,255,0));border:1px solid #2a3d61;border-radius:10px;padding:8px 10px}}
-.ov .k{{font-size:11px;color:#91a8d6;text-transform:uppercase;letter-spacing:.3px}}
-.ov .v{{font-size:14px;color:#e7f0ff;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
-.timeline{{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px;margin:0 0 12px}}
+.ov{{background:var(--surface-1);border:1px solid var(--line);border-radius:var(--radius-md);padding:8px 10px}}
+.ov .k{{font-size:11px;color:var(--subtle);text-transform:uppercase;letter-spacing:.3px}}
+.ov .v{{font-size:14px;color:var(--txt);font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
+.timeline{{background:var(--surface-1);border:1px solid var(--line);border-radius:var(--radius-lg);padding:12px;margin:0 0 12px}}
 .vtimeline{{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px}}
-.vcard{{background:#0b1220;border:1px solid #1c2b44;border-radius:10px;padding:8px}}
-.vthumb{{position:relative;border:1px solid #243657;border-radius:8px;overflow:hidden;background:#081021;min-height:110px;display:flex;align-items:center;justify-content:center}}
+.vcard{{background:var(--surface-1);border:1px solid var(--line);border-radius:var(--radius-md);padding:8px}}
+.vthumb{{position:relative;border:1px solid var(--line-strong);border-radius:var(--radius-md);overflow:hidden;background:var(--bg);min-height:110px;display:flex;align-items:center;justify-content:center}}
 .vthumb img{{max-width:100%;display:block}}
 .voverlay{{position:absolute;inset:0;pointer-events:none}}
-.vdot{{position:absolute;width:12px;height:12px;border-radius:999px;background:rgba(255,107,107,.85);border:2px solid #fff;transform:translate(-50%,-50%)}}
-.vbox{{position:absolute;border:2px solid rgba(80,182,255,.9);background:rgba(80,182,255,.08);border-radius:4px}}
+.vdot{{position:absolute;width:12px;height:12px;border-radius:var(--radius-pill);background:rgba(229,72,77,.85);border:2px solid var(--txt);transform:translate(-50%,-50%)}}
+.vbox{{position:absolute;border:2px solid rgba(94,106,210,.9);background:rgba(94,106,210,.08);border-radius:var(--radius-xs)}}
 .trow{{display:grid;grid-template-columns:82px 1fr 64px;gap:8px;align-items:center;margin:6px 0}}
-.tlabel{{font-size:12px;color:#9fb2d8}}
-.track{{height:16px;background:#0b1220;border:1px solid #1c2b44;border-radius:999px;overflow:hidden;position:relative}}
+.tlabel{{font-size:12px;color:var(--muted)}}
+.track{{height:16px;background:var(--surface-1);border:1px solid var(--line);border-radius:var(--radius-pill);overflow:hidden;position:relative}}
 .seg{{height:100%;display:inline-block}}
 .heat0{{filter:brightness(0.85)}} .heat1{{filter:brightness(1)}} .heat2{{filter:brightness(1.15)}} .heat3{{filter:brightness(1.3)}}
-.tdur{{font-size:11px;color:#9fb2d8;text-align:right}}
+.tdur{{font-size:11px;color:var(--muted);text-align:right}}
 .context-chart{{display:grid;gap:10px}}
-.context-head{{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;font-size:12px;color:#a7b8da}}
-.context-svg{{width:100%;height:auto;display:block;background:#0b1220;border:1px solid #1c2b44;border-radius:12px}}
-.context-axis{{stroke:#284164;stroke-width:1}}
-.context-grid{{stroke:#1b2c47;stroke-width:1;stroke-dasharray:4 6}}
-.context-line{{fill:none;stroke:#6fd3ff;stroke-width:3;stroke-linecap:round;stroke-linejoin:round}}
-.context-fill{{fill:rgba(79,181,255,.12)}}
-.context-point{{fill:#0f1930;stroke:#8fe0ff;stroke-width:2}}
-.context-label{{fill:#91a8d6;font-size:11px}}
-.compact-dot{{stroke:#0a1220;stroke-width:1.5}}
+.context-head{{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;font-size:12px;color:var(--muted)}}
+.context-svg{{width:100%;height:auto;display:block;background:var(--surface-1);border:1px solid var(--line);border-radius:var(--radius-lg)}}
+.context-axis{{stroke:var(--line-strong);stroke-width:1}}
+.context-grid{{stroke:var(--line);stroke-width:1;stroke-dasharray:4 6}}
+.context-line{{fill:none;stroke:var(--accent);stroke-width:3;stroke-linecap:round;stroke-linejoin:round}}
+.context-fill{{fill:rgba(94,106,210,.12)}}
+.context-point{{fill:var(--surface-1);stroke:var(--accent);stroke-width:2}}
+.context-label{{fill:var(--subtle);font-size:11px}}
+.compact-dot{{stroke:var(--surface-1);stroke-width:1.5}}
 .compact-list{{display:grid;gap:6px}}
-.compact-item{{display:grid;grid-template-columns:92px 1fr;gap:8px;background:#0b1220;border:1px solid #1c2b44;border-radius:10px;padding:8px}}
-.compact-step{{font-size:11px;color:#9fb2d8;text-transform:uppercase;letter-spacing:.3px}}
-.compact-desc{{font-size:12px;color:#dce8ff;word-break:break-word}}
+.compact-item{{display:grid;grid-template-columns:92px 1fr;gap:8px;background:var(--surface-1);border:1px solid var(--line);border-radius:var(--radius-md);padding:8px}}
+.compact-step{{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.3px}}
+.compact-desc{{font-size:12px;color:var(--txt);word-break:break-word}}
 .flow{{display:grid;grid-template-columns:1fr;gap:12px}}
 @media (max-width:1180px){{.layout{{grid-template-columns:1fr}} .side{{position:relative;top:0;height:auto}} .controls{{grid-template-columns:1fr 1fr}}}}
-.card{{break-inside:avoid;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px;margin:0 0 12px;box-shadow:0 8px 20px rgba(0,0,0,.2)}}
-.kind-thinking{{border-left:4px solid #9b8cff}} .kind-action{{border-left:4px solid #3dd68c}}
-.kind-observation{{border-left:4px solid #4db5ff}} .kind-critic{{border-left:4px solid #f7b955}}
-.kind-handoff{{border-left:4px solid #f7b955}} .kind-delegation{{border-left:4px solid #7eb8ff}}
-.kind-fanout{{border-left:4px solid #c78dff}} .kind-other{{border-left:4px solid #7287ad}}
+.card{{break-inside:avoid;background:var(--surface-1);border:1px solid var(--line);border-radius:var(--radius-lg);padding:12px;margin:0 0 12px}}
+.kind-thinking{{border-left:4px solid var(--kind-thinking)}} .kind-action{{border-left:4px solid var(--kind-action)}}
+.kind-observation{{border-left:4px solid var(--kind-observation)}} .kind-critic{{border-left:4px solid var(--kind-critic)}}
+.kind-handoff{{border-left:4px solid var(--kind-handoff)}} .kind-delegation{{border-left:4px solid var(--kind-delegation)}}
+.kind-fanout{{border-left:4px solid var(--kind-fanout)}} .kind-other{{border-left:4px solid var(--kind-other)}}
 .card-head{{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}}
-.step{{font-weight:800}}
-h4{{margin:8px 0 6px;font-size:12px;color:#95add8;text-transform:uppercase;letter-spacing:.3px;display:flex;justify-content:space-between;align-items:center}}
-pre{{margin:0;background:#0b1220;border:1px solid #1c2b44;padding:10px;border-radius:8px;max-height:300px;overflow:auto;white-space:pre-wrap;word-break:break-word;color:#dde7fb;font-size:12px}}
-.sbtn{{border:1px solid var(--line);background:#15233f;color:var(--txt);padding:2px 6px;border-radius:6px;font-size:11px;cursor:pointer}}
-.kv{{display:grid;grid-template-columns:120px 1fr;gap:6px 10px;background:#0b1220;border:1px solid #1c2b44;padding:8px;border-radius:8px}}
-.k{{font-size:11px;color:#8ea4cf;text-transform:uppercase;letter-spacing:.3px}}
-.v{{font-size:12px;color:#dce8ff;word-break:break-word}}
+.step{{font-weight:700}}
+h4{{margin:8px 0 6px;font-size:12px;color:var(--subtle);text-transform:uppercase;letter-spacing:.3px;display:flex;justify-content:space-between;align-items:center}}
+pre{{margin:0;background:var(--surface-2);border:1px solid var(--line);padding:10px;border-radius:var(--radius-md);max-height:300px;overflow:auto;white-space:pre-wrap;word-break:break-word;color:var(--txt);font-size:12px}}
+.sbtn{{border:1px solid var(--line);background:var(--surface-2);color:var(--txt);padding:2px 6px;border-radius:var(--radius-sm);font-size:11px;cursor:pointer}}
+.kv{{display:grid;grid-template-columns:120px 1fr;gap:6px 10px;background:var(--surface-2);border:1px solid var(--line);padding:8px;border-radius:var(--radius-md)}}
+.k{{font-size:11px;color:var(--subtle);text-transform:uppercase;letter-spacing:.3px}}
+.v{{font-size:12px;color:var(--txt);word-break:break-word}}
 .chips{{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}}
-.chip{{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid #294064;background:#0e1a30;color:#b8cdf4}}
+.chip{{font-size:11px;padding:2px 8px;border-radius:var(--radius-pill);border:1px solid var(--line-strong);background:var(--surface-2);color:var(--muted)}}
 .list{{display:grid;gap:8px}}
-.item{{background:#0b1220;border:1px solid #1c2b44;border-radius:8px;padding:8px}}
+.item{{background:var(--surface-2);border:1px solid var(--line);border-radius:var(--radius-md);padding:8px}}
 .raw{{margin-top:6px}}
 .tree-wrap{{margin-top:8px}}
-.tree{{border:1px solid #1c2b44;border-radius:8px;padding:8px;background:#0b1220}}
+.tree{{border:1px solid var(--line);border-radius:var(--radius-md);padding:8px;background:var(--surface-2)}}
 .tree details{{margin:4px 0}}
-.tree summary{{cursor:pointer;color:#b7cdf4;font-size:12px}}
-.tree-children{{margin-left:10px;border-left:1px dashed #2a3d61;padding-left:10px}}
+.tree summary{{cursor:pointer;color:var(--muted);font-size:12px}}
+.tree-children{{margin-left:10px;border-left:1px dashed var(--line-strong);padding-left:10px}}
 .tree-leaf{{display:grid;grid-template-columns:130px 1fr;gap:8px;margin:4px 0}}
-.tree-key{{font-size:12px;color:#90a8d6}}
-.tree-val{{font-size:12px;color:#e4edff;word-break:break-word}}
-.toc-item{{display:block;width:100%;text-align:left;border:1px solid var(--line);background:#0f1930;color:var(--txt);padding:7px 8px;border-radius:8px;font-size:12px;cursor:pointer;margin-bottom:6px}}
-.toc-item:hover{{border-color:var(--accent)}} .toc-item.active{{border-color:var(--accent);background:#173056}}
+.tree-key{{font-size:12px;color:var(--subtle)}}
+.tree-val{{font-size:12px;color:var(--txt);word-break:break-word}}
+.toc-item{{display:block;width:100%;text-align:left;border:1px solid var(--line);background:var(--surface-1);color:var(--txt);padding:7px 8px;border-radius:var(--radius-md);font-size:12px;cursor:pointer;margin-bottom:6px}}
+.toc-item:hover{{border-color:var(--accent)}} .toc-item.active{{border-color:var(--accent);background:var(--surface-2)}}
 </style></head><body>
 <div class="top"><div class="wrap">
   <div class="title">QitOS Trace · {run_id}</div>
@@ -1144,7 +1178,7 @@ pre{{margin:0;background:#0b1220;border:1px solid #1c2b44;padding:10px;border-ra
 <div class="wrap">
   <div class="layout">
     <aside class="side">
-      <div style="font-size:12px;color:#9fb2d8;margin-bottom:8px">Step Navigator</div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:8px">Step Navigator</div>
       <div id="toc"></div>
     </aside>
     <section class="main">
@@ -1159,8 +1193,8 @@ pre{{margin:0;background:#0b1220;border:1px solid #1c2b44;padding:10px;border-ra
           <select id="eventFilter"><option value="">All events</option></select>
           <select id="agentFilter"><option value="">All agents</option></select>
           <select id="sort"><option value="asc">step asc</option><option value="desc">step desc</option></select>
-          <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:#a7b8da"><input type="checkbox" id="showObs" checked/>obs</label>
-          <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:#a7b8da"><input type="checkbox" id="showCritic" checked/>critic</label>
+          <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)"><input type="checkbox" id="showObs" checked/>obs</label>
+          <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)"><input type="checkbox" id="showCritic" checked/>critic</label>
           <button class="btn" id="foldAll" type="button">Fold all</button>
           <button class="btn" id="fontDown" type="button">A-</button>
           <button class="btn" id="fontReset" type="button">A</button>
@@ -1327,10 +1361,10 @@ function flattenResults(input){{
 }}
 function renderSearchTable(rows){{
   if(!rows.length) return '';
-  let h = '<table style="width:100%;border-collapse:collapse;font-size:12px;background:#0b1220;border:1px solid #1c2b44;border-radius:8px;overflow:hidden">';
-  h += '<thead><tr><th style="text-align:left;padding:8px;border-bottom:1px solid #1c2b44;color:#9fb2d8">Title</th><th style="text-align:left;padding:8px;border-bottom:1px solid #1c2b44;color:#9fb2d8">URL</th></tr></thead><tbody>';
+  let h = '<table style="width:100%;border-collapse:collapse;font-size:12px;background:var(--surface-2);border:1px solid var(--line);border-radius:var(--radius-md);overflow:hidden">';
+  h += '<thead><tr><th style="text-align:left;padding:8px;border-bottom:1px solid var(--line);color:var(--muted)">Title</th><th style="text-align:left;padding:8px;border-bottom:1px solid var(--line);color:var(--muted)">URL</th></tr></thead><tbody>';
   for(const r of rows.slice(0, 8)){{
-    h += '<tr><td style="padding:8px;border-bottom:1px solid #1c2b44">'+esc(truncateText(r.title, 90))+'</td><td style="padding:8px;border-bottom:1px solid #1c2b44;color:#86c8ff">'+esc(shortUrl(r.url))+'</td></tr>';
+    h += '<tr><td style="padding:8px;border-bottom:1px solid var(--line)">'+esc(truncateText(r.title, 90))+'</td><td style="padding:8px;border-bottom:1px solid var(--line);color:var(--accent)">'+esc(shortUrl(r.url))+'</td></tr>';
   }}
   h += '</tbody></table>';
   return h;
@@ -1414,7 +1448,7 @@ function renderObservationBlock(summary, label){{
   if(!summary || typeof summary !== 'object') return '';
   const title = summary.title ? ('<div style="font-weight:600;margin-bottom:6px">' + esc(String(label || summary.title)) + ' · ' + esc(String(summary.title)) + '</div>') : '';
   if(summary.table) return '<div style="margin-bottom:12px">' + title + summary.table + '</div>';
-  if(summary.kind === 'error') return '<div style="margin-bottom:12px;color:#ff8a8a">' + title + '<div>' + esc(String(summary.title || summary.body || 'Error')) + '</div></div>';
+  if(summary.kind === 'error') return '<div style="margin-bottom:12px;color:var(--err)">' + title + '<div>' + esc(String(summary.title || summary.body || 'Error')) + '</div></div>';
   return '<div style="margin-bottom:12px">' + title + '<pre>' + esc(String(summary.body || '')) + '</pre></div>';
 }}
 function renderState(obs){{
@@ -1450,7 +1484,7 @@ function renderDirectObservation(actionResults){{
       if(item.final_result) rows.push(kvRow('result', truncateText(String(item.final_result), 300)));
       if(item.stop_reason) rows.push(kvRow('stop_reason', item.stop_reason));
       if(item.steps) rows.push(kvRow('steps', item.steps));
-      return '<div style="margin-bottom:12px"><div style="font-weight:600;margin-bottom:6px;color:#7eb8ff">↗ Delegate Result</div>' + (rows.length ? kvBlock(rows) : '<div class="muted">No details.</div>') + '</div>';
+      return '<div style="margin-bottom:12px"><div style="font-weight:600;margin-bottom:6px;color:var(--kind-delegation)">↗ Delegate Result</div>' + (rows.length ? kvBlock(rows) : '<div class="muted">No details.</div>') + '</div>';
     }}
     // Fanout result
     if(item.succeeded !== undefined && (item.failed !== undefined || item.partial !== undefined)){{
@@ -1458,10 +1492,10 @@ function renderDirectObservation(actionResults){{
       const fail = Number(item.failed) || 0;
       const partial = Number(item.partial) || 0;
       const rows = [
-        kvRow('succeeded', '<span style="color:#3dd68c">' + ok + '</span>'),
-        kvRow('failed', '<span style="color:#ff6b6b">' + fail + '</span>'),
+        kvRow('succeeded', '<span style="color:var(--ok)">' + ok + '</span>'),
+        kvRow('failed', '<span style="color:var(--err)">' + fail + '</span>'),
       ];
-      if(partial) rows.push(kvRow('partial', '<span style="color:#f7b955">' + partial + '</span>'));
+      if(partial) rows.push(kvRow('partial', '<span style="color:var(--warn)">' + partial + '</span>'));
       if(Array.isArray(item.results)){{
         const taskRows = item.results.slice(0, 5).map(function(r, i){{
           if(!r || typeof r !== 'object') return kvRow('task ' + i, truncateText(JSON.stringify(r), 100));
@@ -1469,7 +1503,7 @@ function renderDirectObservation(actionResults){{
         }});
         rows.push(...taskRows);
       }}
-      return '<div style="margin-bottom:12px"><div style="font-weight:600;margin-bottom:6px;color:#c78dff">⊛ FanOut Result</div>' + kvBlock(rows) + '</div>';
+      return '<div style="margin-bottom:12px"><div style="font-weight:600;margin-bottom:6px;color:var(--kind-fanout)">⊛ FanOut Result</div>' + kvBlock(rows) + '</div>';
     }}
   }}
   const picked = pickObservation(actionResults);
@@ -1530,7 +1564,7 @@ function buildVisualTimeline(items){{
     }}
     cards.push(
       '<div class="vcard">' +
-      '<div style="font-size:11px;color:#9fb2d8;margin-bottom:6px">STEP ' + esc(String(item.step_id)) + '</div>' +
+      '<div style="font-size:11px;color:var(--muted);margin-bottom:6px">STEP ' + esc(String(item.step_id)) + '</div>' +
       preview +
       kvBlock([
         kvRow('action', item.action_label || '-'),
@@ -1596,7 +1630,7 @@ function renderThought(decision, events, step){{
   const thought = extractThought(decision, events);
   const summary = renderModelResponseSummary(latestModelResponse(events), step);
   if(!thought) return (summary || '<div class="muted">No explicit thought.</div>');
-  return '<div style="white-space:pre-wrap;line-height:1.6;background:#0b1220;border:1px solid #1c2b44;border-radius:8px;padding:10px;color:#cfe6ff">'+esc(thought)+'</div>' + summary;
+  return '<div style="white-space:pre-wrap;line-height:1.6;background:var(--surface-2);border:1px solid var(--line);border-radius:var(--radius-md);padding:10px;color:var(--txt)">'+esc(thought)+'</div>' + summary;
 }}
 function renderAction(actions){{
   if(!Array.isArray(actions) || !actions.length) return '<div class="muted">No action.</div>';
@@ -1607,22 +1641,21 @@ function renderAction(actions){{
   if(String(tool).toLowerCase() === 'delegate'){{
     const agent = args.agent_name || args.agent || '?';
     const task = args.task || '';
-    return '<div style="font-size:13px;color:#7eb8ff">↗ <b>Delegate:</b> → <b>' + esc(agent) + '</b>' + (task ? '<div style="margin-top:4px;font-size:12px;color:#9fb2d8">' + esc(truncateText(task, 300)) + '</div>' : '') + '</div>';
+    return '<div style="font-size:13px;color:var(--kind-delegation)">↗ <b>Delegate:</b> → <b>' + esc(agent) + '</b>' + (task ? '<div style="margin-top:4px;font-size:12px;color:var(--muted)">' + esc(truncateText(task, 300)) + '</div>' : '') + '</div>';
   }}
   if(String(tool).toLowerCase() === 'fanout'){{
     const tasks = Array.isArray(args.tasks) ? args.tasks : [];
     const count = tasks.length || args.num_tasks || args.task_count || 0;
-    const taskList = tasks.slice(0, 5).map(function(t){{ return '<div style="font-size:11px;color:#9fb2d8;padding:2px 0">· ' + esc(truncateText(String(t), 120)) + '</div>'; }}).join('');
-    return '<div style="font-size:13px;color:#c78dff">⊛ <b>FanOut:</b> ' + esc(String(count)) + ' task(s)' + (taskList ? '<div style="margin-top:4px">' + taskList + '</div>' : '') + '</div>';
+    const taskList = tasks.slice(0, 5).map(function(t){{ return '<div style="font-size:11px;color:var(--muted);padding:2px 0">· ' + esc(truncateText(String(t), 120)) + '</div>'; }}).join('');
+    return '<div style="font-size:13px;color:var(--kind-fanout)">⊛ <b>FanOut:</b> ' + esc(String(count)) + ' task(s)' + (taskList ? '<div style="margin-top:4px">' + taskList + '</div>' : '') + '</div>';
   }}
   // General action with full params
   const label = firstActionLabel(actions);
   const argKeys = Object.keys(args);
   let paramHtml = '';
   if(argKeys.length > 1){{
-    paramHtml = '<details style="margin-top:4px"><summary style="cursor:pointer;color:#9fb2d8;font-size:11px">Show all params (' + argKeys.length + ')</summary><div class="kv" style="margin-top:4px">' + argKeys.map(function(k){{ return kvRow(k, args[k]); }}).join('') + '</div></details>';
-  }}
-  return '<div style="font-size:13px;color:#f4df8f">🛠️ <b>Action:</b> ' + esc(label) + '</div>' + paramHtml;
+    paramHtml = '<details style="margin-top:4px"><summary style="cursor:pointer;color:var(--muted);font-size:11px">Show all params (' + argKeys.length + ')</summary><div class="kv" style="margin-top:4px">' + argKeys.map(function(k){{ return kvRow(k, args[k]); }}).join('') + '</div></details>';  }}
+  return '<div style="font-size:13px;color:var(--kind-critic)">🛠️ <b>Action:</b> ' + esc(label) + '</div>' + paramHtml;
 }}
 function renderMemoryUpdate(observeOut){{
   const mem = observeOut && typeof observeOut === 'object' ? observeOut.memory : null;
@@ -1748,24 +1781,24 @@ function parseTs(ts){{
   return Number.isNaN(v) ? null : v;
 }}
 function agentColor(agentId){{
-  if(!agentId) return '#7eb8ff';
+  if(!agentId) return '#6b8fc4';
   let hash = 0;
   for(let i = 0; i < agentId.length; i++) hash = agentId.charCodeAt(i) + ((hash << 5) - hash);
-  const colors = ['#7eb8ff','#f7b955','#3dd68c','#c78dff','#ff8a8a','#46d1c2','#ff9d9d','#8fe0ff'];
+  const colors = ['#6b8fc4','#bfa04e','#2da46a','#9b7fd4','#c47070','#3da89c','#c47070','#5a8fbf'];
   return colors[Math.abs(hash) % colors.length];
 }}
 function phaseColor(phase){{
   const p = String(phase||'').toLowerCase();
-  if(p.includes('handoff')) return '#f7b955';
-  if(p.includes('delegate')) return '#7eb8ff';
-  if(p.includes('fanout')) return '#c78dff';
-  if(p.includes('state') || p.includes('observe')) return '#4db5ff';
-  if(p.includes('decide') || p.includes('model')) return '#9b8cff';
-  if(p.includes('action') || p.includes('tool')) return '#3dd68c';
-  if(p.includes('critic') || p.includes('reflect')) return '#f7b955';
-  if(p.includes('memory')) return '#46d1c2';
-  if(p.includes('done') || p.includes('stop')) return '#ff8c8c';
-  return '#7f92b8';
+  if(p.includes('handoff')) return getComputedStyle(document.documentElement).getPropertyValue('--kind-handoff').trim();
+  if(p.includes('delegate')) return getComputedStyle(document.documentElement).getPropertyValue('--kind-delegation').trim();
+  if(p.includes('fanout')) return getComputedStyle(document.documentElement).getPropertyValue('--kind-fanout').trim();
+  if(p.includes('state') || p.includes('observe')) return getComputedStyle(document.documentElement).getPropertyValue('--kind-observation').trim();
+  if(p.includes('decide') || p.includes('model')) return getComputedStyle(document.documentElement).getPropertyValue('--kind-thinking').trim();
+  if(p.includes('action') || p.includes('tool')) return getComputedStyle(document.documentElement).getPropertyValue('--kind-action').trim();
+  if(p.includes('critic') || p.includes('reflect')) return getComputedStyle(document.documentElement).getPropertyValue('--kind-critic').trim();
+  if(p.includes('memory')) return getComputedStyle(document.documentElement).getPropertyValue('--kind-memory').trim();
+  if(p.includes('done') || p.includes('stop')) return getComputedStyle(document.documentElement).getPropertyValue('--kind-done').trim();
+  return getComputedStyle(document.documentElement).getPropertyValue('--kind-other').trim();
 }}
 function inferPrimaryKind(events){{
   const es = Array.isArray(events) ? events : [];
@@ -1783,11 +1816,11 @@ function inferPrimaryKind(events){{
 }}
 function compactStageColor(stage){{
   const s = String(stage || '').toLowerCase();
-  if(s.includes('summary')) return '#46d1c2';
-  if(s.includes('microcompact')) return '#4db5ff';
-  if(s.includes('warning')) return '#f7b955';
-  if(s.includes('overflow')) return '#ff6b6b';
-  return '#7f92b8';
+  if(s.includes('summary')) return getComputedStyle(document.documentElement).getPropertyValue('--kind-memory').trim();
+  if(s.includes('microcompact')) return getComputedStyle(document.documentElement).getPropertyValue('--kind-observation').trim();
+  if(s.includes('warning')) return getComputedStyle(document.documentElement).getPropertyValue('--kind-critic').trim();
+  if(s.includes('overflow')) return getComputedStyle(document.documentElement).getPropertyValue('--err').trim();
+  return getComputedStyle(document.documentElement).getPropertyValue('--kind-other').trim();
 }}
 function compactStageLabel(stage){{
   const s = String(stage || '').toLowerCase();
@@ -1961,11 +1994,11 @@ function buildContextTimeline(items){{
       if(ph.includes('fanout')) hasFanout = true;
     }}
     const agentId = step ? (step.agent_id || '') : '';
-    const maColor = hasHandoff ? '#f7b955' : hasDelegate ? '#7eb8ff' : hasFanout ? '#c78dff' : '';
+    const maColor = hasHandoff ? 'var(--kind-handoff)' : hasDelegate ? 'var(--kind-delegation)' : hasFanout ? 'var(--kind-fanout)' : '';
     if(maColor){{
       // Draw a diamond marker for multi-agent events
       const s = 6;
-      circles.push('<polygon points="' + x + ',' + (y-s) + ' ' + (x+s) + ',' + y + ' ' + x + ',' + (y+s) + ' ' + (x-s) + ',' + y + '" fill="' + maColor + '" stroke="#0f1930" stroke-width="1.5"><title>' + esc('STEP ' + p.sid + (agentId ? ' agent=' + agentId : '') + (hasHandoff ? ' HANDOFF' : '') + (hasDelegate ? ' DELEGATE' : '') + (hasFanout ? ' FANOUT' : '')) + '</title></polygon>');
+      circles.push('<polygon points="' + x + ',' + (y-s) + ' ' + (x+s) + ',' + y + ' ' + x + ',' + (y+s) + ' ' + (x-s) + ',' + y + '" fill="' + maColor + '" style="stroke:var(--surface-1)" stroke-width="1.5"><title>' + esc('STEP ' + p.sid + (agentId ? ' agent=' + agentId : '') + (hasHandoff ? ' HANDOFF' : '') + (hasDelegate ? ' DELEGATE' : '') + (hasFanout ? ' FANOUT' : '')) + '</title></polygon>');
     }} else {{
       circles.push('<circle class="context-point" cx="' + x + '" cy="' + y + '" r="4"' + (agentId ? ' fill="' + agentColor(agentId) + '"' : '') + '><title>' + esc('STEP ' + p.sid + (agentId ? ' agent=' + agentId : '')) + '</title></circle>');
     }}
@@ -2004,7 +2037,7 @@ function buildContextTimeline(items){{
     '<div>peak ' + esc((peak * 100).toFixed(1) + '%') + '</div>' +
     '<div>latest ' + esc(((Number(latest.ratio) || 0) * 100).toFixed(1) + '%') + ' · ' + esc(String(latest.tokens || 0)) + ' tokens</div>' +
     '<div>compact markers ' + esc(String(compactCount)) + '</div>' +
-    '<div style="display:flex;gap:10px;font-size:11px"><span style="color:#f7b955">◆ handoff</span> <span style="color:#7eb8ff">◆ delegate</span> <span style="color:#c78dff">◆ fanout</span></div>' +
+    '<div style="display:flex;gap:10px;font-size:11px"><span style="color:var(--kind-handoff)">◆ handoff</span> <span style="color:var(--kind-delegation)">◆ delegate</span> <span style="color:var(--kind-fanout)">◆ fanout</span></div>' +
     '</div>';
   const list = compactRows.length ? ('<div class="compact-list">' + compactRows.join('') + '</div>') : '<div class="muted">No compact or warning markers recorded.</div>';
   contextTimelineRoot.innerHTML = '<div class="context-chart">' + head + svg + list + '</div>';
@@ -2015,7 +2048,7 @@ function buildParserTimeline(items){{
     const diag = (it.step && typeof it.step.parser_diagnostics === 'object') ? it.step.parser_diagnostics : null;
     if(!diag || !Object.keys(diag).length) continue;
     const sev = String(diag.severity || 'error').toLowerCase();
-    const color = sev === 'error' ? '#ff6b6b' : '#f7b955';
+    const color = sev === 'error' ? 'var(--err)' : 'var(--kind-critic)';
     const marker = diag.salvage_applied ? ' · salvage' : '';
     const protocol = diag.protocol ? (' · ' + String(diag.protocol)) : '';
     const fallback = diag.fallback_used ? ' · fallback' : '';
@@ -2055,24 +2088,24 @@ function renderMultiAgentEvent(events){{
     if(ph === 'handoff_start'){{
       const from = pl.from || '?';
       const to = pl.to || '?';
-      html += '<div style="padding:8px 10px;margin:4px 0;border-radius:8px;background:#1a1f0a;border:1px solid #3a4a1a;font-size:12px;color:#f7b955">&#x21C4; <b>Handoff</b> ' + esc(from) + ' &rarr; ' + esc(to) + '</div>';
+      html += '<div style="padding:8px 10px;margin:4px 0;border-radius:var(--radius-md);background:var(--surface-2);border:1px solid var(--line);font-size:12px;color:var(--kind-handoff)">&#x21C4; <b>Handoff</b> ' + esc(from) + ' &rarr; ' + esc(to) + '</div>';
     }} else if(ph === 'handoff_end'){{
-      html += '<div style="padding:6px 10px;margin:4px 0;border-radius:8px;background:#0d182c;border:1px solid #1c2b44;font-size:11px;color:#9fb2d8">&#x21C4; Handoff complete</div>';
+      html += '<div style="padding:6px 10px;margin:4px 0;border-radius:var(--radius-md);background:var(--surface-2);border:1px solid var(--line);font-size:11px;color:var(--muted)">&#x21C4; Handoff complete</div>';
     }} else if(ph === 'delegate_start'){{
       const agent = pl.agent_name || pl.agent || '?';
       const task = pl.task ? truncateText(pl.task, 120) : '';
-      html += '<div style="padding:8px 10px;margin:4px 0;border-radius:8px;background:#0d1a31;border:1px solid #1c3366;font-size:12px;color:#7eb8ff">&#x2197; <b>Delegate</b> &rarr; ' + esc(agent) + (task ? ' <span style="color:#9fb2d8">' + esc(task) + '</span>' : '') + '</div>';
+      html += '<div style="padding:8px 10px;margin:4px 0;border-radius:var(--radius-md);background:var(--surface-2);border:1px solid var(--line);font-size:12px;color:var(--kind-delegation)">&#x2197; <b>Delegate</b> &rarr; ' + esc(agent) + (task ? ' <span style="color:var(--muted)">' + esc(task) + '</span>' : '') + '</div>';
     }} else if(ph === 'delegate_end'){{
       const status = pl.status || 'done';
-      const color = status === 'done' ? '#3dd68c' : '#ff6b6b';
-      html += '<div style="padding:6px 10px;margin:4px 0;border-radius:8px;background:#0d182c;border:1px solid #1c2b44;font-size:11px;color:' + color + '">&#x2197; Delegate result: ' + esc(status) + '</div>';
+      const color = status === 'done' ? 'var(--ok)' : 'var(--err)';
+      html += '<div style="padding:6px 10px;margin:4px 0;border-radius:var(--radius-md);background:var(--surface-2);border:1px solid var(--line);font-size:11px;color:' + color + '">&#x2197; Delegate result: ' + esc(status) + '</div>';
     }} else if(ph === 'fanout_start'){{
       const tc = pl.task_count || pl.num_tasks || 0;
-      html += '<div style="padding:8px 10px;margin:4px 0;border-radius:8px;background:#1a0d2e;border:1px solid #3a1c66;font-size:12px;color:#c78dff">&#x229B; <b>FanOut</b> ' + esc(String(tc)) + ' task(s) dispatched</div>';
+      html += '<div style="padding:8px 10px;margin:4px 0;border-radius:var(--radius-md);background:var(--surface-2);border:1px solid var(--line);font-size:12px;color:var(--kind-fanout)">&#x229B; <b>FanOut</b> ' + esc(String(tc)) + ' task(s) dispatched</div>';
     }} else if(ph === 'fanout_end'){{
       const ok = pl.succeeded || 0;
       const fail = pl.failed || 0;
-      html += '<div style="padding:6px 10px;margin:4px 0;border-radius:8px;background:#0d182c;border:1px solid #1c2b44;font-size:11px">&#x229B; FanOut: <span style="color:#3dd68c">' + ok + ' ok</span>, <span style="color:#ff6b6b">' + fail + ' fail</span></div>';
+      html += '<div style="padding:6px 10px;margin:4px 0;border-radius:var(--radius-md);background:var(--surface-2);border:1px solid var(--line);font-size:11px">&#x229B; FanOut: <span style="color:var(--ok)">' + ok + ' ok</span>, <span style="color:var(--err)">' + fail + ' fail</span></div>';
     }}
   }}
   return html;
@@ -2110,7 +2143,7 @@ function render(){{
     const agentBadge = agentId ? '<span style="display:inline-block;padding:1px 8px;border-radius:999px;font-size:11px;background:' + agentColor(agentId) + '22;border:1px solid ' + agentColor(agentId) + '66;color:' + agentColor(agentId) + ';margin-left:8px">' + esc(agentId) + '</span>' : '';
     let agentSwitch = '';
     if(agentId && lastAgentId && lastAgentId !== agentId){{
-      agentSwitch = '<div style="padding:6px 12px;margin:0 0 4px;border-radius:8px;background:#1a1f0a;border:1px solid #3a4a1a;font-size:12px;color:#f7b955">&#x26A1; Agent switched: <b>' + esc(lastAgentId) + '</b> &rarr; <b>' + esc(agentId) + '</b></div>';
+      agentSwitch = '<div style="padding:6px 12px;margin:0 0 4px;border-radius:var(--radius-md);background:var(--surface-2);border:1px solid var(--line);font-size:12px;color:var(--kind-handoff)">&#x26A1; Agent switched: <b>' + esc(lastAgentId) + '</b> &rarr; <b>' + esc(agentId) + '</b></div>';
     }}
     lastAgentId = agentId || lastAgentId;
     let h = agentSwitch + '<div class="card-head"><div class="step">STEP ' + it.sid + agentBadge + '</div><div class="muted">events ' + it.events.length + '</div></div>';
@@ -2337,32 +2370,33 @@ def _render_replay_html(payload: Dict[str, Any], speed_ms: int) -> str:
 <html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
 <title>qita replay {run_id}</title>
 <style>
-:root{{--bg:#090d16;--txt:#e2f0ff;--muted:#8aa2c7;--line:#1f2f4d;--ok:#49df9a}}
-body{{margin:0;background:radial-gradient(circle at 20% 0%,#12233f,#090d16 62%);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--txt)}}
+{_DESIGN_TOKENS}
+body{{margin:0;background:var(--bg);font-family:var(--font-mono);color:var(--txt)}}
 .wrap{{max-width:1260px;margin:0 auto;padding:20px}}
 .top{{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;gap:10px;flex-wrap:wrap}}
-.btn{{display:inline-block;border:1px solid var(--line);color:var(--txt);text-decoration:none;padding:6px 10px;border-radius:8px;background:#14223d;font-size:12px;cursor:pointer}}
-.terminal{{background:#050a14;border:1px solid var(--line);border-radius:12px;overflow:hidden}}
-.bar{{background:#0b1528;border-bottom:1px solid var(--line);padding:8px 10px;color:var(--muted);font-size:12px;display:flex;justify-content:space-between;gap:10px;align-items:center}}
-.stats{{display:flex;gap:8px;flex-wrap:wrap;padding:8px 10px;border-bottom:1px solid var(--line);background:#081021}}
-.chip{{font-size:11px;color:#cde0ff;border:1px solid #28406a;border-radius:999px;padding:3px 8px;background:#0d1a31}}
+.btn{{display:inline-block;border:1px solid var(--line);color:var(--txt);text-decoration:none;padding:6px 10px;border-radius:var(--radius-md);background:var(--surface-1);font-size:12px;cursor:pointer}}
+.btn:hover{{border-color:var(--accent)}}
+.terminal{{background:var(--surface-1);border:1px solid var(--line);border-radius:var(--radius-lg);overflow:hidden}}
+.bar{{background:var(--surface-2);border-bottom:1px solid var(--line);padding:8px 10px;color:var(--muted);font-size:12px;display:flex;justify-content:space-between;gap:10px;align-items:center}}
+.stats{{display:flex;gap:8px;flex-wrap:wrap;padding:8px 10px;border-bottom:1px solid var(--line);background:var(--surface-1)}}
+.chip{{font-size:11px;color:var(--muted);border:1px solid var(--line-strong);border-radius:var(--radius-pill);padding:3px 8px;background:var(--surface-2)}}
 .screen{{padding:14px;min-height:480px;display:grid;gap:10px}}
-.replay-preview{{border:1px solid var(--line);background:#081021;border-radius:10px;padding:10px}}
-.replay-shot{{position:relative;border:1px solid #1b2a44;border-radius:8px;overflow:hidden;background:#050a14;min-height:180px;display:flex;align-items:center;justify-content:center}}
+.replay-preview{{border:1px solid var(--line);background:var(--surface-1);border-radius:var(--radius-md);padding:10px}}
+.replay-shot{{position:relative;border:1px solid var(--line);border-radius:var(--radius-md);overflow:hidden;background:var(--bg);min-height:180px;display:flex;align-items:center;justify-content:center}}
 .replay-shot img{{max-width:100%;display:block}}
 .replay-overlay{{position:absolute;inset:0;pointer-events:none}}
-.replay-dot{{position:absolute;width:12px;height:12px;border-radius:999px;background:rgba(255,107,107,.85);border:2px solid #fff;transform:translate(-50%,-50%)}}
-.card{{border:1px solid var(--line);background:#0a1224;border-radius:10px;padding:10px;box-shadow:0 6px 16px rgba(0,0,0,.25)}}
+.replay-dot{{position:absolute;width:12px;height:12px;border-radius:var(--radius-pill);background:rgba(229,72,77,.85);border:2px solid var(--txt);transform:translate(-50%,-50%)}}
+.card{{border:1px solid var(--line);background:var(--surface-1);border-radius:var(--radius-md);padding:10px}}
 .ctitle{{font-size:12px;font-weight:700;margin-bottom:6px;display:flex;justify-content:space-between;gap:8px}}
-.tag{{font-size:10px;border:1px solid var(--line);padding:1px 6px;border-radius:999px;color:#a8bbdf}}
-.kind-plan{{border-color:#8393ff}} .kind-thinking{{border-color:#ae8dff}} .kind-action{{border-color:#3dd68c}}
-.kind-parser{{border-color:#f7b955}} .kind-memory{{border-color:#46d1c2}} .kind-observation{{border-color:#4db5ff}} .kind-critic{{border-color:#f7b955}}
-.kind-handoff{{border-color:#f7b955}} .kind-delegation{{border-color:#7eb8ff}} .kind-fanout{{border-color:#c78dff}}
-.kind-done{{border-color:#ff9d9d}} .kind-error{{border-color:#ff6b6b}}
-.cbody{{white-space:pre-wrap;word-break:break-word;background:#081021;border:1px solid #1b2a44;padding:8px;border-radius:8px;font-size:12px}}
-.cursor{{display:inline-block;width:8px;height:16px;background:var(--ok);margin-left:3px;animation:blink 1s steps(2,start) infinite}}
+.tag{{font-size:10px;border:1px solid var(--line);padding:1px 6px;border-radius:var(--radius-pill);color:var(--subtle)}}
+.kind-plan{{border-color:var(--kind-plan)}} .kind-thinking{{border-color:var(--kind-thinking)}} .kind-action{{border-color:var(--kind-action)}}
+.kind-parser{{border-color:var(--kind-parser)}} .kind-memory{{border-color:var(--kind-memory)}} .kind-observation{{border-color:var(--kind-observation)}} .kind-critic{{border-color:var(--kind-critic)}}
+.kind-handoff{{border-color:var(--kind-handoff)}} .kind-delegation{{border-color:var(--kind-delegation)}} .kind-fanout{{border-color:var(--kind-fanout)}}
+.kind-done{{border-color:var(--kind-done)}} .kind-error{{border-color:var(--kind-error)}}
+.cbody{{white-space:pre-wrap;word-break:break-word;background:var(--surface-2);border:1px solid var(--line);padding:8px;border-radius:var(--radius-md);font-size:12px}}
+.cursor{{display:inline-block;width:8px;height:16px;background:var(--accent);margin-left:3px;animation:blink 1s steps(2,start) infinite}}
 .ctl{{display:flex;align-items:center;gap:8px;flex-wrap:wrap}}
-.ctl input,.ctl select{{background:#081021;border:1px solid var(--line);color:var(--txt);padding:4px 6px;border-radius:6px;font-size:12px}}
+.ctl input,.ctl select{{background:var(--surface-1);border:1px solid var(--line);color:var(--txt);padding:4px 6px;border-radius:var(--radius-sm);font-size:12px}}
 @keyframes blink{{to{{visibility:hidden}}}}
 </style></head><body>
 <div class="wrap">
@@ -2531,7 +2565,7 @@ function renderRecordBody(r){{
     const pl = (r.body && r.body.event && r.body.event.payload) || {{}};
     const agent = pl.agent_name || pl.agent || '?';
     const task = pl.task ? truncateText(pl.task, 180) : '';
-    return '↗ <b>Delegate:</b> → ' + esc(agent) + (task ? ' <span style="color:#8aa2c7">' + esc(task) + '</span>' : '');
+    return '↗ <b>Delegate:</b> → ' + esc(agent) + (task ? ' <span style="color:var(--muted)">' + esc(task) + '</span>' : '');
   }}
   if(r.kind === 'fanout'){{
     const pl = (r.body && r.body.event && r.body.event.payload) || {{}};
@@ -2546,11 +2580,11 @@ function renderRecordBody(r){{
 function fmt(r){{
   const err = r.error ? '<span class="tag kind-error">error</span>' : '';
   const raw = esc(JSON.stringify(r.body, null, 2));
-  const agentTag = r.agent_id ? '<span class="tag" style="border-color:#2d4a7a;color:#7eb8ff">'+esc(r.agent_id)+'</span>' : '';
+  const agentTag = r.agent_id ? '<span class="tag" style="border-color:var(--line-strong);color:var(--accent)">'+esc(r.agent_id)+'</span>' : '';
   return '<article class="card kind-'+esc(r.kind)+'">' +
     '<div class="ctitle"><span>'+esc(r.title)+'</span><span><span class="tag">'+esc(r.phase||'')+'</span> <span class="tag kind-'+esc(r.kind)+'">'+esc(r.kind)+'</span> '+agentTag+' '+err+'</span></div>' +
     '<div class="cbody">'+renderRecordBody(r)+'</div>' +
-    '<details style="margin-top:8px"><summary style="cursor:pointer;color:#8aa2c7">Raw</summary><pre style="white-space:pre-wrap;background:#081021;border:1px solid #1b2a44;border-radius:8px;padding:8px">'+raw+'</pre></details>' +
+    '<details style="margin-top:8px"><summary style="cursor:pointer;color:var(--muted)">Raw</summary><pre style="white-space:pre-wrap;background:var(--surface-1);border:1px solid var(--line);border-radius:var(--radius-md);padding:8px">'+raw+'</pre></details>' +
     '</article>';
 }}
 function buildPreview(r){{
@@ -2569,7 +2603,7 @@ function buildPreview(r){{
       overlay = '<div class="replay-overlay"><div class="replay-dot" style="left:' + x + 'px;top:' + y + 'px"></div></div>';
     }}
   }}
-  preview.innerHTML = '<div class="replay-preview"><div style="font-size:12px;color:#8aa2c7;margin-bottom:8px">step ' + esc(String(r.step_id)) + ' · ' + esc(String(r.phase || '')) + '</div><div class="replay-shot"><img src="/asset?path=' + encodeURIComponent(String(shot.path)) + '" alt="replay screenshot"/>' + overlay + '</div></div>';
+  preview.innerHTML = '<div class="replay-preview"><div style="font-size:12px;color:var(--muted);margin-bottom:8px">step ' + esc(String(r.step_id)) + ' · ' + esc(String(r.phase || '')) + '</div><div class="replay-shot"><img src="/asset?path=' + encodeURIComponent(String(shot.path)) + '" alt="replay screenshot"/>' + overlay + '</div></div>';
 }}
 function shouldShow(r){{
   if(onlyErr.checked && !r.error) return false;

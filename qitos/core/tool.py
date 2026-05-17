@@ -191,12 +191,14 @@ class ToolSpec:
     result_max_chars: Optional[int] = None
     produces_artifact: bool = False
     rule_scope_builder: Optional[Callable[[Dict[str, Any]], Optional[str]]] = None
+    prompt: str = ""
 
 
 @dataclass
 class ToolMeta:
     name: Optional[str] = None
     description: Optional[str] = None
+    prompt: str = ""
     timeout_s: Optional[float] = None
     max_retries: int = 0
     permissions: ToolPermission = field(default_factory=ToolPermission)
@@ -356,6 +358,7 @@ class FunctionTool(BaseTool):
 def tool(
     name: Optional[str] = None,
     description: Optional[str] = None,
+    prompt: str = "",
     timeout_s: Optional[float] = None,
     max_retries: int = 0,
     permissions: Optional[ToolPermission] = None,
@@ -376,6 +379,7 @@ def tool(
         meta = ToolMeta(
             name=name,
             description=description,
+            prompt=prompt,
             timeout_s=timeout_s,
             max_retries=max_retries,
             permissions=permissions or ToolPermission(),
@@ -454,6 +458,7 @@ def build_tool_spec(func: Callable[..., Any], meta: ToolMeta) -> ToolSpec:
         result_max_chars=meta.result_max_chars,
         produces_artifact=meta.produces_artifact,
         rule_scope_builder=meta.rule_scope_builder,
+        prompt=meta.prompt,
     )
 
 

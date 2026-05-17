@@ -25,6 +25,9 @@ class RuntimePhase(str, Enum):
     HANDOFF_END = "HANDOFF_END"
     FANOUT_START = "FANOUT_START"
     FANOUT_END = "FANOUT_END"
+    COMPACT = "COMPACT"
+    SESSION_START = "SESSION_START"
+    SESSION_END = "SESSION_END"
 
 
 @dataclass
@@ -44,8 +47,10 @@ class ContextConfig:
     safety_reserve_ratio: float = 0.05
     min_safety_reserve_tokens: int = 1024
     default_context_window: int = 128000
-    tool_result_max_chars: int = 4000
+    tool_result_max_chars: int = 50000
+    tool_result_per_message_max_chars: int = 200000
     conversation_max_rounds: int = 10
+    reactive_compact: bool = True
     loop_max_repeats: int = 3
     max_handoffs: int = 10
     strict_overflow: bool = True
@@ -56,7 +61,7 @@ class ContextConfig:
 class ContextBudget:
     max_input_tokens: int
     target_utilization: float = 0.85
-    tool_result_max_chars: int = 4000
+    tool_result_max_chars: int = 50000
     conversation_max_rounds: int = 10
 
     @property
@@ -131,3 +136,22 @@ class StepRecord:
     has_accessibility_tree: bool = False
     model_input_modalities: List[str] = field(default_factory=list)
     model_input_visual_count: int = 0
+
+
+@dataclass
+class StepResult:
+    """Result of a single Engine step for interactive REPLs.
+
+    Provides all data an external driver (REPL, debugger, etc.) needs
+    to display output, handle permissions, and decide whether to continue.
+    """
+
+    step_id: int
+    decision: Any  # Decision[ActionT]
+    record: StepRecord
+    observation: Any
+    action_results: List[Any] = field(default_factory=list)
+    stop: bool = False
+    stop_reason: Optional[Any] = None  # StopReason
+    error: Optional[Exception] = None
+    recovered: bool = False

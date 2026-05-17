@@ -94,6 +94,27 @@ Trace artifacts and qita views are part of the framework contract, not an aftert
 - `examples/`: canonical patterns and reference agents
 - `templates/`: starter agent layouts
 
+## Core vs Kit vs Recipes vs Examples vs Zoo
+
+- Core: `qitos.core`, `qitos.engine`, `qitos.trace`, and `qitos.qita` define the stable kernel and observability contracts.
+- Kit: `qitos.kit`, `qitos.models`, `qitos.protocols`, and `qitos.render` provide curated framework extensions when they are generic and reusable.
+- Recipes: `qitos.recipes` contains reusable research baselines and benchmark methods, not full applications.
+- Examples: `examples/` is a small teaching path with one concept per file.
+- Zoo: `qitos-zoo` owns product-grade and showcase-grade applications such as `qitos-coder` and `qitos-cyber-agent`.
+
+## What Must Not Enter Core
+
+- Claude Code-style product agents
+- PentAGI-style cybersecurity agents
+- full SWE, desktop, EPUB, or SkillHub product workflows
+- offensive or high-risk security tools in default imports or demos
+- benchmark datasets, large generated artifacts, local absolute paths, or secrets
+- dependencies needed only by product apps
+
+## Promotion Rule
+
+Code can move from zoo to QitOS only if it is generic, tested, documented, dependency-conscious, and needed by multiple independent apps. Product-specific code stays in qitos-zoo.
+
 ## Non-Goals
 
 - hiding execution semantics behind opaque abstractions

@@ -97,6 +97,12 @@ Avoid committing:
 4. Add behavior tests.
 5. Update docs if it changes the public surface.
 
+Security-sensitive tools must require explicit opt-in imports and must not be exposed from `qitos`, default `qitos.kit` imports, `qit demo`, or quickstart examples.
+
+### Adding A Product Agent
+
+Product-grade agents belong in `qitos-zoo`. Keep QitOS examples small, teaching-first, and focused on one framework concept at a time.
+
 ### Changing Engine Behavior
 
 1. Preserve `Decision` as the execution contract.

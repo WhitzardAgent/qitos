@@ -161,7 +161,14 @@ class SummaryCompactor:
                         {
                             "role": "system",
                             "content": (
-                                "Summarize earlier agent interaction for continuation. "
+                                "CRITICAL: Respond with TEXT ONLY. Do NOT call any tools.\n"
+                                "Do NOT use Read, Bash, Grep, Glob, Edit, Write, or ANY other tool.\n"
+                                "You already have all the context you need in the conversation above.\n"
+                                "Tool calls will be REJECTED and will waste your only turn.\n"
+                                "Your entire response must be plain text: an <analysis> block "
+                                "followed by a <summary> block.\n\n"
+                                "Create a detailed summary of the conversation so far, paying close "
+                                "attention to the user's explicit requests and your previous actions. "
                                 "Preserve user intent, constraints, discoveries, failed attempts, "
                                 "file/code references, tool findings, current status, and next step."
                             ),
@@ -181,13 +188,20 @@ class SummaryCompactor:
         body_items = messages[-int(self.config.summary_input_message_limit) :]
         body = "\n".join(f"[{m.step_id}] {m.role}: {m.content}" for m in body_items)
         return (
-            "Create a compact continuation summary of the earlier conversation.\n"
-            "Keep these sections concise:\n"
-            "1. Goal and constraints\n"
-            "2. Important discoveries and tool results\n"
-            "3. Failed attempts or caveats\n"
-            "4. Current state and pending work\n"
-            "5. Suggested next step\n\n"
+            "Create a compact continuation summary of the earlier conversation.\n\n"
+            "Before providing your final summary, wrap your analysis in <analysis> tags "
+            "to organize your thoughts and ensure you've covered all necessary points.\n\n"
+            "Your summary should include:\n"
+            "1. Primary Request and Intent: All of the user's explicit requests in detail\n"
+            "2. Key Technical Concepts: Technologies, frameworks, and patterns discussed\n"
+            "3. Files and Code Sections: Specific files examined, modified, or created with code snippets where applicable\n"
+            "4. Errors and Fixes: All errors encountered and how they were fixed\n"
+            "5. Problem Solving: Problems solved and ongoing troubleshooting\n"
+            "6. All User Messages: ALL non-tool-result user messages — critical for understanding intent\n"
+            "7. Pending Tasks: Any tasks explicitly requested but not yet completed\n"
+            "8. Current Work: Precisely what was being worked on immediately before this summary request\n"
+            "9. Optional Next Step: The next step directly in line with the most recent work\n\n"
+            "REMINDER: Do NOT call any tools. Respond with plain text only — an <analysis> block followed by a <summary> block.\n\n"
             f"{body}"
         )
 

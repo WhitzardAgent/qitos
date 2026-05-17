@@ -3,7 +3,7 @@
 from .engine import Engine, EngineResult, StepSummary
 from .async_engine import AsyncEngine
 from .events import EngineEvent, EngineEventType, EventStream
-from .hooks import EngineHook, HookContext
+from .hooks import EngineHook, HookContext, ToolHookContext
 from .states import (
     ContextConfig,
     ContextTelemetry,
@@ -22,6 +22,7 @@ __all__ = [
     "EngineHook",
     "EventStream",
     "HookContext",
+    "ToolHookContext",
     "StepSummary",
     "ContextConfig",
     "ContextTelemetry",

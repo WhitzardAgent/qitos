@@ -10,7 +10,6 @@ from .coding import coding_tools
 from .editor import editor_tools
 from .notebook import notebook_tools
 from .report import report_tools
-from .security_audit import security_audit_tools
 from .task import task_tools
 from .web import web_tools
 
@@ -42,6 +41,12 @@ def math_tools() -> ToolRegistry:
     registry.register(add)
     registry.register(multiply)
     return registry
+
+
+def security_audit_tools(*args, **kwargs):
+    from .security_audit import security_audit_tools as _security_audit_tools
+
+    return _security_audit_tools(*args, **kwargs)
 
 
 __all__ = [

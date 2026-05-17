@@ -12,12 +12,14 @@ QitOS is the torch-flavor framework for agent researchers.
 
 Prototype methods, run benchmarks, and inspect long-horizon trajectories on one `AgentModule + Engine` kernel with built-in `qita` observability.
 
+QitOS core is the small framework. Product-grade applications and showcase agents live in `qitos-zoo`, including planned apps such as `qitos-coder` and `qitos-cyber-agent`.
+
 [Quickstart](https://qitor.mintlify.app/quickstart) · [Tutorial Track](https://qitor.mintlify.app/tutorials) · [Benchmarks](https://qitor.mintlify.app/benchmarks/overview) · [CLI Reference](https://qitor.mintlify.app/reference/cli) · [Changelog](CHANGELOG.md) · [Chinese README](README.zh.md)
 
 ## Latest Progress
 
 - v0.5 multimodal core phase 1 is now in the main kernel: OpenAI-compatible image input, screenshot-first `ObservationPack` support, qita visual asset inspection, and a new `visual_inspect_agent` baseline for visual-web / GUI research.
-- v0.5 computer-use phase 1 is now live: an OSWorld-inspired `DesktopEnv`, provider-neutral GUI action protocols, `ComputerUseToolSet`, and a new `openai_cua_agent` example for desktop automation research on OpenAI-compatible multimodal models.
+- v0.5 computer-use phase 1 is now live: an OSWorld-inspired `DesktopEnv`, provider-neutral GUI action protocols, `ComputerUseToolSet`, and minimal desktop smoke/baseline components.
 - Desktop benchmarking is now split into clear layers: `desktop-starter` remains the canonical starter benchmark, `qitos.recipes.desktop.osworld_starter` now hosts the reproducible baseline recipe, and `qitos.benchmark.osworld` is the new home for real OSWorld-style adapter/runtime/evaluator integration.
 - QitOS now separates starter benchmarks, real benchmark adapters, and reproducible recipes across the whole benchmark surface: GAIA, Tau-Bench, CyBench, `desktop-starter`, and `osworld` all route through `qitos.benchmark` plus `qitos.recipes`, with a new contributor guide for third-party benchmark integration.
 
@@ -89,11 +91,10 @@ Then go deeper:
 ### Real Agents
 
 - **Coding agent**: practical coding loop with editor, shell, and memory.
-- **SWE agent**: richer planning-oriented software engineering flow.
-- **Computer-use agent**: web research and computer-use style interaction.
-- **OpenAI CUA-inspired desktop agent**: OSWorld-style screenshot-first desktop control on the QitOS kernel.
-- **Visual inspect agent**: screenshot-first multimodal baseline for visual-web and GUI research.
-- **EPUB reader**: document-grounded reasoning with branching.
+- **Research harness agent**: research-first prompt/parser/protocol authoring.
+- **Desktop smoke**: minimal deterministic desktop environment loop.
+
+Product-grade coding, desktop, EPUB, and security agents are staged for `qitos-zoo`, not the QitOS core example path.
 
 ### Evaluation
 
@@ -130,6 +131,8 @@ registry = ToolRegistry().include_toolset(
     ]
 )
 ```
+
+Security-sensitive tools are explicit opt-in imports and are not part of `qitos`, `qitos.kit`, `qit demo`, or the quickstart path.
 
 ## Documentation Map
 
@@ -194,7 +197,7 @@ QitOS is currently **Alpha**.
 
 ## Contributing
 
-Contributions are welcome, especially around benchmark adapters, memory/history workflows, qita UX, and cyber-agent use cases. Start with [CONTRIBUTING.md](CONTRIBUTING.md) for the PR process, [DEVELOPMENT.md](DEVELOPMENT.md) for the local workflow, [ARCHITECTURE.md](ARCHITECTURE.md) for system design, [SECURITY.md](SECURITY.md) for disclosure guidance, and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for community expectations.
+Contributions are welcome, especially around benchmark adapters, memory/history workflows, qita UX, and framework contracts. Product-grade agents should target `qitos-zoo`. Start with [CONTRIBUTING.md](CONTRIBUTING.md) for the PR process, [DEVELOPMENT.md](DEVELOPMENT.md) for the local workflow, [ARCHITECTURE.md](ARCHITECTURE.md) for system design, [SECURITY.md](SECURITY.md) for disclosure guidance, and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for community expectations.
 
 ## License
 

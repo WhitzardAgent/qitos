@@ -70,6 +70,30 @@ class SystemExecutionError(QitosRuntimeError):
     pass
 
 
+def _is_network_error(exc: Exception) -> bool:
+    """Check if an exception is a transient network/SSL error."""
+    # Standard Python errors
+    if isinstance(exc, (TimeoutError, ConnectionError, OSError)):
+        return True
+    # httpx transport errors (SSL, connection reset, etc.)
+    try:
+        import httpx
+        if isinstance(exc, (httpx.ConnectError, httpx.TransportError, httpx.TimeoutException)):
+            return True
+    except ImportError:
+        pass
+    # openai API errors
+    try:
+        import openai
+        if isinstance(exc, (openai.APIConnectionError, openai.APITimeoutError)):
+            return True
+    except ImportError:
+        pass
+    # Check for SSL-related messages as fallback
+    msg = str(exc).lower()
+    return any(kw in msg for kw in ("ssl", "eof", "connection reset", "connection refused", "timed out"))
+
+
 def classify_exception(exc: Exception, phase: str, step_id: int) -> RuntimeErrorInfo:
     if isinstance(exc, ModelExecutionError):
         return exc.info
@@ -83,6 +107,32 @@ def classify_exception(exc: Exception, phase: str, step_id: int) -> RuntimeError
         return exc.info
 
     msg = str(exc).lower()
+
+    # Context length / prompt too long errors from API providers
+    if any(kw in msg for kw in (
+        "context_length_exceeded", "context length", "prompt too long",
+        "maximum context", "too many tokens", "reduce the length",
+        "input is too long",
+    )):
+        from .errors import ErrorCategory as _EC
+        return RuntimeErrorInfo(
+            category=_EC.MODEL,
+            message=str(exc),
+            phase=phase,
+            step_id=step_id,
+            recoverable=True,
+            details={"api_context_overflow": True},
+        )
+
+    # Network/SSL/connection errors are recoverable in decide phase
+    if _is_network_error(exc) and phase.lower() in {"decide", "propose"}:
+        return RuntimeErrorInfo(
+            category=ErrorCategory.MODEL,
+            message=str(exc),
+            phase=phase,
+            step_id=step_id,
+            recoverable=True,
+        )
 
     if isinstance(exc, (TimeoutError, ConnectionError)) and phase.lower() in {
         "decide",

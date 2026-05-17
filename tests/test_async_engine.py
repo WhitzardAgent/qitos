@@ -146,7 +146,7 @@ class TestEngineEventType:
             "step_start", "step_end", "phase_start", "phase_end",
             "decide", "act", "reduce", "critic", "check_stop",
             "handoff", "delegate", "fanout", "error",
-            "run_start", "run_end",
+            "run_start", "run_end", "step_stream",
         }
         actual = {t.value for t in EngineEventType}
         assert actual == expected

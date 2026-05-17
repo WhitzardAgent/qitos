@@ -1,5 +1,7 @@
 """Minimal multimodal visual inspection agent for QitOS v0.5."""
 
+# This full application is scheduled to move to qitos-zoo and is not part of QitOS core examples.
+
 from __future__ import annotations
 
 import os

@@ -1,4 +1,11 @@
-"""Claude Code-style coding agent built on the canonical coding tool preset."""
+"""Claude Code-style coding agent built on the canonical coding tool preset.
+
+NOTE: For the full Claude Code replication (30+ tools, permission pipeline,
+streaming REPL, MCP, sub-agents, etc.), see ``examples/real/claude_code/``.
+This file remains as a minimal preset-first example.
+"""
+
+# This full application is scheduled to move to qitos-zoo and is not part of QitOS core examples.
 
 from __future__ import annotations
 

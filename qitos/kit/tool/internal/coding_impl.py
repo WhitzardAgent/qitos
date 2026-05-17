@@ -103,6 +103,20 @@ class CodingToolSet:
 
     def tools(self) -> List[Any]:
         items: List[Any] = []
+        # Claude Code modern-name aliases (Read, Edit, Write, Glob, Grep, Bash, etc.)
+        if self.expose_modern_names:
+            items.extend(
+                [
+                    self.Read,
+                    self.Edit,
+                    self.Write,
+                    self.Glob,
+                    self.Grep,
+                    self.Bash,
+                    self.WebFetch,
+                    self.AskUserQuestion,
+                ]
+            )
         if self.profile in {"full", "editor"} and self.expose_legacy_aliases:
             items.extend(
                 [
@@ -399,36 +413,37 @@ class CodingToolSet:
         text = str(command or "").strip()
         if not text:
             return {"status": "error", "message": "Command cannot be empty"}
-        destructive_tokens = (
-            "rm -rf",
-            "sudo rm",
-            "mkfs",
-            ":(){",
-            "dd if=",
-            "git reset --hard",
-        )
-        write_tokens = (
-            "rm ",
-            "mv ",
-            "cp ",
-            "mkdir ",
-            "touch ",
-            "sed -i",
-            "> ",
-            ">> ",
-            "git commit",
-            "git push",
-        )
-        if not allow_destructive and any(token in text for token in destructive_tokens):
+
+        # Use BashCommandAnalyzer for safety classification
+        from qitos.kit.permission.bash_analyzer import BashCommandAnalyzer, CommandSafety
+
+        analyzer = BashCommandAnalyzer()
+        analysis = analyzer.analyze(text)
+
+        if not allow_destructive and analysis.safety == CommandSafety.UNSAFE:
             return {
                 "status": "error",
-                "message": "Destructive command blocked",
+                "message": f"Destructive command blocked: {analysis.explanation}",
                 "error_category": "destructive_command",
+                "detected_patterns": analysis.detected_patterns,
             }
-        if read_only and any(token in text for token in write_tokens):
+
+        if read_only and not analysis.is_read_only:
             return {
                 "status": "error",
                 "message": "Command appears to write to the workspace in read-only mode",
+            }
+
+        python_inline_smoke = text.startswith(("python -c ", "python3 -c "))
+        if (
+            analysis.safety == CommandSafety.NEEDS_REVIEW
+            and not allow_destructive
+            and not python_inline_smoke
+        ):
+            return {
+                "status": "needs_user_input",
+                "message": f"Command needs review: {analysis.explanation}",
+                "detected_patterns": analysis.detected_patterns,
             }
         if run_in_background:
             fd, stdout_path = tempfile.mkstemp(
@@ -797,6 +812,14 @@ class CodingToolSet:
                 new_content = old_content.replace(old_text, new_text, 1)
                 message = f"Replaced one occurrence in {path}"
             elif normalized_action == "insert":
+                try:
+                    insert_line = int(insert_line)
+                except Exception:
+                    return {
+                        "status": "error",
+                        "message": f"Invalid insert_line: {insert_line}",
+                        "path": path,
+                    }
                 lines = old_content.splitlines()
                 if insert_line < 0 or insert_line > len(lines):
                     return {
@@ -808,6 +831,15 @@ class CodingToolSet:
                 new_content = "\n".join(updated_lines)
                 message = f"Inserted content after line {insert_line} in {path}"
             elif normalized_action == "replace_lines":
+                try:
+                    start_line = int(start_line)
+                    end_line = int(end_line)
+                except Exception:
+                    return {
+                        "status": "error",
+                        "message": "Invalid line range",
+                        "path": path,
+                    }
                 lines = old_content.splitlines()
                 if start_line <= 0 or end_line < start_line or end_line > len(lines):
                     return {
@@ -815,6 +847,16 @@ class CodingToolSet:
                         "message": "Invalid line range",
                         "path": path,
                     }
+                if (
+                    isinstance(replacement, str)
+                    and replacement
+                    and not replacement[:1].isspace()
+                    and start_line == end_line
+                ):
+                    old_line = lines[start_line - 1]
+                    indent = old_line[: len(old_line) - len(old_line.lstrip())]
+                    if indent:
+                        replacement = indent + replacement
                 updated_lines = (
                     lines[: start_line - 1] + [replacement] + lines[end_line:]
                 )
@@ -1517,7 +1559,10 @@ class CodingToolSet:
                     results.append({"name": name, "description": desc})
         return {"status": "success", "count": len(results), "results": results}
 
-    @tool(name="enter_plan_mode")
+    @tool(
+        name="enter_plan_mode",
+        prompt="Use this tool proactively when you need to plan a non-trivial implementation before starting. This transitions into a read-only mode where you can analyze the codebase without making changes.",
+    )
     def enter_plan_mode(
         self, reason: str = "", runtime_context: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
@@ -1596,7 +1641,10 @@ class CodingToolSet:
             return {"status": "error", "message": "LSP capability unavailable"}
         return lsp.query(operation=operation, symbol=symbol, **kwargs)
 
-    @tool(name="task_create")
+    @tool(
+        name="task_create",
+        prompt="Use this tool proactively when you're about to start a non-trivial implementation task. Creating tasks helps you track progress and organize complex work.",
+    )
     def task_create(
         self,
         subject: str,
@@ -1759,17 +1807,212 @@ class CodingToolSet:
                 return {"status": "success", "resource": item}
         return {"status": "error", "message": f"Resource not found: {server}:{uri}"}
 
-    @tool(name="agent_spawn")
+    @tool(
+        name="agent_spawn",
+        prompt=(
+            "Launch a new agent to handle a sub-task autonomously. "
+            "The agent runs in an isolated context with its own tool set.\n\n"
+            "Available agent types:\n"
+            "- explore: Fast codebase search agent (Read, Glob, Grep). Use for finding files, "
+            "searching code, or answering questions about the codebase.\n"
+            "- plan: Read-only architecture planning agent. Use for designing implementation approaches.\n"
+            "- general: General-purpose agent with full tool access. Use for complex multi-step tasks.\n\n"
+            "The prompt should be self-contained — the agent won't see this conversation. "
+            "Include all context the agent needs (file paths, what to look for, etc.)."
+        ),
+    )
     def agent_spawn(
-        self, runtime_context: Optional[Dict[str, Any]] = None, **kwargs: Any
+        self,
+        task: str = "",
+        subagent_type: str = "explore",
+        max_steps: int = 8,
+        run_in_background: bool = False,
+        runtime_context: Optional[Dict[str, Any]] = None,
+        **kwargs: Any,
     ) -> Dict[str, Any]:
-        """
-        Stub sub-agent spawn tool.
+        """Spawn a sub-agent to handle a task autonomously.
 
-        :param runtime_context: Optional runtime context injected by the executor.
+        Creates a child Engine with the sub-agent's toolset and runs it.
+        Returns the agent's final answer and step summary.
+
+        :param task: The task prompt for the sub-agent.
+        :param subagent_type: Agent type (explore, plan, general).
+        :param max_steps: Maximum steps for the sub-agent.
+        :param run_in_background: If True, run agent in background thread.
+        :param runtime_context: Runtime context from the executor.
         """
-        _ = runtime_context
-        return {"status": "success", "spawned": False, "request": kwargs}
+        if not task:
+            return {"status": "error", "message": "No task provided for sub-agent."}
+
+        # Get the parent agent's LLM and protocol
+        state_obj = (runtime_context or {}).get("state")
+        llm = None
+        model_parser = None
+        model_protocol = None
+
+        # Try to get LLM from the parent engine's agent
+        engine = (runtime_context or {}).get("engine")
+        if engine is None and runtime_context:
+            # Walk up to find the engine
+            tool_registry = runtime_context.get("tool_registry")
+            if tool_registry and hasattr(tool_registry, "_engine"):
+                engine = tool_registry._engine
+
+        if engine is not None:
+            parent_agent = getattr(engine, "agent", None)
+            if parent_agent is not None:
+                llm = getattr(parent_agent, "llm", None)
+                model_parser = getattr(parent_agent, "model_parser", None)
+                model_protocol = getattr(parent_agent, "model_protocol", None)
+
+        if llm is None:
+            return {"status": "error", "message": "No LLM available for sub-agent."}
+
+        try:
+            agent = self._create_sub_agent(
+                subagent_type=subagent_type,
+                llm=llm,
+                max_steps=max_steps,
+                model_parser=model_parser,
+                model_protocol=model_protocol,
+            )
+        except ValueError as e:
+            return {"status": "error", "message": str(e)}
+
+        if run_in_background:
+            return self._run_agent_background(agent, task)
+        return self._run_agent_sync(agent, task)
+
+    def _create_sub_agent(
+        self,
+        subagent_type: str,
+        llm: Any,
+        max_steps: int,
+        model_parser: Any = None,
+        model_protocol: Any = None,
+    ) -> Any:
+        """Create a sub-agent instance based on type."""
+        subagent_type = subagent_type.lower().strip()
+
+        if subagent_type == "explore":
+            from qitos.kit.tool.internal.subagents import ExploreAgent
+            return ExploreAgent(
+                llm=llm,
+                workspace_root=self.workspace_root,
+                max_steps=max_steps,
+                model_parser=model_parser,
+                model_protocol=model_protocol,
+            )
+        elif subagent_type == "plan":
+            from qitos.kit.tool.internal.subagents import PlanAgent
+            return PlanAgent(
+                llm=llm,
+                workspace_root=self.workspace_root,
+                max_steps=max_steps,
+                model_parser=model_parser,
+                model_protocol=model_protocol,
+            )
+        elif subagent_type in ("general", "general-purpose"):
+            from qitos.kit.tool.internal.subagents import GeneralAgent
+            return GeneralAgent(
+                llm=llm,
+                workspace_root=self.workspace_root,
+                max_steps=max_steps,
+                model_parser=model_parser,
+                model_protocol=model_protocol,
+            )
+        else:
+            raise ValueError(
+                f"Unknown sub-agent type: '{subagent_type}'. "
+                f"Available types: explore, plan, general"
+            )
+
+    def _run_agent_sync(self, agent: Any, task: str) -> Dict[str, Any]:
+        """Run a sub-agent synchronously and return results."""
+        from qitos.engine.engine import Engine
+        from qitos.engine.states import ContextConfig, RuntimeBudget
+
+        # Propagate permission pipeline and RBW enforcer from parent engine
+        parent_pipeline = None
+        parent_rbw = None
+        if self._engine is not None and self._engine.executor is not None:
+            parent_pipeline = getattr(self._engine.executor, "_pipeline", None)
+            parent_rbw = getattr(self._engine.executor, "_rbw_enforcer", None)
+
+        engine = Engine(
+            agent=agent,
+            budget=RuntimeBudget(max_steps=agent.max_steps),
+            permission_pipeline=parent_pipeline,
+            read_before_write_enforcer=parent_rbw,
+            context_config=ContextConfig(
+                tool_result_max_chars=50000,
+                tool_result_per_message_max_chars=200000,
+                reactive_compact=True,
+            ),
+        )
+        result = engine.run(task)
+
+        final_answer = ""
+        if result.task_result is not None:
+            final_answer = str(getattr(result.task_result, "final_output", "")) or ""
+        if not final_answer:
+            final_answer = str(getattr(result.state, "final_result", "")) or ""
+
+        step_summaries = []
+        for s in result.step_summaries:
+            step_summaries.append({
+                "step": s.step_id,
+                "tool": s.tool_name,
+                "status": s.status,
+            })
+
+        return {
+            "status": "success",
+            "spawned": True,
+            "subagent_type": agent.name,
+            "final_answer": final_answer[:8000],
+            "step_count": result.step_count,
+            "step_summaries": step_summaries,
+            "total_tokens": result.total_tokens,
+            "runtime_seconds": round(result.runtime_seconds, 2),
+        }
+
+    def _run_agent_background(self, agent: Any, task: str) -> Dict[str, Any]:
+        """Run a sub-agent in a background thread."""
+        import threading
+
+        task_id = f"agent_{id(agent)}_{threading.get_ident()}"
+
+        # Store in session tasks
+        self._session_tasks[task_id] = {
+            "status": "running",
+            "agent_name": agent.name,
+            "task": task[:200],
+        }
+
+        def _run():
+            try:
+                result_dict = self._run_agent_sync(agent, task)
+                self._session_tasks[task_id] = {
+                    **result_dict,
+                    "status": "completed",
+                }
+            except Exception as exc:
+                self._session_tasks[task_id] = {
+                    "status": "error",
+                    "error": str(exc),
+                }
+
+        thread = threading.Thread(target=_run, daemon=True)
+        thread.start()
+
+        return {
+            "status": "success",
+            "spawned": True,
+            "background": True,
+            "task_id": task_id,
+            "message": f"Agent running in background. Use task_get with task_id='{task_id}' to check results.",
+        }
 
     @tool(name="cron_create")
     def cron_create(
@@ -1806,6 +2049,356 @@ class CodingToolSet:
         """
         _ = runtime_context
         return {"status": "success", "jobs": []}
+
+    # ── Claude Code modern-name aliases ────────────────────────────────────────
+    # These match Claude Code's exact tool names and signatures for compatibility.
+
+    @tool(
+        name="Read",
+        permissions=ToolPermission(filesystem_read=True),
+        read_only=True,
+        rule_scope_builder=_default_rule_scope,
+        prompt=(
+            "Reads a file from the local filesystem. You can access any file directly by using this tool.\n"
+            "Assume this tool is able to read all files on the machine. If the User provides a path to a file assume that path is valid.\n"
+            "Usage:\n"
+            "- The file_path parameter must be an absolute path, not a relative path\n"
+            "- By default, it reads up to 2000 lines starting from the beginning of the file\n"
+            "- You can optionally specify a line offset and limit, but it's recommended to read the whole file by not providing these parameters\n"
+            "- When you already know which part of the file you need, only read that part. This can be important for larger files.\n"
+            "- This tool can only read files, not directories. To read a directory, use an ls command via the Bash tool.\n"
+            "- If you read a file that exists but has empty contents you will receive a system reminder warning."
+        ),
+    )
+    def Read(
+        self,
+        file_path: str,
+        offset: int = 0,
+        limit: int = 2000,
+        *,
+        pages: Optional[str] = None,
+        runtime_context: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """Read a file, image, PDF, or notebook. Returns content with line numbers.
+
+        :param file_path: Absolute or relative path to the file.
+        :param offset: Line number to start reading from (0-based).
+        :param limit: Maximum number of lines to read.
+        :param pages: Page range for PDF files (e.g., "1-5", "3").
+        :param runtime_context: Optional runtime context injected by the executor.
+        """
+        result = self.file_read_v2(
+            path=file_path,
+            offset=offset,
+            limit=limit,
+            max_chars=200_000,
+            runtime_context=runtime_context,
+        )
+        if result.get("status") != "success":
+            return f"Error reading file: {result.get('error', 'unknown error')}"
+        content = result.get("content", "")
+        # Add line numbers like Claude Code
+        lines = content.split("\n")
+        numbered = []
+        for i, line in enumerate(lines[offset : offset + limit], start=offset + 1):
+            numbered.append(f"{i}\t{line}")
+        return "\n".join(numbered)
+
+    @tool(
+        name="Edit",
+        permissions=ToolPermission(filesystem_read=True, filesystem_write=True),
+        rule_scope_builder=_default_rule_scope,
+        prompt=(
+            "Performs exact string replacements in files.\n"
+            "Usage:\n"
+            "- You must use your `Read` tool at least once in the conversation before editing. This tool will error if you attempt an edit without reading the file.\n"
+            "- When editing text from Read tool output, ensure you preserve the exact indentation (tabs/spaces) as it appears AFTER the line number prefix. Never include any part of the line number prefix in the old_string or new_string.\n"
+            "- ALWAYS prefer editing existing files in the codebase. NEVER write new files unless explicitly required.\n"
+            "- The edit will FAIL if `old_string` is not unique in the file. Either provide a larger string with more surrounding context to make it unique or use `replace_all` to change every instance of `old_string`.\n"
+            "- Use `replace_all` for replacing and renaming strings across the file."
+        ),
+    )
+    def Edit(
+        self,
+        file_path: str,
+        old_string: str,
+        new_string: str,
+        replace_all: bool = False,
+        runtime_context: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """Replace old_string with new_string in a file. old_string must be unique unless replace_all=True.
+
+        :param file_path: Absolute or relative path to the file.
+        :param old_string: Text to find and replace. Must appear exactly once unless replace_all=True.
+        :param new_string: Replacement text.
+        :param replace_all: Replace all occurrences of old_string.
+        :param runtime_context: Optional runtime context injected by the executor.
+        """
+        result = self.file_edit_v2(
+            path=file_path,
+            action="str_replace",
+            old_text=old_string,
+            new_text=new_string,
+            runtime_context=runtime_context,
+        )
+        if result.get("status") != "success":
+            return f"Error editing file: {result.get('error', 'unknown error')}"
+        return result.get("content", "Edit applied successfully")
+
+    @tool(
+        name="Write",
+        permissions=ToolPermission(filesystem_write=True),
+        rule_scope_builder=_default_rule_scope,
+        prompt=(
+            "Writes a file to the local filesystem.\n"
+            "Usage:\n"
+            "- This tool will overwrite the existing file if there is one at the provided path.\n"
+            "- If this is an existing file, you MUST use the Read tool first to read the file's contents. This tool will fail if you did not read the file first.\n"
+            "- Prefer the Edit tool for modifying existing files — it only sends the diff. Only use this tool to create new files or for complete rewrites.\n"
+            "- NEVER create documentation files (*.md) or README files unless explicitly requested by the User."
+        ),
+    )
+    def Write(
+        self,
+        file_path: str,
+        content: str,
+        runtime_context: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """Write content to a file, creating it if it doesn't exist.
+
+        :param file_path: Absolute or relative path to the file.
+        :param content: Content to write.
+        :param runtime_context: Optional runtime context injected by the executor.
+        """
+        result = self.write_file(
+            path=file_path,
+            content=content,
+            runtime_context=runtime_context,
+        )
+        if result.get("status") != "success":
+            return f"Error writing file: {result.get('error', 'unknown error')}"
+        return f"Successfully wrote to {file_path}"
+
+    @tool(
+        name="Glob",
+        permissions=ToolPermission(filesystem_read=True),
+        read_only=True,
+        rule_scope_builder=_default_rule_scope,
+        prompt=(
+            "Fast file pattern matching tool that works with any codebase size.\n"
+            "Supports glob patterns like \"**/*.js\" or \"src/**/*.ts\". Returns matching file paths sorted by modification time.\n"
+            "Use this tool when you need to find files by name patterns. When you are doing an open ended search that may require multiple rounds of globbing and grepping, use the Agent tool instead."
+        ),
+    )
+    def Glob(
+        self,
+        pattern: str,
+        path: str = ".",
+        runtime_context: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """Find files matching a glob pattern.
+
+        :param pattern: Glob pattern (e.g., "**/*.py", "src/**/*.ts").
+        :param path: Directory to search in.
+        :param runtime_context: Optional runtime context injected by the executor.
+        """
+        result = self.glob_v2(
+            pattern=pattern,
+            path=path,
+            runtime_context=runtime_context,
+        )
+        if result.get("status") != "success":
+            return f"Error: {result.get('error', 'unknown error')}"
+        files = result.get("files", [])
+        return "\n".join(files)
+
+    @tool(
+        name="Grep",
+        permissions=ToolPermission(filesystem_read=True),
+        read_only=True,
+        rule_scope_builder=_default_rule_scope,
+        prompt=(
+            "A powerful search tool built on ripgrep.\n"
+            "Usage:\n"
+            "- ALWAYS use Grep for search tasks. NEVER invoke `grep` or `rg` as a Bash command. The Grep tool has been optimized for correct permissions and access.\n"
+            "- Supports full regex syntax (e.g., \"log.*Error\", \"function\\\\s+\\\\w+\")\n"
+            "- Filter files with glob parameter (e.g., \"*.js\", \"**/*.tsx\") or type parameter\n"
+            "- Output modes: \"content\" shows matching lines, \"files_with_matches\" shows only file paths (default), \"count\" shows match counts\n"
+            "- Use Agent tool for open-ended searches requiring multiple rounds"
+        ),
+    )
+    def Grep(
+        self,
+        pattern: str,
+        path: str = ".",
+        glob: Optional[str] = None,
+        type: Optional[str] = None,
+        output_mode: str = "content",
+        context: int = 0,
+        head_limit: int = 100,
+        runtime_context: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """Search file contents using regex patterns.
+
+        :param pattern: Regular expression pattern to search for.
+        :param path: Directory or file to search in.
+        :param glob: File pattern filter (e.g., "*.py").
+        :param type: File type filter (js, py, rust, etc.).
+        :param output_mode: "content", "files_with_matches", or "count".
+        :param context: Number of lines of context before/after matches.
+        :param head_limit: Maximum number of results.
+        :param runtime_context: Optional runtime context injected by the executor.
+        """
+        # Map Claude Code's output_mode to grep_v2 parameters
+        files_with_matches = output_mode == "files_with_matches"
+        result = self.grep_v2(
+            pattern=pattern,
+            path=path,
+            glob=glob,
+            case_sensitive=False,
+            regex=True,
+            files_with_matches=files_with_matches,
+            limit=head_limit,
+            context=context,
+            runtime_context=runtime_context,
+        )
+        if result.get("status") != "success":
+            return f"Error: {result.get('error', 'unknown error')}"
+        if files_with_matches:
+            matches = result.get("matches", [])
+            return "\n".join(str(m) for m in matches)
+        matches = result.get("matches", [])
+        lines = []
+        for m in matches:
+            if isinstance(m, dict):
+                lines.append(
+                    f"{m.get('file', '')}:{m.get('line', '')}:{m.get('text', '')}"
+                )
+            else:
+                lines.append(str(m))
+        return "\n".join(lines)
+
+    @tool(
+        name="Bash",
+        permissions=ToolPermission(command=True),
+        supports_background=True,
+        rule_scope_builder=_default_rule_scope,
+        prompt=(
+            "Executes a given bash command and returns its output.\n"
+            "The working directory persists between commands, but shell state does not. The shell environment is initialized from the user's profile (bash or zsh).\n"
+            "IMPORTANT: Avoid using this tool to run `find`, `grep`, `cat`, `head`, `tail`, `sed`, `awk`, or `echo` commands, unless explicitly instructed or after you have verified that a dedicated tool cannot accomplish your task. Instead, use the appropriate dedicated tool as this will provide a much better experience for the user:\n"
+            " - File search: Use Glob (NOT find or ls)\n"
+            " - Content search: Use Grep (NOT grep or rg)\n"
+            " - Read files: Use Read (NOT cat/head/tail)\n"
+            " - Edit files: Use Edit (NOT sed/awk)\n"
+            " - Write files: Use Write (NOT echo >/cat <<EOF)\n"
+            "If your command will create new directories or files, first use this tool to run `ls` to verify the parent directory exists. Try to maintain your current working directory throughout the session by using absolute paths. You may specify an optional timeout in milliseconds. You can use `run_in_background` to run commands in the background.\n"
+            "For git commands: Prefer to create a new commit rather than amending an existing commit. Before running destructive operations, consider whether there is a safer alternative. Never skip hooks (--no-verify) unless the user has explicitly asked for it.\n"
+            "For git commit messages, use HEREDOC format: git commit -m \"$(cat <<'EOF'\\n  Commit message here.\\n  EOF\\n  )\""
+        ),
+    )
+    def Bash(
+        self,
+        command: str,
+        description: str = "",
+        timeout: Optional[int] = None,
+        run_in_background: bool = False,
+        runtime_context: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """Execute a shell command.
+
+        :param command: Shell command to execute.
+        :param description: Brief description of what the command does.
+        :param timeout: Timeout in milliseconds (max 600000).
+        :param run_in_background: Run command in background and return task ID.
+        :param runtime_context: Optional runtime context injected by the executor.
+        """
+        result = self.bash_v2(
+            command=command,
+            read_only=False,
+            allow_destructive=False,
+            run_in_background=run_in_background,
+            runtime_context=runtime_context,
+        )
+        if result.get("status") != "success":
+            error = result.get("error", "")
+            returncode = result.get("returncode", 1)
+            stdout = result.get("stdout", "")
+            if stdout:
+                return f"Exit code {returncode}:\n{stdout}\n{error}"
+            return f"Error: {error}"
+        stdout = result.get("stdout", "")
+        returncode = result.get("returncode", 0)
+        if returncode != 0:
+            stderr = result.get("stderr", "")
+            return f"Exit code {returncode}:\n{stdout}\n{stderr}"
+        return stdout
+
+    @tool(
+        name="WebFetch",
+        permissions=ToolPermission(network=True),
+        rule_scope_builder=_default_rule_scope,
+        prompt=(
+            "Fetches content from a specified URL and processes it using an AI model. Takes a URL and a prompt as input. Fetches the URL content, converts HTML to markdown. Processes the content with the prompt using a small, fast model.\n"
+            "Usage notes:\n"
+            "- The URL must be a fully-formed valid URL. HTTP URLs will be automatically upgraded to HTTPS.\n"
+            "- The prompt should describe what information you want to extract from the page.\n"
+            "- This tool is read-only and does not modify any files.\n"
+            "- Results may be summarized if the content is very large.\n"
+            "- Includes a self-cleaning 15-minute cache for faster responses.\n"
+            "- For GitHub URLs, prefer using the gh CLI via Bash instead."
+        ),
+    )
+    def WebFetch(
+        self,
+        url: str,
+        prompt: str = "",
+        runtime_context: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """Fetch a URL and convert to markdown, optionally summarizing with AI.
+
+        :param url: URL to fetch.
+        :param prompt: Optional prompt for AI summarization of the content.
+        :param runtime_context: Optional runtime context injected by the executor.
+        """
+        result = self.web_fetch_v2(
+            url=url,
+            prompt=prompt,
+            runtime_context=runtime_context,
+        )
+        if result.get("status") != "success":
+            return f"Error fetching URL: {result.get('error', 'unknown error')}"
+        return result.get("content", "")
+
+    @tool(
+        name="AskUserQuestion",
+        requires_user_interaction=True,
+        prompt=(
+            "Use this tool when you need to ask the user questions during execution. This allows you to:\n"
+            "1. Gather user preferences or requirements\n"
+            "2. Clarify ambiguous instructions\n"
+            "3. Get decisions on implementation choices as you work\n"
+            "4. Offer choices to the user about what direction to take.\n"
+            "Usage notes:\n"
+            "- Users will always be able to select \"Other\" to provide custom text input\n"
+            "- Use multiSelect: true to allow multiple answers to be selected for a question\n"
+            "- If you recommend a specific option, make that the first option in the list and add \"(Recommended)\" at the end of the label"
+        ),
+    )
+    def AskUserQuestion(
+        self,
+        questions: List[Dict[str, Any]],
+        runtime_context: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Ask the user one or more questions with optional choices.
+
+        :param questions: List of question dicts with 'question', 'options', and optional 'preview'.
+        :param runtime_context: Optional runtime context injected by the executor.
+        """
+        return self.ask_user_choice(
+            questions=questions,
+            runtime_context=runtime_context,
+        )
 
 
 __all__ = ["CodingToolSet", "TASK_STATUSES", "_resolve_workspace_path"]

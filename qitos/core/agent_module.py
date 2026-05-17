@@ -180,10 +180,11 @@ class AgentModule(ABC, Generic[StateT, ObservationT, ActionT]):
                 delattr(self, "_prompt_bundle_reentry_guard")
             builder = self.prompt_builder()
             scaffold_spec = PromptSpec(
+                persona_prompt=str(manual_prompt or "").strip(),
                 parser_feedback=self._state_prompt_attr(state, "parser_feedback"),
                 continuation_feedback=self._state_prompt_attr(state, "timeout_feedback"),
-                include_tool_schema=False,
-                include_contract=False,
+                include_tool_schema=True,
+                include_contract=True,
                 metadata={
                     "agent_name": self.name,
                     "prompt_authoring_mode": "manual_build_system_prompt",
@@ -197,7 +198,6 @@ class AgentModule(ABC, Generic[StateT, ObservationT, ActionT]):
                 state=state,
                 resolution_source="agent_override",
             )
-            manual_text = str(manual_prompt or "").strip()
             metadata = dict(scaffold.metadata or {})
             metadata.update(
                 {
@@ -205,24 +205,19 @@ class AgentModule(ABC, Generic[StateT, ObservationT, ActionT]):
                     "protocol_resolution_source": "agent_override",
                     "prompt_builder": "manual_build_system_prompt",
                     "prompt_builder_version": "manual",
-                    "sections_used": (
-                        ["manual_override"] if manual_text else []
-                    ),
+                    "sections_used": scaffold.metadata.get("sections_used", []),
                     "tool_schema_style": getattr(
                         self.active_protocol(), "id", None
                     ),
-                    "prompt_hash_static": builder._hash(manual_text),
-                    "prompt_hash_full": builder._hash(manual_text),
-                    "estimated_tokens_static": builder._estimate_tokens(
-                        self.llm, manual_text
-                    ),
-                    "estimated_tokens_full": builder._estimate_tokens(
-                        self.llm, manual_text
-                    ),
+                    "prompt_hash_static": scaffold.metadata.get("prompt_hash_static", ""),
+                    "prompt_hash_full": scaffold.metadata.get("prompt_hash_full", ""),
+                    "estimated_tokens_static": scaffold.metadata.get("estimated_tokens_static", 0),
+                    "estimated_tokens_full": scaffold.metadata.get("estimated_tokens_full", 0),
                 }
             )
             return PromptBuildResult(
-                system_prompt_static=manual_text,
+                system_prompt_static=scaffold.system_prompt_static,
+                system_prompt_dynamic=scaffold.system_prompt_dynamic,
                 message_injections=list(scaffold.message_injections),
                 user_content_blocks=list(scaffold.user_content_blocks),
                 tool_schema_payload=scaffold.tool_schema_payload,
@@ -512,6 +507,7 @@ class AgentModule(ABC, Generic[StateT, ObservationT, ActionT]):
                 ReActTextParser,
                 TerminusJsonParser,
                 TerminusXmlParser,
+                ToolUseXmlParser,
                 XmlDecisionParser,
             )
 
@@ -522,6 +518,7 @@ class AgentModule(ABC, Generic[StateT, ObservationT, ActionT]):
                 "MiniMaxToolCallParser": MiniMaxToolCallParser,
                 "TerminusJsonParser": TerminusJsonParser,
                 "TerminusXmlParser": TerminusXmlParser,
+                "ToolUseXmlParser": ToolUseXmlParser,
             }
             if name in mapping:
                 return mapping[name]()

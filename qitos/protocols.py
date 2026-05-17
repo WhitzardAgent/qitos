@@ -62,7 +62,11 @@ def _param_rows(spec: Dict[str, Any]) -> List[tuple[str, str]]:
 def render_react_tool_schema(tool_registry: Any) -> str:
     lines: List[str] = []
     for spec in _tool_specs(tool_registry):
-        lines.append(f"- {spec['name']}: {spec.get('description') or ''}".rstrip())
+        prompt_text = spec.get("prompt") or ""
+        desc = spec.get("description") or ""
+        # Use the full prompt if available, otherwise fall back to short description
+        display = prompt_text if prompt_text else desc
+        lines.append(f"- {spec['name']}: {display}".rstrip())
         params = _param_rows(spec)
         if params:
             lines.append("  Parameters:")
@@ -76,10 +80,14 @@ def render_json_tool_schema(tool_registry: Any) -> str:
 
     payload: List[Dict[str, Any]] = []
     for spec in _tool_specs(tool_registry):
+        prompt_text = spec.get("prompt") or ""
+        desc = spec.get("description") or ""
+        # Use the full prompt if available, otherwise fall back to short description
+        description = prompt_text if prompt_text else desc
         payload.append(
             {
                 "name": spec.get("name"),
-                "description": spec.get("description"),
+                "description": description,
                 "parameters": (spec.get("input_schema") or {}).get("properties", {}),
                 "required": (spec.get("input_schema") or {}).get("required", []),
             }
@@ -90,9 +98,12 @@ def render_json_tool_schema(tool_registry: Any) -> str:
 def render_xml_tool_schema(tool_registry: Any) -> str:
     lines: List[str] = []
     for spec in _tool_specs(tool_registry):
+        prompt_text = spec.get("prompt") or ""
+        desc = spec.get("description") or ""
+        description = prompt_text if prompt_text else desc
         lines.append(f'<tool name="{spec["name"]}">')
-        if spec.get("description"):
-            lines.append(f"  <description>{spec['description']}</description>")
+        if description:
+            lines.append(f"  <description>{description}</description>")
         params = _param_rows(spec)
         if params:
             lines.append("  <parameters>")
@@ -106,9 +117,12 @@ def render_xml_tool_schema(tool_registry: Any) -> str:
 def render_minimax_tool_schema(tool_registry: Any) -> str:
     lines: List[str] = []
     for spec in _tool_specs(tool_registry):
+        prompt_text = spec.get("prompt") or ""
+        desc = spec.get("description") or ""
+        description = prompt_text if prompt_text else desc
         lines.append(f'<invoke name="{spec["name"]}">')
-        if spec.get("description"):
-            lines.append(f"  <description>{spec['description']}</description>")
+        if description:
+            lines.append(f"  <description>{description}</description>")
         for name, kind in _param_rows(spec):
             lines.append(f'  <parameter name="{name}" type="{kind}">value</parameter>')
         lines.append("</invoke>")
@@ -261,11 +275,91 @@ def _compose_prompt(
     return "\n\n".join(part for part in parts if part)
 
 
+_TOOL_USE_XML_CONTRACT = """Output contract — you MUST follow one of these two formats exactly:
+
+Format 1 — Tool call (use when you need to run a tool):
+<tool_use>
+<tool_name>the_tool_name_here</tool_name>
+<arguments>{"arg1": "value1", "arg2": "value2"}</arguments>
+</tool_use>
+
+Format 2 — Final answer (use when the task is complete and no more tools are needed):
+<final_answer>Your final answer text here</final_answer>
+
+Rules:
+- Always wrap tool calls inside <tool_use>...</tool_use> tags.
+- Always put the tool name inside <tool_name>...</tool_name> tags.
+- Always put the arguments as a JSON object inside <arguments>...</arguments> tags.
+- Do NOT put arguments directly after the tool name. Always use proper <tool_name> and <arguments> tags.
+- You may include a brief thought before the <tool_use> block.
+- Examples:
+
+<tool_use>
+<tool_name>bash_v2</tool_name>
+<arguments>{"command": "ls -la"}</arguments>
+</tool_use>
+
+<tool_use>
+<tool_name>glob_v2</tool_name>
+<arguments>{"pattern": "**/*.py"}</arguments>
+</tool_use>
+
+<tool_use>
+<tool_name>file_read_v2</tool_name>
+<arguments>{"path": "/tmp/test.py"}</arguments>
+</tool_use>"""
+
+
+_KIMI_CONTRACT = """Output contract — you MUST follow one of these two formats exactly:
+
+Format 1 — Tool call (use when you need to run a tool):
+<|tool_calls_section_begin|>
+<|tool_call_begin|> functions.tool_name:0 <|tool_call_argument_begin|> {"arg1": "value1", "arg2": "value2"} <|tool_call_end|>
+<|tool_calls_section_end|>
+
+Format 2 — Final answer (use when the task is complete and no more tools are needed):
+Respond with plain text. Do not include any <|tool_call|> markers.
+
+Rules:
+- Always wrap tool calls inside <|tool_calls_section_begin|> and <|tool_calls_section_end|> markers.
+- Each tool call starts with <|tool_call_begin|> followed by functions.tool_name:N where N is the call index.
+- Arguments must be a valid JSON object inside <|tool_call_argument_begin|> and before <|tool_call_end|>.
+- You may call multiple tools in a single response by adding more <|tool_call_begin|> blocks.
+- Examples:
+
+<|tool_calls_section_begin|>
+<|tool_call_begin|> functions.Bash:0 <|tool_call_argument_begin|> {"command": "ls -la"} <|tool_call_end|>
+<|tool_call_begin|> functions.Glob:1 <|tool_call_argument_begin|> {"pattern": "**/*.py"} <|tool_call_end|>
+<|tool_calls_section_end|>
+
+<|tool_calls_section_begin|>
+<|tool_call_begin|> functions.Read:0 <|tool_call_argument_begin|> {"file_path": "/tmp/test.py"} <|tool_call_end|>
+<|tool_calls_section_end|>"""
+
+
 def _react_prompt(base_prompt: str, tool_registry: Any) -> str:
     return _compose_prompt(
         base_prompt,
         tool_registry,
         contract=_REACT_CONTRACT,
+        renderer=render_react_tool_schema,
+    )
+
+
+def _tool_use_xml_prompt(base_prompt: str, tool_registry: Any) -> str:
+    return _compose_prompt(
+        base_prompt,
+        tool_registry,
+        contract=_TOOL_USE_XML_CONTRACT,
+        renderer=render_react_tool_schema,
+    )
+
+
+def _kimi_prompt(base_prompt: str, tool_registry: Any) -> str:
+    return _compose_prompt(
+        base_prompt,
+        tool_registry,
+        contract=_KIMI_CONTRACT,
         renderer=render_react_tool_schema,
     )
 
@@ -336,12 +430,14 @@ def _desktop_xml_prompt(base_prompt: str, tool_registry: Any) -> str:
 def _protocol_table() -> Dict[str, ModelProtocol]:
     from qitos.kit.parser import (
         JsonDecisionParser,
+        KimiToolCallParser,
         ReActTextParser,
         TerminusJsonParser,
         TerminusXmlParser,
         XmlDecisionParser,
     )
     from qitos.kit.parser.minimax_tool_call_parser import MiniMaxToolCallParser
+    from qitos.kit.parser.tool_use_parser import ToolUseXmlParser
 
     return {
         "react_text_v1": ModelProtocol(
@@ -363,6 +459,8 @@ def _protocol_table() -> Dict[str, ModelProtocol]:
             tool_schema_renderer=render_json_tool_schema,
             repair_renderer=_render_repair_message,
             continuation_renderer=_render_continuation_message,
+            tool_schema_delivery="hybrid",
+            supports_native_tool_call_markup=True,
         ),
         "xml_decision_v1": ModelProtocol(
             id="xml_decision_v1",
@@ -449,6 +547,33 @@ def _protocol_table() -> Dict[str, ModelProtocol]:
             supports_multi_action=False,
             fallback_protocols=("desktop_actions_json_v1", "xml_decision_v1"),
         ),
+        "kimi_tool_call_v1": ModelProtocol(
+            id="kimi_tool_call_v1",
+            display_name="Kimi Tool Call",
+            parser_factory=KimiToolCallParser,
+            prompt_renderer=_kimi_prompt,
+            contract_renderer=lambda _protocol: _render_simple_contract(_KIMI_CONTRACT),
+            tool_schema_renderer=render_react_tool_schema,
+            repair_renderer=_render_repair_message,
+            continuation_renderer=_render_continuation_message,
+            supports_multi_action=True,
+            supports_native_tool_call_markup=True,
+            fallback_protocols=("json_decision_v1", "react_text_v1"),
+        ),
+        "tool_use_xml_v1": ModelProtocol(
+            id="tool_use_xml_v1",
+            display_name="Tool Use XML",
+            parser_factory=ToolUseXmlParser,
+            prompt_renderer=_tool_use_xml_prompt,
+            contract_renderer=lambda _protocol: _render_simple_contract(
+                _TOOL_USE_XML_CONTRACT
+            ),
+            tool_schema_renderer=render_react_tool_schema,
+            repair_renderer=_render_repair_message,
+            continuation_renderer=_render_continuation_message,
+            supports_multi_action=True,
+            fallback_protocols=("json_decision_v1", "react_text_v1"),
+        ),
     }
 
 
@@ -482,6 +607,24 @@ def infer_protocol_from_parser(parser: Any) -> Optional[ModelProtocol]:
         if str(getattr(item.parser_factory(), "contract_id", "")) == contract:
             return item
     return None
+
+
+def parser_from_protocol(protocol_id: str) -> Optional[Any]:
+    """Create a parser instance from a protocol ID.
+
+    Uses the canonical protocol table as the single source of truth
+    for protocol-to-parser mapping.
+
+    :param protocol_id: Protocol identifier (e.g. "json_decision_v1").
+    :returns: Parser instance, or None if protocol not found.
+    """
+    proto = get_protocol(protocol_id)
+    if proto is None:
+        return None
+    try:
+        return proto.parser_factory()
+    except Exception:
+        return None
 
 
 def resolve_protocol_chain(primary: str | ModelProtocol | None) -> List[ModelProtocol]:

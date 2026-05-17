@@ -25,7 +25,6 @@ from .notebook import (
     InsertNotebookCell,
 )
 from .report import ReportToolSet
-from .security_audit import SecurityAuditToolSet, security_audit_tools
 from .terminal import SendTerminalKeys
 from .task import TaskToolSet, TaskBoardStore, TaskRecord, TaskNote
 from .cybench import SubmitAnswer
@@ -74,7 +73,6 @@ __all__ = [
     "ReplaceNotebookCell",
     "InsertNotebookCell",
     "ReportToolSet",
-    "SecurityAuditToolSet",
     "TaskToolSet",
     "TaskBoardStore",
     "TaskRecord",
@@ -109,5 +107,4 @@ __all__ = [
     "coding_tools",
     "task_tools",
     "report_tools",
-    "security_audit_tools",
 ]

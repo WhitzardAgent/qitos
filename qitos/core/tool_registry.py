@@ -198,6 +198,7 @@ class ToolRegistry:
         return {
             "name": tool.name,
             "description": tool.spec.description,
+            "prompt": tool.spec.prompt,
             "required_ops": list(tool.spec.required_ops),
             "input_schema": dict(tool.spec.input_schema or {}),
             "output_schema": dict(tool.spec.output_schema or {}),

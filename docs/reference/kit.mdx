@@ -50,7 +50,7 @@ Use this page as a capability map for QitOS authoring.
 - `advanced_coding_tools(...)` for a Claude-style coding preset
 - `web_tools()` for web research and extraction
 - `task_tools(...)` for persistent task-board workflows
-- `security_audit_tools(...)` for defensive repository review
+- explicit `qitos.kit.tool.experimental.security_research` imports for security research workflows
 - `thinking_tools()` for explicit thought-recording flows
 - `notebook_tools(...)`, `report_tools(...)`, and `epub_tools(...)` for narrower scenarios
 
@@ -544,14 +544,14 @@ def __init__(self, workspace_root: str = ".")
 Defensive repository-audit tools for entrypoint discovery, sink analysis, secret scanning, dependency checks, and finding synthesis.
 
 ```python
-from qitos.kit import SecurityAuditToolSet
+from qitos.kit.tool.experimental.security_research import SecurityAuditToolSet
 ```
 
 **Typical usage**
 
 ```python
 from qitos import ToolRegistry
-from qitos.kit import SecurityAuditToolSet
+from qitos.kit.tool.experimental.security_research import SecurityAuditToolSet
 
 registry = ToolRegistry()
 registry.register_toolset(

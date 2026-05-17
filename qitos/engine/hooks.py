@@ -31,6 +31,16 @@ class HookContext:
     ts: str = ""
 
 
+@dataclass
+class ToolHookContext(HookContext):
+    """Extended hook context for tool-level events (PreToolUse, PostToolUse, etc.)."""
+
+    tool_name: str = ""
+    tool_args: Dict[str, Any] = field(default_factory=dict)
+    tool_result: Any = None
+    permission_decision: Optional[str] = None
+
+
 class EngineHook:
     """Base engine hook with full lifecycle callbacks."""
 
@@ -87,6 +97,37 @@ class EngineHook:
     def on_recover(self, ctx: HookContext, engine: "Engine") -> None:
         pass
 
+    # Tool-level lifecycle (Claude Code PreToolUse / PostToolUse / PermissionDenied)
+    def on_before_tool_use(self, ctx: ToolHookContext, engine: "Engine") -> None:
+        """Called before a tool is executed (after permission check)."""
+        pass
+
+    def on_after_tool_use(self, ctx: ToolHookContext, engine: "Engine") -> None:
+        """Called after a tool has been executed."""
+        pass
+
+    def on_permission_denied(self, ctx: ToolHookContext, engine: "Engine") -> None:
+        """Called when a tool call is denied by the permission system."""
+        pass
+
+    # Context compaction (Claude Code PreCompact / PostCompact)
+    def on_before_compact(self, ctx: HookContext, engine: "Engine") -> None:
+        """Called before context compaction runs."""
+        pass
+
+    def on_after_compact(self, ctx: HookContext, engine: "Engine") -> None:
+        """Called after context compaction completes."""
+        pass
+
+    # Session lifecycle (Claude Code SessionStart / SessionEnd)
+    def on_session_start(self, ctx: HookContext, engine: "Engine") -> None:
+        """Called when an interactive session begins."""
+        pass
+
+    def on_session_end(self, ctx: HookContext, engine: "Engine") -> None:
+        """Called when an interactive session ends."""
+        pass
+
     # Compatibility/event stream callbacks
     def on_event(
         self,
@@ -103,4 +144,4 @@ class EngineHook:
         pass
 
 
-__all__ = ["EngineHook", "HookContext"]
+__all__ = ["EngineHook", "HookContext", "ToolHookContext"]

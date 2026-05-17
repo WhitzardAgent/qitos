@@ -1,5 +1,7 @@
 """Practical computer-use agent: visit a page, extract text, and write a report."""
 
+# This full application is scheduled to move to qitos-zoo and is not part of QitOS core examples.
+
 from __future__ import annotations
 
 import os

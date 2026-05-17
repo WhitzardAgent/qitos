@@ -12,10 +12,25 @@ Design Principles:
 import os
 import re
 from abc import ABC, abstractmethod
-from typing import Any, Callable, Dict, List, Optional, Type
+from dataclasses import dataclass, field
+from typing import Any, AsyncIterator, Callable, Dict, Iterator, List, Optional, Type
 
 from ..core.multimodal import content_to_text, normalize_messages
 from .context_registry import infer_context_window
+
+
+@dataclass
+class ModelStreamChunk:
+    """A single chunk from a streaming model response."""
+
+    text: str
+    done: bool = False
+    usage: Optional[Dict[str, Any]] = field(default=None)
+    tool_calls: Optional[List[Dict[str, Any]]] = field(default=None)
+
+    @property
+    def is_final(self) -> bool:
+        return self.done
 
 
 class Model(ABC):
@@ -111,6 +126,25 @@ class Model(ABC):
         Concrete adapters can override this to avoid flattening tool calls too early.
         """
         return self(messages, **kwargs)
+
+    def stream(self, messages: List[Dict[str, Any]], **kwargs: Any) -> Iterator[ModelStreamChunk]:
+        """
+        Stream model response as chunks.
+
+        The default implementation falls back to the non-streaming path,
+        yielding the full text as a single final chunk. Concrete adapters
+        should override this for real token-level streaming.
+
+        Args:
+            messages: OpenAI-style messages list
+            **kwargs: Additional model parameters
+
+        Yields:
+            ModelStreamChunk objects, with the final chunk having done=True
+        """
+        self._last_usage = None
+        text = self._call_api(messages, **kwargs)
+        yield ModelStreamChunk(text=text, done=True, usage=self._last_usage)
 
     def supports_tool_schema_delivery(
         self, delivery: str, protocol: Any = None
@@ -301,6 +335,25 @@ class AsyncModel(Model):
     async def acall(self, messages: List[Dict[str, Any]]) -> str:
         """Async call to model."""
         return await self._acall_api(messages)
+
+    async def astream(self, messages: List[Dict[str, Any]], **kwargs: Any) -> AsyncIterator[ModelStreamChunk]:
+        """
+        Async stream model response as chunks.
+
+        The default implementation falls back to the non-streaming path,
+        yielding the full text as a single final chunk. Concrete adapters
+        should override this for real token-level streaming.
+
+        Args:
+            messages: OpenAI-style messages list
+            **kwargs: Additional model parameters
+
+        Yields:
+            ModelStreamChunk objects, with the final chunk having done=True
+        """
+        self._last_usage = None
+        text = await self._acall_api(messages)
+        yield ModelStreamChunk(text=text, done=True, usage=self._last_usage)
 
 
 class ModelFactory:

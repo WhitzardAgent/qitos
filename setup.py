@@ -46,7 +46,16 @@ setup(
         "llm agents, ai agents, agent research, benchmark, reproducibility, "
         "trajectory analysis, coding agent, tool using agents, qita"
     ),
-    packages=find_packages(exclude=["tests*", "examples*", "templates*", "docs*"]),
+    packages=find_packages(
+        exclude=[
+            "tests*",
+            "examples*",
+            "templates*",
+            "docs*",
+            "plans*",
+            "qitos.examples*",
+        ]
+    ),
     python_requires=">=3.10",
     install_requires=[
         "requests>=2.31.0",

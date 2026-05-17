@@ -1,54 +1,21 @@
 # Examples
 
-`examples/` is organized as a small canonical learning path for QitOS.
+`examples/` is canonical learning material, not a product showcase.
 
-The mental model we want users to internalize is:
+The learning path is:
 
 ```text
 StateSchema -> prepare -> Engine/Model decide -> tool/env -> reduce -> trace/qita
 ```
 
-## Directory map
+## Directory Map
 
 - `examples/quickstart/`: the smallest runnable coding agent
-- `examples/patterns/`: one design axis per example (`react`, `planact`, `reflexion`, `tot`)
-- `examples/real/`: practical single-task agents that still follow the canonical authoring path
-- `examples/benchmarks/`: thin operational entrypoints that call the canonical `qitos.recipes` + `qitos.benchmark` layers
+- `examples/patterns/`: one design axis per example
+- `examples/real/`: minimal real agents only
+- `examples/benchmarks/`: thin wrappers over `qitos.recipes` and `qitos.benchmark`
 
-## What stays consistent
-
-All teaching-first examples follow the same shape:
-
-- top-level constants for task / workspace / model defaults
-- one explicit `StateSchema`
-- one `AgentModule`
-- direct model setup from environment variables or a family preset builder
-- one `agent.run(...)`
-- terminal UI and trace on by default
-
-Pattern examples change one design axis at a time.
-Real examples add capability on top of the same authoring path instead of inventing a different structure.
-
-## Two authoring paths
-
-QitOS intentionally keeps two equally valid authoring paths:
-
-- `Research-first`: handwrite the system prompt, parser, protocol, transport, and tool surface so you can study the kernel directly.
-- `Preset-first`: use family presets and preset tool builders when you want a stable baseline or fast multi-family switching.
-
-If you want the most torch-like, research-facing starting point, read:
-
-```bash
-python examples/real/research_harness_agent.py --protocol json_decision_v1
-```
-
-If you want the v0.4 multi-family showcase, read:
-
-```bash
-python examples/real/claude_code_agent.py --model-family qwen
-```
-
-## Recommended first run order
+## Recommended First Run Order
 
 ```bash
 export OPENAI_API_KEY="your_api_key"
@@ -56,36 +23,13 @@ qit demo minimal
 python examples/quickstart/minimal_agent.py
 python examples/patterns/react.py
 python examples/patterns/planact.py
-python examples/real/research_harness_agent.py
-python examples/real/coding_agent.py
-python examples/real/claude_code_agent.py
-python examples/real/code_security_audit_agent.py
-```
-
-Then continue with:
-
-```bash
 python examples/patterns/reflexion.py
 python examples/patterns/tot.py
-python examples/real/swe_agent.py
-python examples/real/computer_use_agent.py
-python examples/real/openai_cua_agent.py
-python examples/real/epub_reader_agent.py
+python examples/real/research_harness_agent.py
+python examples/real/coding_agent.py
 ```
 
-If you want the same ReAct shape but with built-in context compaction:
-
-```bash
-python examples/real/react_compact_agent.py
-```
-
-## Benchmark runners
-
-Benchmark/eval entrypoints live under `examples/benchmarks/`.
-They are now intentionally thin wrappers over the canonical recipe and benchmark-family code in:
-
-- `qitos.benchmark.*`
-- `qitos.recipes.benchmarks.*`
+Benchmark wrappers:
 
 ```bash
 python examples/benchmarks/gaia_eval.py --help
@@ -93,53 +37,20 @@ python examples/benchmarks/tau_bench_eval.py --help
 python examples/benchmarks/cybench_eval.py --help
 ```
 
-## Required environment variables
+## Examples Policy
 
-The minimal demo and all model-backed examples below require an API key. Never commit API keys.
+- One concept per file.
+- No heavy hidden dependencies.
+- No local absolute paths.
+- No product clone as a canonical example.
+- Benchmark wrappers call framework recipes/adapters and do not own canonical logic.
+- Security-sensitive workflows are opt-in and not part of the quickstart.
 
-```bash
-export OPENAI_BASE_URL="https://api.siliconflow.cn/v1/"
-export OPENAI_API_KEY="your_api_key"
-```
+## Full Applications
 
-Optional:
+Full applications live in `qitos-zoo`, including:
 
-```bash
-export QITOS_MODEL_FAMILY="qwen"
-export QITOS_MODEL="Qwen/Qwen3-8B"
-```
+- `qitos-coder`: a Claude Code-inspired coding agent built with QitOS.
+- `qitos-cyber-agent`: a PentAGI-inspired cybersecurity agent built with QitOS.
 
-For the v0.4 flagship example, the recommended path is now preset-first:
-
-```bash
-python examples/real/claude_code_agent.py \
-  --model-family kimi \
-  --model-name kimi-k2-0905-preview \
-  --base-url https://api.moonshot.ai/v1
-```
-
-For Qwen-family testing, `qwen-plus` is now the recommended native tool-call path:
-
-```bash
-export OPENAI_BASE_URL="https://dashscope.aliyuncs.com/compatible-mode/v1"
-python examples/real/claude_code_agent.py \
-  --model-family qwen \
-  --model-name qwen-plus \
-  --print-harness
-```
-
-## Notes
-
-- `examples/quickstart/minimal_agent.py` now wraps the packaged `qit demo minimal` flow, so the README quickstart and example path stay aligned around the same minimal coding agent.
-- `examples/real/epub_reader_agent.py` expects a local EPUB at `./playground/epub_reader_agent/book.epub`.
-- `examples/real/code_security_audit_agent.py` shows the new composition-first path: pass `toolset=[...]` and let QiTOS flatten `SecurityAuditToolSet + CodingToolSet + TaskToolSet` automatically.
-- `examples/real/react_compact_agent.py` shows the smallest opt-in path for `CompactHistory`: keep the same agent shape and only swap the history preset.
-- `examples/real/openai_cua_agent.py` is now a thin public entrypoint for the canonical desktop recipe in `/Users/morinop/coding/yoga_framework/qitos/recipes/desktop/osworld_starter.py`.
-- `qitos/recipes/desktop/osworld_starter.py` is the real reusable baseline method: examples, benchmark runners, and docs now share this one implementation.
-- `examples/benchmarks/*.py` no longer own canonical benchmark logic; GAIA, Tau-Bench, and CyBench now route through `qitos.benchmark` families plus `qitos.recipes.benchmarks` baselines.
-- `examples/real/desktop_env_smoke.py` is the smallest deterministic loop for `DesktopEnv + computer_use_tools()`.
-- `examples/real/research_harness_agent.py` is the bare research-first authoring path: handwritten system prompt, parser, protocol, transport, and manual tool surface.
-- `examples/real/claude_code_agent.py` is the fuller Claude Code-style coding example and now doubles as the v0.4 multi-family preset showcase, including the Qwen native tool-call lane.
-- `examples/real/whitzard_agent.py` is the long-running defensive audit example and now supports the same family-preset switching path, so you can keep the Whitzard workflow while changing the model family and harness.
-- `examples/real/skillhub_github_agent.py` is an advanced third-party skill example. Read it after the core canonical path.
-- benchmark runners may require dataset download or local benchmark assets before full runs.
+Some product-like files remain temporarily in `examples/real/` with migration banners while the zoo repository is seeded from `plans/qitos_zoo_migration/`.

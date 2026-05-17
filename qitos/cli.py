@@ -27,6 +27,17 @@ from qitos.qita._cli_app import _cmd_replay as qita_replay
 
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
+    if args and args[0] in {"-h", "--help"}:
+        parser = argparse.ArgumentParser(
+            prog="qit", description="QitOS CLI for demos, benchmarks, and developer workflows"
+        )
+        subparsers = parser.add_subparsers(dest="command")
+        subparsers.add_parser("demo", help="Run packaged demos and quickstarts")
+        subparsers.add_parser("skill", help="Manage third-party skills")
+        subparsers.add_parser("bench", help="Unified benchmark CLI")
+        subparsers.add_parser("experiment", help="Run parameter-sweep experiments")
+        parser.print_help()
+        return 0
     if args:
         command = args[0]
         remaining = args[1:]
@@ -36,6 +47,8 @@ def main(argv: list[str] | None = None) -> int:
             return skill_main(remaining)
         if command == "bench":
             return _bench_main(remaining)
+        if command == "experiment":
+            return _experiment_main(remaining)
     parser = argparse.ArgumentParser(
         prog="qit", description="QitOS CLI for demos, benchmarks, and developer workflows"
     )
@@ -43,6 +56,7 @@ def main(argv: list[str] | None = None) -> int:
     subparsers.add_parser("demo", help="Run packaged demos and quickstarts")
     subparsers.add_parser("skill", help="Manage third-party skills")
     subparsers.add_parser("bench", help="Unified benchmark CLI")
+    subparsers.add_parser("experiment", help="Run parameter-sweep experiments")
     parser.print_help()
     return 1
 
@@ -230,6 +244,96 @@ def _bench_replay(args: argparse.Namespace) -> int:
 
 def _bench_export(args: argparse.Namespace) -> int:
     return qita_export(run=str(args.run), html_path=str(args.html))
+
+
+def _experiment_main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog="qit experiment", description="QitOS experiment runner"
+    )
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    p_run = sub.add_parser("run", help="Run an experiment from a YAML config")
+    p_run.add_argument("--config", required=True, help="Path to experiment YAML config")
+    p_run.add_argument("--output", default="./runs/experiments", help="Output directory")
+    p_run.add_argument("--cache", choices=["memory", "disk"], default=None, help="Cache backend")
+    p_run.add_argument("--cache-dir", default="./runs/cache", help="Cache directory (disk backend)")
+    p_run.add_argument("--concurrency", type=int, default=1, help="Parallel tasks")
+    p_run.add_argument("--resume", action="store_true", help="Skip completed tasks")
+    p_run.add_argument("--agent-module", default=None, help="Dotted path to AgentModule subclass")
+
+    args = parser.parse_args(argv)
+    if args.command == "run":
+        return _experiment_run(args)
+    return 1
+
+
+def _experiment_run(args: argparse.Namespace) -> int:
+    from qitos.config.loader import load_agent_config
+    from qitos.experiment import ExperimentRunner, SweepSpec
+    from qitos.experiment.sweep import sweep_product
+    from qitos.core.spec import ExperimentSpec
+
+    config = load_agent_config(args.config)
+
+    # Parse sweep from config metadata if present
+    sweep = SweepSpec()
+    sweep_raw = config.metadata.get("sweep", {})
+    if sweep_raw and isinstance(sweep_raw, dict):
+        sweep = SweepSpec(params=sweep_raw)
+
+    experiment_spec = ExperimentSpec(
+        name=config.name,
+        benchmark_name=config.metadata.get("benchmark"),
+        benchmark_split=config.metadata.get("split"),
+        metadata=config.metadata,
+    )
+
+    # Build cache config
+    cache_config = None
+    if args.cache == "disk":
+        cache_config = {"backend": "disk", "dir": args.cache_dir}
+    elif args.cache == "memory":
+        cache_config = {"backend": "memory"}
+
+    # Build checkpoint config from metadata
+    checkpoint_config = None
+    cp_raw = config.metadata.get("checkpoint", {})
+    if cp_raw and isinstance(cp_raw, dict):
+        checkpoint_config = cp_raw
+
+    # Resolve agent module
+    agent = None
+    if args.agent_module:
+        import importlib
+
+        parts = args.agent_module.rsplit(".", 1)
+        if len(parts) == 2:
+            module = importlib.import_module(parts[0])
+            agent_cls = getattr(module, parts[1], None)
+            if agent_cls is not None:
+                agent = agent_cls()
+    if agent is None:
+        print(
+            "Warning: No --agent-module provided. "
+            "ExperimentRunner requires an agent to run tasks.",
+            file=sys.stderr,
+        )
+        return 1
+
+    runner = ExperimentRunner(
+        agent=agent,
+        config=config,
+        sweep=sweep,
+        experiment_spec=experiment_spec,
+        cache_config=cache_config,
+        checkpoint_config=checkpoint_config,
+        concurrency=args.concurrency,
+        resume=args.resume,
+        output_dir=args.output,
+    )
+    result = runner.run()
+    print(json.dumps(result.to_dict(), ensure_ascii=False, indent=2))
+    return 0
 
 
 if __name__ == "__main__":

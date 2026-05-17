@@ -27,6 +27,7 @@ class _ContextRuntime:
         self.warning_count = 0
         self.compact_counts: Dict[str, int] = {}
         self.last_request: Optional[ContextTelemetry] = None
+        self.reactive_compact_attempts = 0
 
     def apply_config(self, config: ContextConfig | Dict[str, Any] | None) -> None:
         if config is None:

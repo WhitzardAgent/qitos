@@ -13,7 +13,8 @@ from qitos.core import TerminalCapability
 from qitos.harness import build_harness_policy
 from qitos.kit import CompactHistory
 from qitos.core.tool_registry import ToolRegistry
-from qitos.kit import SecurityAuditToolSet, TmuxEnv
+from qitos.kit import TmuxEnv
+from qitos.kit.tool.experimental.security_research import SecurityAuditToolSet
 
 
 class FakeTerminal(TerminalCapability):

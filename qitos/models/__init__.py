@@ -25,7 +25,7 @@ Usage:
     llm = ModelFactory.from_env()
 """
 
-from .base import Model, AsyncModel, ModelFactory
+from .base import Model, AsyncModel, ModelFactory, ModelStreamChunk
 from .context_registry import infer_context_window
 from .profile_registry import (
     ModelProfile,
@@ -50,6 +50,7 @@ __all__ = [
     "Model",
     "AsyncModel",
     "ModelFactory",
+    "ModelStreamChunk",
     "infer_context_window",
     "ModelProfile",
     "infer_model_profile",

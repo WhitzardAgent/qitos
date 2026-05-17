@@ -107,7 +107,7 @@ This is why traces stay understandable instead of collapsing into provider-speci
 
 QitOS gives you reusable authoring blocks instead of forcing every agent to rebuild the same wiring.
 
-- preset tool bundles such as `coding_tools(...)`, `advanced_coding_tools(...)`, `web_tools()`, `task_tools(...)`, and `security_audit_tools(...)`
+- preset tool bundles such as `coding_tools(...)`, `advanced_coding_tools(...)`, `web_tools()`, and `task_tools(...)`
 - reusable memory adapters such as `WindowMemory`, `SummaryMemory`, `VectorMemory`, and `MarkdownFileMemory`
 - reusable history strategies such as `WindowHistory`, `TokenBudgetSummaryHistory`, and `CompactHistory`
 - reusable planners such as `NumberedPlanBuilder` and `DynamicTreeSearch`
@@ -143,7 +143,7 @@ This trace-first design is why the same kernel works well for experiments, bench
 
 One of the strongest design features in QitOS is that domain agents are still ordinary QitOS agents — they do not need a separate runtime.
 
-The Claude Code-style agent, benchmark runners, and the code security audit agent all reuse the same runtime. Domain behavior is expressed through:
+Product-style agents, benchmark runners, and domain agents all reuse the same runtime. Full product applications belong in `qitos-zoo`; domain behavior is expressed through:
 
 - state design
 - prompt policy

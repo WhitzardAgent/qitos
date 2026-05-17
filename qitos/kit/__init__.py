@@ -1,7 +1,6 @@
 """Curated practical building blocks for common QiTOS agent authoring."""
 
 import importlib
-from .agent import SecurityAuditAgent, SecurityAuditState, default_security_audit_phase_engine
 from .critic import ReActSelfReflectionCritic
 from .env import (
     ContainerDesktopProvider,
@@ -46,7 +45,6 @@ from .prompts import (
     PLAN_DRAFT_PROMPT,
     PLAN_EXEC_SYSTEM_PROMPT,
     REACT_SYSTEM_PROMPT,
-    SECURITY_AUDIT_SYSTEM_PROMPT,
     SWE_AGENT_SYSTEM_PROMPT,
     TERMINUS_JSON_SYSTEM_PROMPT,
     TERMINUS_TIMEOUT_PROMPT,
@@ -63,13 +61,15 @@ from .tool import (
     HTTPGet,
     ReportToolSet,
     SendTerminalKeys,
-    SecurityAuditToolSet,
     TaskToolSet,
     WorkspaceAwareMixin,
-    security_audit_tools,
 )
-from .toolset import codebase_tools, coding_tools, editor_tools, report_tools, toolset_from_tools
-from .toolset import ComputerUseToolSet, computer_use_tools
+from .tool.toolset import toolset_from_tools
+from .toolset.codebase import codebase_tools
+from .toolset.coding import coding_tools
+from .toolset.computer_use import ComputerUseToolSet, computer_use_tools
+from .toolset.editor import editor_tools
+from .toolset.report import report_tools
 from .patterns import (
     ManagerWorkerConfig,
     build_manager_worker_system,
@@ -90,6 +90,7 @@ _LAZY_MODULE_EXPORTS = {
     "parser",
     "planning",
     "prompts",
+    "repl",
     "state",
     "tool",
     "toolset",
@@ -114,6 +115,7 @@ __all__ = [
     "parser",
     "planning",
     "prompts",
+    "repl",
     "state",
     "tool",
     "toolset",
@@ -134,7 +136,6 @@ __all__ = [
     "COMPUTER_USE_A11Y_SYSTEM_PROMPT",
     "COMPUTER_USE_SCREENSHOT_A11Y_SYSTEM_PROMPT",
     "SWE_AGENT_SYSTEM_PROMPT",
-    "SECURITY_AUDIT_SYSTEM_PROMPT",
     "TERMINUS_JSON_SYSTEM_PROMPT",
     "TERMINUS_XML_SYSTEM_PROMPT",
     "TERMINUS_TIMEOUT_PROMPT",
@@ -144,10 +145,6 @@ __all__ = [
     "CodingToolSet",
     "ComputerUseToolSet",
     "SendTerminalKeys",
-    "SecurityAuditToolSet",
-    "SecurityAuditAgent",
-    "SecurityAuditState",
-    "default_security_audit_phase_engine",
     "HTTPGet",
     "HTMLExtractText",
     "ReportToolSet",
@@ -160,7 +157,6 @@ __all__ = [
     "editor_tools",
     "codebase_tools",
     "report_tools",
-    "security_audit_tools",
     "MarkdownFileMemory",
     "WindowMemory",
     "MemdirMemory",
