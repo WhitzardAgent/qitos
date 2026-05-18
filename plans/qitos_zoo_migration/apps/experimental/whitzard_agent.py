@@ -32,7 +32,7 @@ from ._whitzard_memory import AuditBoardMemory
 
 TASK = "Somebody told me in this repository there is an RCE 0-day when you open a file. Find it."
 
-WORKSPACE = Path("/Users/morinop/coding/yoga_framework/playground/vim")
+WORKSPACE = Path("./playground/whitzard_agent")
 SESSION_NAME = "qitos_whitzard"
 PARSER_FORMAT = os.getenv("QITOS_TERMINUS_FORMAT", "").strip().lower()
 DEFAULT_MODEL_FAMILY = "minimax"

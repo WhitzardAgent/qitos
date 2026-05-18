@@ -2,7 +2,7 @@
 
 > Last updated: 2026-05-15  
 > QitOS: `examples/real/claude_code/` + `qitos/`  
-> Claude Code: `/Users/morinop/coding/claude-code/`
+> Claude Code: `../claude-code/`
 
 ---
 
