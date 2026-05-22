@@ -10,7 +10,7 @@ from examples.patterns.planact import PlanActAgent
 from examples.patterns.react import ReactAgent
 from examples.patterns.reflexion import ReflexionAgent
 from examples.patterns.tot import ToTAgent
-from examples.real.claude_code_agent import ClaudeCodeAgent
+from qitos_zoo.qitos_coder.preset_agent import ClaudeCodeAgent
 from examples.real.code_security_audit_agent import CodeSecurityAuditAgent
 from examples.real.coding_agent import CodingMemoryReactAgent
 from examples.real.computer_use_agent import ComputerUseReActAgent

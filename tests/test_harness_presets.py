@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 from examples._support import SequenceModel
-from examples.real.claude_code_agent import ClaudeCodeAgent, _resolve_runtime_config
+from qitos_zoo.qitos_coder.preset_agent import ClaudeCodeAgent, _resolve_runtime_config
 from qitos import HistoryPolicy
 from qitos.harness import (
     build_harness_policy,

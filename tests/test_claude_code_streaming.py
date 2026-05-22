@@ -224,27 +224,27 @@ class TestStepStreamEventType:
 
 class TestClaudeCodeAgent:
     def test_import(self):
-        from examples.real.claude_code import ClaudeCodeAgent, ClaudeCodeState
+        from qitos_zoo.qitos_coder import ClaudeCodeAgent, ClaudeCodeState
 
         assert ClaudeCodeAgent is not None
         assert ClaudeCodeState is not None
 
     def test_state_defaults(self):
-        from examples.real.claude_code.agent import ClaudeCodeState
+        from qitos_zoo.qitos_coder.agent import ClaudeCodeState
 
         state = ClaudeCodeState()
         assert state.mode == "default"
         assert state.plan_mode is False
 
     def test_state_plan_mode(self):
-        from examples.real.claude_code.agent import ClaudeCodeState
+        from qitos_zoo.qitos_coder.agent import ClaudeCodeState
 
         state = ClaudeCodeState(mode="plan", plan_mode=True)
         assert state.plan_mode is True
         assert state.mode == "plan"
 
     def test_init_state(self):
-        from examples.real.claude_code.agent import ClaudeCodeAgent, ClaudeCodeState
+        from qitos_zoo.qitos_coder.agent import ClaudeCodeAgent, ClaudeCodeState
 
         model = _DummyModel(model="test")
         agent = ClaudeCodeAgent(llm=model, workspace_root=".")
@@ -254,7 +254,7 @@ class TestClaudeCodeAgent:
         assert state.plan_mode is False
 
     def test_init_state_plan_mode(self):
-        from examples.real.claude_code.agent import ClaudeCodeAgent, ClaudeCodeState
+        from qitos_zoo.qitos_coder.agent import ClaudeCodeAgent, ClaudeCodeState
 
         model = _DummyModel(model="test")
         agent = ClaudeCodeAgent(
@@ -264,7 +264,7 @@ class TestClaudeCodeAgent:
         assert state.plan_mode is True
 
     def test_build_system_prompt(self):
-        from examples.real.claude_code.agent import ClaudeCodeAgent, ClaudeCodeState
+        from qitos_zoo.qitos_coder.agent import ClaudeCodeAgent, ClaudeCodeState
 
         model = _DummyModel(model="test")
         agent = ClaudeCodeAgent(llm=model, workspace_root=".")
@@ -274,7 +274,7 @@ class TestClaudeCodeAgent:
         assert "Environment" in prompt  # context section from qitos.kit.context
 
     def test_build_system_prompt_plan_mode(self):
-        from examples.real.claude_code.agent import ClaudeCodeAgent, ClaudeCodeState
+        from qitos_zoo.qitos_coder.agent import ClaudeCodeAgent, ClaudeCodeState
 
         model = _DummyModel(model="test")
         agent = ClaudeCodeAgent(llm=model, workspace_root=".")
