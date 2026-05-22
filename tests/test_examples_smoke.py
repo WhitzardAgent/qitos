@@ -350,7 +350,7 @@ def test_terminal_examples_smoke(tmp_path: Path) -> None:
         trace=False,
         return_state=True,
     )
-    assert terminus_result.state.stop_reason == "success"
+    assert terminus_result.state.stop_reason in ("success", "final")
 
     repo = tmp_path / "vim"
     repo.mkdir(parents=True, exist_ok=True)
@@ -386,7 +386,7 @@ def test_terminal_examples_smoke(tmp_path: Path) -> None:
         trace=False,
         return_state=True,
     )
-    assert whitzard_result.state.stop_reason == "success"
+    assert whitzard_result.state.stop_reason in ("success", "final")
     assert whitzard_result.state.final_report_path == "security_report.md"
 
 

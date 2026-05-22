@@ -774,6 +774,43 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
         if native_decision is not None:
             return native_decision
         parser_input = response.text if response is not None else raw_decision
+
+        # When native tool calling is preferred and the model returned plain
+        # text without tool_calls, treat it as a final answer — the model is
+        # done acting and is giving its summary/conclusion in natural language.
+        # Parsers (especially json_decision_v1) will misinterpret natural
+        # language as invalid JSON and return wait(), which causes the agent
+        # to loop forever without ever producing a final result.
+        is_native_text_response = (
+            response is not None
+            and self._native_tool_call_preferred()
+            and not (isinstance(response.tool_calls, list) and response.tool_calls)
+            and str(response.text or "").strip()
+        )
+
+        if is_native_text_response:
+            # Still try the parser chain first — if the model happened to
+            # produce valid structured output (JSON with a final_answer, or
+            # ReAct "Final Answer:" label), let the parser extract it.
+            parse_outcome = self._parse_with_protocol_chain(
+                parser_input=parser_input,
+                step=step,
+                record=record,
+            )
+            # If the parser produced a *productive* decision (act or final),
+            # honour it. But if the parser could only produce wait() — which
+            # is the default fallback when natural language can't be parsed as
+            # JSON — override it with native_text_final.
+            if parse_outcome is not None and parse_outcome.mode != "wait":
+                return parse_outcome
+
+            if record is not None:
+                record.decision_source = "native_text_final"
+            return Decision.final(
+                answer=str(response.text).strip(),
+                meta={"decision_source": "native_text_final"},
+            )
+
         parse_outcome = self._parse_with_protocol_chain(
             parser_input=parser_input,
             step=step,
@@ -781,23 +818,6 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
         )
         if parse_outcome is not None:
             return parse_outcome
-
-        # When native tool calling is preferred and the model returned plain
-        # text after tool calls, prefer normal parsers first so ReAct-style
-        # "Final Answer:" labels are stripped. If no parser can handle the
-        # text, fall back to treating it as the final answer.
-        if (
-            response is not None
-            and self._native_tool_call_preferred()
-            and not (isinstance(response.tool_calls, list) and response.tool_calls)
-            and str(response.text or "").strip()
-        ):
-            if record is not None:
-                record.decision_source = "native_text_final"
-            return Decision.final(
-                answer=str(response.text).strip(),
-                meta={"decision_source": "native_text_final"},
-            )
 
         raise ValueError(
             "Agent.decide must return Decision when no parser is configured"

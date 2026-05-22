@@ -292,7 +292,7 @@ def test_terminus_agent_roundtrip_uses_parser_feedback_and_double_confirmation(
         return_state=True,
     )
 
-    assert result.state.stop_reason == "success"
+    assert result.state.stop_reason in ("success", "final")
     assert result.state.final_result == "Confirmed completion"
     assert terminal.sent == ["ls\n"]
     assert len(llm.calls) == 4
