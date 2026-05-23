@@ -61,6 +61,7 @@ def build_model_for_preset(
     timeout: int = 60,
     system_prompt: str | None = None,
     context_window: int | None = None,
+    default_request_kwargs: dict[str, Any] | None = None,
 ) -> Any:
     harness = build_harness_policy(
         model_name=model_name,
@@ -79,6 +80,7 @@ def build_model_for_preset(
         timeout=timeout,
         system_prompt=system_prompt,
         context_window=context_window,
+        default_request_kwargs=default_request_kwargs,
     )
     metadata = dict(getattr(llm, "qitos_harness_metadata", {}) or {})
     metadata.update(harness.to_dict())

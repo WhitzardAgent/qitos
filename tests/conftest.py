@@ -15,6 +15,13 @@ ROOT_STR = str(ROOT)
 if ROOT_STR not in sys.path:
     sys.path.insert(0, ROOT_STR)
 
+# Add qitos_zoo root so `from qitos_zoo.qitos_coder import ...` works.
+# The qitos_zoo/ package lives under the project root, which is already on sys.path.
+# This entry is kept as a safety net for cases where ROOT is not yet on sys.path.
+ZOO_ROOT = str(ROOT / "qitos_zoo")
+if ZOO_ROOT not in sys.path and ROOT_STR not in sys.path:
+    sys.path.insert(0, ZOO_ROOT)
+
 
 def _loopback_bind_available() -> bool:
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)

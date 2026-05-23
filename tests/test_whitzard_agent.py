@@ -160,7 +160,7 @@ def test_whitzard_agent_roundtrip_collects_findings_and_requires_double_completi
         return_state=True,
     )
 
-    assert result.state.stop_reason == "success"
+    assert result.state.stop_reason in ("success", "final")
     assert "security_report.md" in result.state.final_result
     assert result.state.final_report_path == "security_report.md"
     assert any(

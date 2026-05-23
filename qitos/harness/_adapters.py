@@ -56,6 +56,7 @@ class OpenAICompatibleAdapter(ModelAdapter):
         timeout = _coerce_int(kwargs.get("timeout"), 60)
         system_prompt = kwargs.get("system_prompt")
         context_window = kwargs.get("context_window")
+        default_request_kwargs = kwargs.get("default_request_kwargs")
         if not isinstance(preset, FamilyPreset):
             raise TypeError("preset must be a FamilyPreset")
         if not isinstance(model_name, str):
@@ -79,6 +80,7 @@ class OpenAICompatibleAdapter(ModelAdapter):
                     else None
                 ),
             ),
+            default_request_kwargs=dict(default_request_kwargs) if isinstance(default_request_kwargs, dict) else None,
         )
         setattr(
             llm,

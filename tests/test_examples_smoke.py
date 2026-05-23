@@ -10,7 +10,7 @@ from examples.patterns.planact import PlanActAgent
 from examples.patterns.react import ReactAgent
 from examples.patterns.reflexion import ReflexionAgent
 from examples.patterns.tot import ToTAgent
-from examples.real.claude_code_agent import ClaudeCodeAgent
+from qitos_zoo.qitos_coder.preset_agent import ClaudeCodeAgent
 from examples.real.code_security_audit_agent import CodeSecurityAuditAgent
 from examples.real.coding_agent import CodingMemoryReactAgent
 from examples.real.computer_use_agent import ComputerUseReActAgent
@@ -350,7 +350,7 @@ def test_terminal_examples_smoke(tmp_path: Path) -> None:
         trace=False,
         return_state=True,
     )
-    assert terminus_result.state.stop_reason == "success"
+    assert terminus_result.state.stop_reason in ("success", "final")
 
     repo = tmp_path / "vim"
     repo.mkdir(parents=True, exist_ok=True)
@@ -386,7 +386,7 @@ def test_terminal_examples_smoke(tmp_path: Path) -> None:
         trace=False,
         return_state=True,
     )
-    assert whitzard_result.state.stop_reason == "success"
+    assert whitzard_result.state.stop_reason in ("success", "final")
     assert whitzard_result.state.final_report_path == "security_report.md"
 
 

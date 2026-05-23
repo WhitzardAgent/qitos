@@ -46,7 +46,7 @@ def test_examples_readme_does_not_recommend_zoo_candidates_first() -> None:
         assert rel not in first_run
     assert "qitos-zoo" in readme
     assert "qitos-coder" in readme
-    assert "qitos-cyber-agent" in readme
+    assert "qitos-cyber" in readme or "qitos_cyber" in readme
 
 
 def test_zoo_candidates_have_migration_banner() -> None:

@@ -1,0 +1,3 @@
+[submodule "qitos_zoo"]
+	path = qitos_zoo
+	url = https://github.com/Qitor/qitos-zoo.git

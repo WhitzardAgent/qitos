@@ -19,6 +19,23 @@ from ..core.multimodal import (
 from .base import Model, ModelStreamChunk
 
 
+def _relocate_chat_template_kwargs(kwargs: Dict[str, Any]) -> Dict[str, Any]:
+    """Move ``chat_template_kwargs`` from top-level kwargs into ``extra_body``.
+
+    The OpenAI Python SDK does not accept ``chat_template_kwargs`` as a
+    top-level parameter.  vLLM-compatible serving endpoints expect it inside
+    ``extra_body`` instead.  Calling code that merges ``default_request_kwargs``
+    often places it at the top level, so we relocate it here.
+    """
+    result = dict(kwargs)
+    ctk = result.pop("chat_template_kwargs", None)
+    if isinstance(ctk, dict) and ctk:
+        extra_body = dict(result.pop("extra_body", None) or {})
+        extra_body["chat_template_kwargs"] = ctk
+        result["extra_body"] = extra_body
+    return result
+
+
 def _to_openai_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     normalized = normalize_messages(messages)
     out: List[Dict[str, Any]] = []
@@ -114,6 +131,7 @@ class OpenAIModel(Model):
         max_tokens: int = 2048,
         timeout: int = 60,
         context_window: Optional[int] = None,
+        default_request_kwargs: Optional[Dict[str, Any]] = None,
     ):
         """
         Initialize OpenAI model
@@ -127,6 +145,7 @@ class OpenAIModel(Model):
             max_tokens: Maximum output token count
             timeout: Request timeout (seconds)
             context_window: Total model context window
+            default_request_kwargs: Extra kwargs merged into every API call
         """
         super().__init__(
             model=model,
@@ -141,6 +160,7 @@ class OpenAIModel(Model):
             "OPENAI_BASE_URL", "https://api.openai.com/v1"
         )
         self.timeout = timeout
+        self.default_request_kwargs = default_request_kwargs or {}
 
         if not self.api_key:
             raise ValueError(
@@ -198,12 +218,13 @@ class OpenAIModel(Model):
     def _chat_completion(
         self, client: Any, messages: List[Dict[str, Any]], **kwargs: Any
     ) -> Any:
+        safe_kwargs = _relocate_chat_template_kwargs(kwargs)
         response = client.chat.completions.create(
             model=self.model,
             messages=cast(Any, _to_openai_messages(messages)),
             temperature=self.temperature,
             max_tokens=self.max_tokens,
-            **kwargs,
+            **safe_kwargs,
         )
         self._set_last_usage(self._usage_from_response(response))
         return response
@@ -396,6 +417,7 @@ class OpenAICompatibleModel(Model):
         max_tokens: int = 2048,
         timeout: int = 60,
         context_window: Optional[int] = None,
+        default_request_kwargs: Optional[Dict[str, Any]] = None,
     ):
         """
         Initialize compatible model
@@ -409,6 +431,8 @@ class OpenAICompatibleModel(Model):
             max_tokens: Maximum output token count
             timeout: Request timeout
             context_window: Total model context window
+            default_request_kwargs: Extra kwargs merged into every API call
+                (e.g. {"chat_template_kwargs": {"thinking": True}})
         """
         super().__init__(
             model=model,
@@ -421,6 +445,7 @@ class OpenAICompatibleModel(Model):
         self.api_key = api_key or os.getenv("OPENAI_API_KEY") or "dummy-key"
         self.base_url = base_url or os.getenv("OPENAI_BASE_URL", "")
         self.timeout = timeout
+        self.default_request_kwargs = default_request_kwargs or {}
 
         if not self.base_url:
             raise ValueError(
@@ -529,12 +554,13 @@ class OpenAICompatibleModel(Model):
     def _chat_completion(
         self, client: Any, messages: List[Dict[str, Any]], **kwargs: Any
     ) -> Any:
+        safe_kwargs = _relocate_chat_template_kwargs(kwargs)
         response = client.chat.completions.create(
             model=self.model,
             messages=cast(Any, _to_openai_messages(messages)),
             temperature=self.temperature,
             max_tokens=self.max_tokens,
-            **kwargs,
+            **safe_kwargs,
         )
         self._set_last_usage(self._usage_from_response(response))
         return response

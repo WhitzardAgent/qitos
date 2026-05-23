@@ -39,6 +39,8 @@ _PRESETS: tuple[FamilyPreset, ...] = (
         tool_policy=ToolPolicy(
             primary_delivery="api_parameter",
             fallback_delivery="prompt_injection",
+            native_tool_call_preferred=True,
+            notes="Kimi K2 supports native OpenAI-compatible tool calls.",
         ),
         context_policy=ContextPolicy(
             context_window_hint=128_000,
@@ -159,6 +161,8 @@ _PRESETS: tuple[FamilyPreset, ...] = (
         tool_policy=ToolPolicy(
             primary_delivery="api_parameter",
             fallback_delivery="prompt_injection",
+            native_tool_call_preferred=True,
+            notes="DeepSeek V4 supports native OpenAI-compatible tool calls.",
         ),
         context_policy=ContextPolicy(context_window_hint=128_000),
         notes="DeepSeek models work best with JSON decision protocol, falling back to tool_use_xml for models that emit XML.",
@@ -169,11 +173,13 @@ _PRESETS: tuple[FamilyPreset, ...] = (
         display_name="GLM",
         model_matchers=("glm", "chatglm"),
         adapter_kind="openai-compatible",
-        default_protocol="tool_use_xml_v1",
-        fallback_protocols=("xml_decision_v1", "json_decision_v1", "react_text_v1"),
+        default_protocol="json_decision_v1",
+        fallback_protocols=("xml_decision_v1", "tool_use_xml_v1", "react_text_v1"),
         tool_policy=ToolPolicy(
-            primary_delivery="prompt_injection",
-            fallback_delivery="api_parameter",
+            primary_delivery="api_parameter",
+            fallback_delivery="prompt_injection",
+            native_tool_call_preferred=True,
+            notes="GLM-5.x supports native OpenAI-compatible tool calls when served with tool support.",
         ),
         context_policy=ContextPolicy(context_window_hint=128_000),
         notes="GLM models emit <tool_use> XML format. Use tool_use_xml_v1 protocol.",

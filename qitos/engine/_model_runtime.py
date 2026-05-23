@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Any, Dict, Generic, List, Optional, TypeVar, cast
 
 from ..core.action import Action
+
+_logger = logging.getLogger("qitos.engine._model_runtime")
 from ..core.decision import Decision
 from ..core.errors import ErrorCategory, ParseExecutionError, RuntimeErrorInfo
 from ..core.model_response import ModelResponse
@@ -382,17 +385,27 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
         delivery = str(metadata.get("tool_schema_delivery") or "prompt_injection")
         payload = getattr(prompt_bundle, "tool_schema_payload", None)
         llm = getattr(self.engine.agent, "llm", None)
-        if llm is None or delivery not in {"api_parameter", "hybrid"}:
-            return {}
-        build_options = getattr(llm, "build_tool_schema_request_options", None)
-        if callable(build_options):
-            try:
-                return dict(
-                    build_options(payload, protocol=protocol, delivery=delivery) or {}
-                )
-            except Exception:
-                return {}
-        return {}
+        options: Dict[str, Any] = {}
+
+        # Build tool schema options
+        if llm is not None and delivery in {"api_parameter", "hybrid"}:
+            build_options = getattr(llm, "build_tool_schema_request_options", None)
+            if callable(build_options):
+                try:
+                    options.update(
+                        build_options(payload, protocol=protocol, delivery=delivery) or {}
+                    )
+                except Exception:
+                    _logger.debug("build_tool_schema_request_options failed", exc_info=True)
+
+        # Merge default_request_kwargs from the model instance
+        # (e.g. chat_template_kwargs for thinking mode)
+        if llm is not None:
+            default_kwargs = getattr(llm, "default_request_kwargs", None)
+            if isinstance(default_kwargs, dict) and default_kwargs:
+                options.update(default_kwargs)
+
+        return options
 
     def _call_llm(
         self, llm: Any, messages: List[Dict[str, Any]], request_options: Dict[str, Any]
@@ -410,12 +423,22 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
             try:
                 return call_raw(messages, **request_options)
             except TypeError:
+                _logger.warning(
+                    "call_raw rejected request_options (TypeError), "
+                    "falling back without options. Keys: %s",
+                    list(request_options.keys()),
+                )
                 return call_raw(messages)
         if not request_options:
             return llm(messages)
         try:
             return llm(messages, **request_options)
         except TypeError:
+            _logger.warning(
+                "LLM call rejected request_options (TypeError), "
+                "falling back without options. Keys: %s",
+                list(request_options.keys()),
+            )
             return llm(messages)
 
     def _call_llm_streaming(
@@ -774,6 +797,43 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
         if native_decision is not None:
             return native_decision
         parser_input = response.text if response is not None else raw_decision
+
+        # When native tool calling is preferred and the model returned plain
+        # text without tool_calls, treat it as a final answer — the model is
+        # done acting and is giving its summary/conclusion in natural language.
+        # Parsers (especially json_decision_v1) will misinterpret natural
+        # language as invalid JSON and return wait(), which causes the agent
+        # to loop forever without ever producing a final result.
+        is_native_text_response = (
+            response is not None
+            and self._native_tool_call_preferred()
+            and not (isinstance(response.tool_calls, list) and response.tool_calls)
+            and str(response.text or "").strip()
+        )
+
+        if is_native_text_response:
+            # Still try the parser chain first — if the model happened to
+            # produce valid structured output (JSON with a final_answer, or
+            # ReAct "Final Answer:" label), let the parser extract it.
+            parse_outcome = self._parse_with_protocol_chain(
+                parser_input=parser_input,
+                step=step,
+                record=record,
+            )
+            # If the parser produced a *productive* decision (act or final),
+            # honour it. But if the parser could only produce wait() — which
+            # is the default fallback when natural language can't be parsed as
+            # JSON — override it with native_text_final.
+            if parse_outcome is not None and parse_outcome.mode != "wait":
+                return parse_outcome
+
+            if record is not None:
+                record.decision_source = "native_text_final"
+            return Decision.final(
+                answer=str(response.text).strip(),
+                meta={"decision_source": "native_text_final"},
+            )
+
         parse_outcome = self._parse_with_protocol_chain(
             parser_input=parser_input,
             step=step,
@@ -781,23 +841,6 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
         )
         if parse_outcome is not None:
             return parse_outcome
-
-        # When native tool calling is preferred and the model returned plain
-        # text after tool calls, prefer normal parsers first so ReAct-style
-        # "Final Answer:" labels are stripped. If no parser can handle the
-        # text, fall back to treating it as the final answer.
-        if (
-            response is not None
-            and self._native_tool_call_preferred()
-            and not (isinstance(response.tool_calls, list) and response.tool_calls)
-            and str(response.text or "").strip()
-        ):
-            if record is not None:
-                record.decision_source = "native_text_final"
-            return Decision.final(
-                answer=str(response.text).strip(),
-                meta={"decision_source": "native_text_final"},
-            )
 
         raise ValueError(
             "Agent.decide must return Decision when no parser is configured"

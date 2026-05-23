@@ -61,8 +61,27 @@ Move or prepare to move examples and apps that:
 
 Recommended names:
 
-- `qitos-coder`: Claude Code-inspired coding agent built with QitOS.
-- `qitos-cyber-agent`: PentAGI-inspired cybersecurity agent built with QitOS.
+- `qitos_coder`: Claude Code-inspired coding agent built with QitOS.
+- `qitos_cyber`: PentAGI-inspired cybersecurity agent built with QitOS.
+
+### qitos_zoo structure
+
+```
+qitos_zoo/
+  __init__.py
+  qitos_coder/       — coding agent + tests/ + README.md
+  qitos_cyber/       — cyber agent + tests/ + README.md
+  experimental/      — product candidates needing hardening
+  docs/              — adding_a_new_agent.md, app_template.md, safety_and_scope.md
+```
+
+### E2E test ownership
+
+Agent application e2e tests belong in `qitos_zoo/<app>/tests/`. The core `tests/` directory only contains framework-level tests. No agent-specific e2e tests should reside in the core repository.
+
+### Zero duplication
+
+No file may exist in both `examples/` and `qitos_zoo/` with identical content. Once code is migrated to `qitos_zoo/`, the original must be removed from `examples/`.
 
 ## Security-Sensitive Rule
 
