@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional
 
 from qitos.core.agent_spec import AgentRegistry, AgentSpec
 from qitos.core.task import Task
-from qitos.engine._loop_detector import ToolCallLoopDetector
+from qitos.engine import ToolCallLoopDetector
 from qitos.engine.states import RuntimeBudget
 from qitos.engine.stop_criteria import FinalResultCriteria
 
