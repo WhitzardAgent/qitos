@@ -52,6 +52,27 @@ def create_e2e_engine(agent, **overrides):
     return Engine(agent=agent, **overrides)
 
 
+def create_e2e_engine_with_registry(agent, specs, **overrides):
+    """Create an Engine with an AgentRegistry populated from specs.
+
+    Parameters
+    ----------
+    agent : AgentModule
+        The primary agent.
+    specs : list[AgentSpec]
+        Agent specs to register.
+    **overrides
+        Additional Engine constructor parameters.
+    """
+    from qitos.core.agent_spec import AgentRegistry, AgentSpec
+    from qitos.engine.engine import Engine
+
+    registry = AgentRegistry()
+    for spec in specs:
+        registry.register(spec)
+    return Engine(agent=agent, agent_registry=registry, **overrides)
+
+
 # Skip all E2E tests if endpoint is not configured
 e2e_skip = pytest.mark.skipif(
     not _e2e_available(),
@@ -59,3 +80,6 @@ e2e_skip = pytest.mark.skipif(
 )
 
 e2e_marker = pytest.mark.e2e
+
+# Mark for inherently non-deterministic E2E tests (stagnation, recovery)
+e2e_flaky = pytest.mark.e2e

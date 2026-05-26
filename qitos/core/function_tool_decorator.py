@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, Optional
 
-from .tool import FunctionTool, ToolMeta, ToolPermission
+from .tool import FunctionTool, ToolMeta, ToolPermission, RetryPolicy
 from .tool_schema import function_schema
 
 
@@ -15,6 +15,8 @@ def function_tool(
     description: Optional[str] = None,
     timeout_s: Optional[float] = None,
     max_retries: int = 0,
+    retry_policy: Optional[RetryPolicy] = None,
+    on_failure: Optional[Callable] = None,
     read_only: bool = False,
     concurrency_safe: bool = False,
     needs_approval: bool = False,
@@ -39,6 +41,8 @@ def function_tool(
             description=description,
             timeout_s=timeout_s,
             max_retries=max_retries,
+            retry_policy=retry_policy,
+            on_failure=on_failure,
             read_only=read_only,
             concurrency_safe=concurrency_safe,
             needs_approval=needs_approval,

@@ -58,7 +58,7 @@ from .multimodal import (
     EnvironmentAdapter,
 )
 from .tool_result import ToolResult
-from .tool import BaseTool, FunctionTool, ToolPermission, ToolSpec, tool
+from .tool import BaseTool, FunctionTool, RetryPolicy, ToolPermission, ToolSpec, tool
 from .tool_schema import function_schema, type_to_json_schema, parse_docstring
 from .function_tool_decorator import function_tool
 from .channel import Append, Replace, Ephemeral, last_value, append_list, dict_merge, add_messages
@@ -121,6 +121,7 @@ __all__ = [
     "ToolResult",
     "BaseTool",
     "FunctionTool",
+    "RetryPolicy",
     "ToolPermission",
     "ToolSpec",
     "tool",

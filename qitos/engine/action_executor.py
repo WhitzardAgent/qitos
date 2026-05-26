@@ -193,6 +193,14 @@ class ActionExecutor:
         tool_meta = self._tool_meta(action.name)
         runtime_context = self._build_runtime_context(action.name, env=env, state=state)
 
+        # Resolve per-tool retry_policy and on_failure from tool spec
+        _retry_policy = None
+        _on_failure = None
+        tool_preview = self._resolve_tool(action.name)
+        if tool_preview is not None and hasattr(tool_preview, 'spec'):
+            _retry_policy = getattr(tool_preview.spec, 'retry_policy', None)
+            _on_failure = getattr(tool_preview.spec, 'on_failure', None)
+
         # 1. Interceptor before_execute — can modify action args
         interceptor_context = InterceptorContext(
             tool_name=action.name,
@@ -205,7 +213,6 @@ class ActionExecutor:
             action = self._interceptor_chain.before_execute(action, interceptor_context)
 
         # 2. Check needs_approval — triggers interrupt() for human approval
-        tool_preview = self._resolve_tool(action.name)
         _auto_approved = False
         if tool_preview is not None and hasattr(tool_preview, 'spec'):
             _needs_approval_val = getattr(tool_preview.spec, 'needs_approval', False)
@@ -236,7 +243,21 @@ class ActionExecutor:
                             extra_metadata={"error_category": "approval_denied"},
                         )
 
-        while attempts <= action.max_retries:
+        # Compute effective max attempts from retry_policy or fallback to max_retries
+        if _retry_policy is not None:
+            _max_attempts = _retry_policy.max_attempts
+            _backoff_factor = _retry_policy.backoff_factor
+            _max_backoff = _retry_policy.max_backoff
+            _jitter = _retry_policy.jitter
+            _retryable_exceptions = _retry_policy.retryable_exceptions
+        else:
+            _max_attempts = action.max_retries + 1  # existing behavior
+            _backoff_factor = 0
+            _max_backoff = 0
+            _jitter = False
+            _retryable_exceptions = (Exception,)
+
+        while attempts < _max_attempts:
             attempts += 1
             try:
                 tool = self._resolve_tool(action.name)
@@ -385,12 +406,28 @@ class ActionExecutor:
                 return result
             except Exception as exc:  # pragma: no cover - defensive path
                 last_error = str(exc)
-                if attempts > action.max_retries:
+                # Check if this exception type is retryable
+                if not isinstance(exc, _retryable_exceptions):
                     break
+                # Exponential backoff with optional jitter
+                if attempts < _max_attempts and _backoff_factor > 0:
+                    import random
+                    delay = min(_backoff_factor * (2 ** (attempts - 1)), _max_backoff)
+                    if _jitter:
+                        delay = delay * (0.5 + random.random())
+                    time.sleep(delay)
 
         error_category = "runtime_error"
         if last_error and "not found" in last_error.lower():
             error_category = "tool_not_found"
+
+        # Call on_failure callback if registered
+        if _on_failure is not None:
+            try:
+                _on_failure(action=action, error=last_error, attempts=attempts)
+            except Exception:
+                pass  # on_failure must not raise
+
         error_result = self._finish_result(
             action=action,
             status=ActionStatus.ERROR,
