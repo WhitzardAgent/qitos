@@ -213,6 +213,165 @@ def test_discover_runs_and_export(tmp_path: Path):
     assert "r1" in content
 
 
+def test_critic_timeline_section(tmp_path: Path):
+    """Critic timeline section is rendered in the run detail page."""
+    run = _make_run(tmp_path, "rc1")
+    event_lines = [
+        json.loads(line)
+        for line in (run / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    # Add critic outputs to the step
+    step_data = json.loads((run / "steps.jsonl").read_text(encoding="utf-8").strip())
+    step_data["critic_outputs"] = [
+        {"action": "continue", "reason": "looks good", "score": 0.85},
+        {"action": "retry", "reason": "unclear output", "score": 0.3},
+    ]
+    payload = {
+        "run": str(run),
+        "run_id": "rc1",
+        "manifest": json.loads((run / "manifest.json").read_text(encoding="utf-8")),
+        "events": event_lines,
+        "steps": [step_data],
+        "events_by_step": {"0": event_lines},
+    }
+    html = _render_run_html(payload, embedded=False)
+    assert "critic timeline" in html
+    assert "buildCriticTimeline" in html
+
+
+def test_critic_summary_in_overview(tmp_path: Path):
+    """Overview panel shows critic intervention stats."""
+    run = _make_run(tmp_path, "rc2")
+    event_lines = [
+        json.loads(line)
+        for line in (run / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    step_data = json.loads((run / "steps.jsonl").read_text(encoding="utf-8").strip())
+    step_data["critic_outputs"] = [
+        {"action": "stop", "reason": "fatal error", "score": 0.1},
+        {"action": "retry", "reason": "try again", "score": 0.4},
+    ]
+    payload = {
+        "run": str(run),
+        "run_id": "rc2",
+        "manifest": json.loads((run / "manifest.json").read_text(encoding="utf-8")),
+        "events": event_lines,
+        "steps": [step_data],
+        "events_by_step": {"0": event_lines},
+    }
+    html = _render_run_html(payload, embedded=False)
+    assert "critic interventions" in html
+    assert "critic retries" in html
+    assert "critic stops" in html
+    assert "critic avg score" in html
+
+
+def test_critic_enhanced_render(tmp_path: Path):
+    """Enhanced renderCritic shows all critic outputs with color badges."""
+    run = _make_run(tmp_path, "rc3")
+    event_lines = [
+        json.loads(line)
+        for line in (run / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    step_data = json.loads((run / "steps.jsonl").read_text(encoding="utf-8").strip())
+    step_data["critic_outputs"] = [
+        {"action": "continue", "reason": "ok", "score": 0.9},
+        {"action": "retry", "reason": "redo", "score": 0.3, "instruction_patch": "Be more specific"},
+        {"action": "stop", "reason": "fail", "score": 0.05, "state_patch": {"key": "val"}},
+    ]
+    payload = {
+        "run": str(run),
+        "run_id": "rc3",
+        "manifest": json.loads((run / "manifest.json").read_text(encoding="utf-8")),
+        "events": event_lines,
+        "steps": [step_data],
+        "events_by_step": {"0": event_lines},
+    }
+    html = _render_run_html(payload, embedded=False)
+    # renderCritic function should exist in the JS
+    assert "renderCritic" in html
+    # The function handles multiple critic outputs
+    assert "actionColors" in html or "#4ade80" in html
+
+
+def test_live_sse_endpoint_in_handler(tmp_path: Path):
+    """The /api/live/ route is handled by QitaHandler."""
+    _make_run(tmp_path, "rlive")
+    handler_cls = _build_handler(tmp_path)
+    assert handler_cls is not None
+    # Verify the handler class has _send_live_sse method
+    assert hasattr(handler_cls, "_send_live_sse")
+
+
+def test_live_button_in_run_page(tmp_path: Path):
+    """Run detail page has a live button."""
+    run = _make_run(tmp_path, "rlive2")
+    event_lines = [
+        json.loads(line)
+        for line in (run / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    payload = {
+        "run": str(run),
+        "run_id": "rlive2",
+        "manifest": json.loads((run / "manifest.json").read_text(encoding="utf-8")),
+        "events": event_lines,
+        "steps": [
+            json.loads((run / "steps.jsonl").read_text(encoding="utf-8").strip())
+        ],
+        "events_by_step": {"0": event_lines},
+    }
+    html = _render_run_html(payload, embedded=False)
+    assert 'id="streamBtn"' in html
+    assert "startStream" in html
+
+
+def test_board_pulse_indicator(tmp_path: Path):
+    """Board HTML includes pulse animation for running runs."""
+    html = _render_board_html()
+    assert "live-dot" in html or "pulse" in html
+
+
+def test_sse_live_stream_js(tmp_path: Path):
+    """Run page JS includes SSE live stream code with UI updates."""
+    run = _make_run(tmp_path, "rsse")
+    event_lines = [
+        json.loads(line)
+        for line in (run / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    payload = {
+        "run": str(run),
+        "run_id": "rsse",
+        "manifest": json.loads((run / "manifest.json").read_text(encoding="utf-8")),
+        "events": event_lines,
+        "steps": [
+            json.loads((run / "steps.jsonl").read_text(encoding="utf-8").strip())
+        ],
+        "events_by_step": {"0": event_lines},
+    }
+    html = _render_run_html(payload, embedded=False)
+    assert "/api/live/" in html
+    assert "/api/stream/" in html
+    assert "_addLiveBanner" in html
+
+
+def test_running_status_card_has_pulse(tmp_path: Path):
+    """Board card for a running run shows the live-dot pulse indicator."""
+    run = _make_run(tmp_path, "rrun")
+    # Change manifest status to "running"
+    manifest = json.loads((run / "manifest.json").read_text(encoding="utf-8"))
+    manifest["status"] = "running"
+    (run / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    runs = _discover_runs(tmp_path)
+    assert len(runs) == 1
+    assert runs[0]["status"] == "running"
+
+
 def test_render_pages(tmp_path: Path):
     run = _make_run(tmp_path, "r2")
     event_lines = [

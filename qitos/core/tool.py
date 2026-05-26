@@ -173,6 +173,37 @@ class ToolPermissionContext:
 
 
 @dataclass
+class RetryPolicy:
+    """Per-tool retry configuration with exponential backoff and exception filtering.
+
+    When attached to a tool via ``@function_tool(retry_policy=...)`` or
+    ``ToolSpec.retry_policy``, the :class:`ActionExecutor` uses this policy
+    instead of the bare ``max_retries`` integer.
+
+    Attributes:
+        max_attempts: Total attempts including the first call (e.g. 3 = 1 initial + 2 retries).
+        backoff_factor: Base delay in seconds for exponential backoff.
+        max_backoff: Maximum delay cap in seconds.
+        jitter: If True, add random jitter to backoff delay.
+        retryable_exceptions: Tuple of exception types that trigger a retry.
+            Other exceptions propagate immediately.
+    """
+
+    max_attempts: int = 3
+    backoff_factor: float = 0.5
+    max_backoff: float = 60.0
+    jitter: bool = True
+    retryable_exceptions: tuple = (Exception,)
+
+    def __post_init__(self):
+        for exc_type in self.retryable_exceptions:
+            if not (isinstance(exc_type, type) and issubclass(exc_type, BaseException)):
+                raise TypeError(
+                    f"retryable_exceptions must contain exception types, got {exc_type!r}"
+                )
+
+
+@dataclass
 class ToolSpec:
     name: str
     description: str
@@ -180,6 +211,8 @@ class ToolSpec:
     required: List[str] = field(default_factory=list)
     timeout_s: Optional[float] = None
     max_retries: int = 0
+    retry_policy: Optional[RetryPolicy] = None
+    on_failure: Optional[Callable] = None
     permissions: ToolPermission = field(default_factory=ToolPermission)
     required_ops: List[str] = field(default_factory=list)
     input_schema: Optional[Dict[str, Any]] = None
@@ -202,6 +235,8 @@ class ToolMeta:
     prompt: str = ""
     timeout_s: Optional[float] = None
     max_retries: int = 0
+    retry_policy: Optional[RetryPolicy] = None
+    on_failure: Optional[Callable] = None
     permissions: ToolPermission = field(default_factory=ToolPermission)
     required_ops: List[str] = field(default_factory=list)
     input_schema: Optional[Dict[str, Any]] = None
@@ -386,6 +421,8 @@ def tool(
     prompt: str = "",
     timeout_s: Optional[float] = None,
     max_retries: int = 0,
+    retry_policy: Optional[RetryPolicy] = None,
+    on_failure: Optional[Callable] = None,
     permissions: Optional[ToolPermission] = None,
     required_ops: Optional[List[str]] = None,
     input_schema: Optional[Dict[str, Any]] = None,
@@ -408,6 +445,8 @@ def tool(
             prompt=prompt,
             timeout_s=timeout_s,
             max_retries=max_retries,
+            retry_policy=retry_policy,
+            on_failure=on_failure,
             permissions=permissions or ToolPermission(),
             required_ops=list(required_ops or []),
             input_schema=input_schema,
@@ -469,6 +508,8 @@ def build_tool_spec(func: Callable[..., Any], meta: ToolMeta) -> ToolSpec:
         required=required,
         timeout_s=meta.timeout_s,
         max_retries=meta.max_retries,
+        retry_policy=meta.retry_policy,
+        on_failure=meta.on_failure,
         permissions=meta.permissions,
         required_ops=list(meta.required_ops),
         input_schema=meta.input_schema
@@ -514,6 +555,7 @@ def _type_to_json(annotation: Any) -> str:
 __all__ = [
     "BaseTool",
     "FunctionTool",
+    "RetryPolicy",
     "ToolMeta",
     "ToolPermission",
     "ToolPermissionContext",

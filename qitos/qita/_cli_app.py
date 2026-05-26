@@ -194,6 +194,16 @@ def _build_handler(root: Path):
                     return
                 self._send_sse_events(run_dir)
                 return
+            if route.startswith("/api/live/"):
+                run_id = _slug_run_id(route.split("/", 3)[-1])
+                run_dir = _resolve_run(root, run_id)
+                if run_dir is None:
+                    self._send_json(
+                        {"error": "run not found", "run_id": run_id}, status=404
+                    )
+                    return
+                self._send_live_sse(run_dir)
+                return
             if route == "/asset":
                 path = str((qs.get("path") or [""])[0]).strip()
                 if not path:
@@ -409,6 +419,94 @@ def _build_handler(root: Path):
                 self.wfile.flush()
             except (BrokenPipeError, ConnectionResetError, struct.error):
                 pass
+
+        def _send_live_sse(self, run_dir: Path) -> None:
+            """Tail events.jsonl for a running run and push new lines as SSE events."""
+            import struct
+            import time as _time
+
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "keep-alive")
+            self.send_header("X-Accel-Buffering", "no")
+            self.end_headers()
+
+            events_path = run_dir / "events.jsonl"
+            sent = 0
+            max_poll = 300  # 5 minutes at 1s intervals
+
+            # First, emit any existing events
+            if events_path.exists():
+                for line in events_path.read_text(encoding="utf-8").splitlines():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        event = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    phase = str(event.get("phase", "unknown")).upper()
+                    event_type = "phase"
+                    if "HANDOFF" in phase:
+                        event_type = "handoff"
+                    elif "DELEGATE" in phase:
+                        event_type = "delegate"
+                    elif "FANOUT" in phase:
+                        event_type = "fanout"
+                    self._sse_write(event_type, event)
+                    sent += 1
+
+            # Now tail for new events
+            for _ in range(max_poll):
+                _time.sleep(1.0)
+                if not events_path.exists():
+                    continue
+                try:
+                    lines = events_path.read_text(encoding="utf-8").splitlines()
+                except OSError:
+                    continue
+                new_lines = lines[sent:]
+                for line in new_lines:
+                    line = line.strip()
+                    if not line:
+                        sent += 1
+                        continue
+                    try:
+                        event = json.loads(line)
+                    except json.JSONDecodeError:
+                        sent += 1
+                        continue
+                    phase = str(event.get("phase", "unknown")).upper()
+                    event_type = "phase"
+                    if "HANDOFF" in phase:
+                        event_type = "handoff"
+                    elif "DELEGATE" in phase:
+                        event_type = "delegate"
+                    elif "FANOUT" in phase:
+                        event_type = "fanout"
+                    self._sse_write(event_type, event)
+                    sent += 1
+
+                # Check if run is completed
+                manifest_path = run_dir / "manifest.json"
+                if manifest_path.exists():
+                    try:
+                        manifest = json.loads(
+                            manifest_path.read_text(encoding="utf-8")
+                        )
+                        status = str(manifest.get("status", "")).lower()
+                        if status in ("completed", "success", "failed", "error", "stopped"):
+                            self._sse_write("run_end", {
+                                "status": status,
+                                "stop_reason": (manifest.get("summary") or {}).get("stop_reason", ""),
+                            })
+                            return
+                    except (json.JSONDecodeError, OSError):
+                        pass
+
+            # Timeout
+            self._sse_write("run_end", {"status": "timeout", "stop_reason": "live_stream_timeout"})
 
     return QitaHandler
 
@@ -755,6 +853,8 @@ def _render_board_html() -> str:
 .manifest-meta-k{font-size:11px;color:var(--subtle)}
 .manifest-meta-v{font-size:11px;color:var(--txt);word-break:break-word}
 .empty{padding:18px;border:1px dashed var(--line);border-radius:var(--radius-lg);color:var(--muted)}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.4}}
+.live-dot{display:inline-block;width:8px;height:8px;border-radius:9999px;background:var(--ok);animation:pulse 1.5s ease infinite;margin-right:6px;vertical-align:middle}
 @media (max-width:980px){.toolbar{grid-template-columns:1fr 1fr}}
 </style></head>
 <body>
@@ -869,6 +969,8 @@ function paint(){
     const el = document.createElement('div');
     el.className = 'card';
     const status = (r.status || 'unknown');
+    const isRunning = status === 'running';
+    const liveIndicator = isRunning ? '<span class="live-dot"></span>' : '';
     const m = r.manifest_meta || {};
     const agentCount = r.agent_count || 0;
     const agentBadge = agentCount > 1 ? `<span class="state" style="background:var(--surface-2);color:var(--accent);border-color:var(--line-strong)">[${agentCount} agents]</span>` : (r.agent_name ? `<span class="state" style="background:var(--surface-2);color:var(--accent);border-color:var(--line-strong)">[${esc(r.agent_name)}]</span>` : '');
@@ -877,7 +979,7 @@ function paint(){
     const topoBadge = topoInfo ? `<div class="meta">topology=${esc(topoInfo)}${r.agent_topology.agents ? ' agents=' + esc(r.agent_topology.agents.join(',')) : ''}</div>` : '';
     el.innerHTML = `
       <div class="id">${r.id} ${agentBadge} ${handoffBadge}</div>
-      <div class="meta"><span class="state">${status}</span> steps=${r.step_count||0} events=${r.event_count||0}</div>
+      <div class="meta">${liveIndicator}<span class="state">${status}</span> steps=${r.step_count||0} events=${r.event_count||0}</div>
       <div class="meta">stop=${r.stop_reason||''}</div>
       <div class="meta">updated=${r.updated_at||''}</div>
       ${topoBadge}
@@ -1080,7 +1182,7 @@ def _render_run_html(payload: Dict[str, Any], embedded: bool) -> str:
             f'<a class="btn" href="/export/raw/{run_id}">export raw</a>'
             f'<a class="btn" href="/export/html/{run_id}">export html</a>'
             f'<a class="btn" href="/replay/{run_id}">replay</a>'
-            f'<button class="btn" id="streamBtn" onclick="startStream()">live stream</button>'
+            f'<button class="btn" id="streamBtn" onclick="startStream()">live</button>'
             '<a class="btn ghost" href="/">board</a>'
         )
     return f"""<!doctype html>
@@ -1169,6 +1271,9 @@ pre{{margin:0;background:var(--surface-2);border:1px solid var(--line);padding:1
 .tree-val{{font-size:12px;color:var(--txt);word-break:break-word}}
 .toc-item{{display:block;width:100%;text-align:left;border:1px solid var(--line);background:var(--surface-1);color:var(--txt);padding:7px 8px;border-radius:var(--radius-md);font-size:12px;cursor:pointer;margin-bottom:6px}}
 .toc-item:hover{{border-color:var(--accent)}} .toc-item.active{{border-color:var(--accent);background:var(--surface-2)}}
+@keyframes fadeIn{{from{{opacity:0;transform:translateY(-4px)}}to{{opacity:1;transform:translateY(0)}}}}
+@keyframes pulse{{0%,100%{{opacity:1}}50%{{opacity:0.4}}}}
+.live-dot{{display:inline-block;width:8px;height:8px;border-radius:9999px;background:var(--ok);animation:pulse 1.5s ease infinite;margin-right:6px}}
 </style></head><body>
 <div class="top"><div class="wrap">
   <div class="title">QitOS Trace · {run_id}</div>
@@ -1216,6 +1321,10 @@ pre{{margin:0;background:var(--surface-2);border:1px solid var(--line);padding:1
           <h4>parser timeline</h4>
           <div id="parserTimeline"></div>
         </section>
+        <section class="timeline">
+          <h4>critic timeline</h4>
+          <div id="criticTimeline"></div>
+        </section>
         <section class="flow" id="flow"></section>
       </section>
       <section class="panel" id="panelManifest">
@@ -1236,6 +1345,7 @@ const timelineRoot = document.getElementById('timeline');
 const visualTimelineRoot = document.getElementById('visualTimeline');
 const contextTimelineRoot = document.getElementById('contextTimeline');
 const parserTimelineRoot = document.getElementById('parserTimeline');
+const criticTimelineRoot = document.getElementById('criticTimeline');
 const overview = document.getElementById('overview');
 const fontDownBtn = document.getElementById('fontDown');
 const fontResetBtn = document.getElementById('fontReset');
@@ -1687,15 +1797,27 @@ function renderParserDiagnostics(diag){{
 }}
 function renderCritic(data){{
   if(!Array.isArray(data) || !data.length) return '<div class="muted">No critic outputs.</div>';
-  const first = data[0];
-  if(first && typeof first === 'object'){{
+  const cards = [];
+  for(let i = 0; i < data.length; i++){{
+    const c = data[i];
+    if(!c || typeof c !== 'object') continue;
+    const actionColors = {{continue:'#4ade80', stop:'#f87171', retry:'#fbbf24'}};
+    const actionColor = actionColors[c.action] || '#94a3b8';
     const rows = [];
-    if('action' in first) rows.push(kvRow('action', first.action));
-    if('reason' in first) rows.push(kvRow('reason', first.reason));
-    if('score' in first) rows.push(kvRow('score', first.score));
-    return kvBlock(rows.length ? rows : [kvRow('critic', JSON.stringify(first))]);
+    if('action' in c) rows.push('<div style="display:flex;align-items:center;gap:6px"><span style="background:'+actionColor+';color:#000;border-radius:4px;padding:1px 6px;font-size:11px;font-weight:600">'+esc(c.action)+'</span><span style="color:#94a3b8;font-size:11px">critic #'+(i+1)+'</span></div>');
+    if('reason' in c) rows.push(kvRow('reason', c.reason));
+    if(typeof c.score === 'number'){{
+      const pct = Math.max(0, Math.min(100, Math.round(c.score * 100)));
+      const barColor = pct >= 70 ? '#4ade80' : pct >= 40 ? '#fbbf24' : '#f87171';
+      rows.push('<div style="display:flex;align-items:center;gap:8px"><span style="color:#8b949e;min-width:44px;font-size:12px">score</span><div style="flex:1;background:#1e293b;border-radius:3px;height:10px;max-width:120px"><div style="width:'+pct+'%;background:'+barColor+';border-radius:3px;height:10px"></div></div><span style="color:#c9d1d9;font-size:12px">'+c.score.toFixed(2)+'</span></div>');
+    }}
+    if(c.modified_prompt) rows.push(kvRow('modified_prompt', '<span style="color:#fbbf24">✎ prompt modified</span>'));
+    if(c.instruction_patch) rows.push(kvRow('instruction_patch', '<span style="color:#7dd3fc">+'+esc(String(c.instruction_patch).substring(0,200))+'</span>'));
+    if(c.state_patch && typeof c.state_patch === 'object') rows.push(kvRow('state_patch', '<span style="color:#c4b5fd">'+esc(JSON.stringify(c.state_patch).substring(0,200))+'</span>'));
+    if(c.details) rows.push(kvRow('details', typeof c.details === 'string' ? c.details : JSON.stringify(c.details).substring(0,300)));
+    cards.push('<div style="border:1px solid #21262d;border-radius:6px;padding:8px;margin-bottom:4px;background:#0d1117">'+(rows.length ? rows.join('') : kvRow('critic', JSON.stringify(c)))+'</div>');
   }}
-  return kvBlock([kvRow('critic', first)]);
+  return cards.length ? cards.join('') : '<div class="muted">No critic outputs.</div>';
 }}
 function renderEvents(events){{
   if(!Array.isArray(events) || !events.length) return '<div class="muted">No events.</div>';
@@ -1895,6 +2017,10 @@ function paintOverview(items){{
     ['compacts', JSON.stringify(c.compact_counts || {{}})],
     ['parser errors', String(p.error_count || 0)],
     ['parser salvage', String(p.salvage_count || 0)],
+    ['critic interventions', String(items.reduce(function(a,it){{ return a + (Array.isArray(it.step.critic_outputs) ? it.step.critic_outputs.length : 0); }}, 0))],
+    ['critic retries', String(items.reduce(function(a,it){{ return a + (Array.isArray(it.step.critic_outputs) ? it.step.critic_outputs.filter(function(c){{ return c && c.action === 'retry'; }}).length : 0); }}, 0))],
+    ['critic stops', String(items.reduce(function(a,it){{ return a + (Array.isArray(it.step.critic_outputs) ? it.step.critic_outputs.filter(function(c){{ return c && c.action === 'stop'; }}).length : 0); }}, 0))],
+    ['critic avg score', (function(){{ const scores = []; items.forEach(function(it){{ (Array.isArray(it.step.critic_outputs) ? it.step.critic_outputs : []).forEach(function(c){{ if(c && typeof c.score === 'number') scores.push(c.score); }}); }}); return scores.length ? (scores.reduce(function(a,b){{ return a+b; }},0)/scores.length).toFixed(2) : '-'; }})()],
     ['replay note', m.replay_note || '-'],
   ]).map(([k,v])=>'<div class="ov"><div class="k">'+esc(k)+'</div><div class="v">'+esc(v)+'</div></div>').join('');
 }}
@@ -2061,6 +2187,134 @@ function buildParserTimeline(items){{
   }}
   parserTimelineRoot.innerHTML = rows.length ? ('<div class="compact-list">' + rows.join('') + '</div>') : '<div class="muted">No parser diagnostics recorded.</div>';
 }}
+function buildCriticTimeline(items){{
+  // Collect all critic outputs across steps
+  const points = [];
+  for(const it of items){{
+    const cs = Array.isArray(it.step.critic_outputs) ? it.step.critic_outputs : [];
+    if(!cs.length) continue;
+    for(let ci = 0; ci < cs.length; ci++){{
+      const c = cs[ci];
+      if(!c || typeof c !== 'object') continue;
+      points.push({{
+        sid: it.sid,
+        action: String(c.action || ''),
+        reason: String(c.reason || ''),
+        score: typeof c.score === 'number' ? c.score : null,
+        has_patch: !!(c.modified_prompt || c.instruction_patch || c.state_patch),
+        index: ci,
+      }});
+    }}
+  }}
+  if(!points.length){{
+    criticTimelineRoot.innerHTML = '<div class="muted">No critic interventions recorded.</div>';
+    return;
+  }}
+  // Build SVG timeline
+  const width = 980;
+  const barH = 28;
+  const gap = 4;
+  const left = 56;
+  const right = 14;
+  const top = 28;
+  const bottom = 32;
+  const plotWidth = width - left - right;
+  const n = points.length;
+  const totalH = top + n * (barH + gap) + bottom;
+  const actionColors = {{continue:'#4ade80', stop:'#f87171', retry:'#fbbf24'}};
+  const rows = [];
+  const labels = [];
+  // X axis labels
+  const steps = new Set(points.map(function(p){{ return p.sid; }}));
+  const stepList = Array.from(steps).sort(function(a,b){{ return Number(a)-Number(b); }});
+  const stepToX = function(sid){{
+    const idx = stepList.indexOf(sid);
+    if(idx < 0) return left;
+    if(stepList.length === 1) return left + plotWidth/2;
+    return left + (plotWidth * idx) / (stepList.length - 1);
+  }};
+  // Grid lines for steps
+  for(let i = 0; i < stepList.length; i++){{
+    const x = stepToX(stepList[i]);
+    rows.push('<line x1="'+x+'" y1="'+top+'" x2="'+x+'" y2="'+(totalH-bottom)+'" stroke="var(--line)" stroke-width="1" stroke-dasharray="4 4"/>');
+    labels.push('<text x="'+x+'" y="'+(totalH-8)+'" fill="var(--subtle)" font-size="11" text-anchor="middle">S'+esc(stepList[i])+'</text>');
+  }}
+  // Score axis
+  for(let g = 0; g <= 4; g++){{
+    const ratio = g / 4;
+    const y = top + (1 - ratio) * (totalH - top - bottom);
+    // not used for bar chart, skip
+  }}
+  // Draw critic bars
+  const barRows = [];
+  for(let i = 0; i < n; i++){{
+    const p = points[i];
+    const y = top + i * (barH + gap);
+    const x = stepToX(p.sid);
+    const color = actionColors[p.action] || '#94a3b8';
+    const halfBar = barH / 2;
+    // Dot at step position
+    rows.push('<circle cx="'+x+'" cy="'+(y+halfBar)+'" r="'+(p.has_patch?8:5)+'" fill="'+color+'" stroke="var(--surface-1)" stroke-width="1.5"><title>STEP '+esc(p.sid)+' critic #'+(p.index+1)+' action='+esc(p.action)+(p.score!==null?' score='+p.score.toFixed(2):'')+(p.has_patch?' [has patch]':'')+'</title></circle>');
+    // Patch indicator ring
+    if(p.has_patch){{
+      rows.push('<circle cx="'+x+'" cy="'+(y+halfBar)+'" r="11" fill="none" stroke="'+color+'" stroke-width="1.5" stroke-dasharray="3 2"/>');
+    }}
+    // Label
+    const scoreText = p.score !== null ? (' '+p.score.toFixed(2)) : '';
+    const patchText = p.has_patch ? ' ✎' : '';
+    const labelText = 'S'+p.sid+' #'+(p.index+1)+' '+p.action+scoreText+patchText;
+    barRows.push('<text x="'+(left-4)+'" y="'+(y+halfBar+4)+'" fill="'+color+'" font-size="10" text-anchor="end" font-weight="600">'+esc(labelText)+'</text>');
+    // Reason tooltip line
+    if(p.reason){{
+      const truncated = p.reason.length > 60 ? p.reason.substring(0,60)+'...' : p.reason;
+      barRows.push('<text x="'+(x+14)+'" y="'+(y+halfBar+4)+'" fill="var(--muted)" font-size="10">'+esc(truncated)+'</text>');
+    }}
+  }}
+  // Score trend line (if scores available)
+  const scorePoints = points.filter(function(p){{ return p.score !== null; }});
+  let trendLine = '';
+  if(scorePoints.length >= 2){{
+    const minScore = Math.min.apply(null, scorePoints.map(function(p){{ return p.score; }}));
+    const maxScore = Math.max.apply(null, scorePoints.map(function(p){{ return p.score; }}));
+    const range = maxScore - minScore || 1;
+    const trendH = totalH - top - bottom;
+    const poly = scorePoints.map(function(p, idx){{
+      const x = stepToX(p.sid);
+      const normY = (p.score - minScore) / range;
+      // Use a separate mini area at top
+      const y = top + (1 - normY) * 40;
+      return x+','+y;
+    }});
+    trendLine = '<polyline points="'+poly.join(' ')+'" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity="0.7"/>';
+    for(let si = 0; si < scorePoints.length; si++){{
+      const x = stepToX(scorePoints[si].sid);
+      const normY = (scorePoints[si].score - minScore) / range;
+      const y = top + (1 - normY) * 40;
+      trendLine += '<circle cx="'+x+'" cy="'+y+'" r="3" fill="var(--accent)"><title>score='+scorePoints[si].score.toFixed(2)+'</title></circle>';
+    }}
+  }}
+  // Summary stats
+  const continueCount = points.filter(function(p){{ return p.action === 'continue'; }}).length;
+  const stopCount = points.filter(function(p){{ return p.action === 'stop'; }}).length;
+  const retryCount = points.filter(function(p){{ return p.action === 'retry'; }}).length;
+  const patchCount = points.filter(function(p){{ return p.has_patch; }}).length;
+  const scores = points.filter(function(p){{ return p.score !== null; }}).map(function(p){{ return p.score; }});
+  const avgScore = scores.length ? (scores.reduce(function(a,b){{ return a+b; }},0)/scores.length).toFixed(2) : '-';
+  const head = '<div class="context-head">' +
+    '<div>interventions ' + esc(String(n)) + '</div>' +
+    '<div style="display:flex;gap:10px;font-size:11px">' +
+    '<span style="color:#4ade80">● continue ' + continueCount + '</span>' +
+    '<span style="color:#f87171">● stop ' + stopCount + '</span>' +
+    '<span style="color:#fbbf24">● retry ' + retryCount + '</span>' +
+    '</div>' +
+    '<div>patches ' + esc(String(patchCount)) + '</div>' +
+    '<div>avg score ' + esc(String(avgScore)) + '</div>' +
+    '</div>';
+  const svg = '<svg class="context-svg" viewBox="0 0 '+width+' '+totalH+'" role="img" aria-label="Critic timeline">' +
+    rows.join('') + barRows.join('') + trendLine + labels.join('') +
+    '</svg>';
+  criticTimelineRoot.innerHTML = '<div class="context-chart">' + head + svg + '</div>';
+}}
 function renderPromptMetadata(meta){{
   if(!meta || typeof meta !== 'object' || !Object.keys(meta).length){{
     return '<div class="muted">No prompt metadata recorded.</div>';
@@ -2127,6 +2381,7 @@ function render(){{
   buildTimeline(items);
   buildContextTimeline(items);
   buildParserTimeline(items);
+  buildCriticTimeline(items);
   flow.innerHTML = '';
   toc.innerHTML = '';
   let lastAgentId = null;
@@ -2237,27 +2492,78 @@ render();
 
 /* SSE live stream */
 let _sse = null;
+let _liveStepCount = 0;
 function startStream(){{
-  if(_sse){{ _sse.close(); _sse = null; document.getElementById('streamBtn').textContent = 'live stream'; return; }}
+  if(_sse){{ _sse.close(); _sse = null; document.getElementById('streamBtn').textContent = 'live'; document.getElementById('streamBtn').style.borderColor = ''; return; }}
   const runId = location.pathname.split('/run/')[1] || '';
-  _sse = new EventSource('/api/stream/' + runId);
-  document.getElementById('streamBtn').textContent = 'stop stream';
-  _sse.addEventListener('run_start', e => {{ console.log('[SSE] run_start', JSON.parse(e.data)); }});
-  _sse.addEventListener('step_start', e => {{ const d = JSON.parse(e.data); console.log('[SSE] step_start', d.step_id); }});
-  _sse.addEventListener('step_end', e => {{ const d = JSON.parse(e.data); console.log('[SSE] step_end', d.step_id); }});
-  _sse.addEventListener('handoff', e => {{ const d = JSON.parse(e.data); console.log('[SSE] handoff', d); }});
-  _sse.addEventListener('delegate', e => {{ const d = JSON.parse(e.data); console.log('[SSE] delegate', d); }});
-  _sse.addEventListener('fanout', e => {{ const d = JSON.parse(e.data); console.log('[SSE] fanout', d); }});
-  _sse.addEventListener('phase', e => {{ const d = JSON.parse(e.data); console.log('[SSE] phase', d.phase); }});
+  // Use /api/live/ for running runs (file tailing), /api/stream/ for completed runs (replay)
+  const runStatus = ((payload.manifest || {{}}).status || '').toLowerCase();
+  const isLive = runStatus === 'running';
+  const endpoint = isLive ? '/api/live/' : '/api/stream/';
+  _sse = new EventSource(endpoint + runId);
+  document.getElementById('streamBtn').textContent = isLive ? 'stop live' : 'stop stream';
+  document.getElementById('streamBtn').style.borderColor = '#4ade80';
+  _liveStepCount = 0;
+  _sse.addEventListener('run_start', e => {{
+    const d = JSON.parse(e.data);
+    _addLiveBanner('Run started: ' + esc(String(d.run_id || '')), 'var(--ok)');
+  }});
+  _sse.addEventListener('step_start', e => {{
+    const d = JSON.parse(e.data);
+    _liveStepCount++;
+    _addLiveBanner('Step ' + esc(String(d.step_id || _liveStepCount)) + ' started' + (d.agent_id ? ' agent=' + esc(String(d.agent_id)) : ''), 'var(--accent)');
+  }});
+  _sse.addEventListener('step_end', e => {{
+    const d = JSON.parse(e.data);
+    _addLiveBanner('Step ' + esc(String(d.step_id || '')) + ' completed', 'var(--kind-action)');
+  }});
+  _sse.addEventListener('handoff', e => {{
+    const d = JSON.parse(e.data);
+    const pl = (d && d.payload) || {{}};
+    _addLiveBanner('Handoff: ' + esc(String(pl.from || '')) + ' → ' + esc(String(pl.to || '')), 'var(--kind-handoff)');
+  }});
+  _sse.addEventListener('delegate', e => {{
+    const d = JSON.parse(e.data);
+    const pl = (d && d.payload) || {{}};
+    _addLiveBanner('Delegate → ' + esc(String(pl.agent_name || pl.agent || '')), 'var(--kind-delegation)');
+  }});
+  _sse.addEventListener('fanout', e => {{
+    const d = JSON.parse(e.data);
+    const pl = (d && d.payload) || {{}};
+    _addLiveBanner('FanOut: ' + esc(String(pl.task_count || pl.num_tasks || 0)) + ' tasks', 'var(--kind-fanout)');
+  }});
+  _sse.addEventListener('phase', e => {{
+    const d = JSON.parse(e.data);
+    const phase = String(d.phase || '');
+    const color = phaseColor(phase);
+    _addLiveBanner('Phase: ' + esc(phase), color);
+  }});
   _sse.addEventListener('run_end', e => {{
-    console.log('[SSE] run_end', JSON.parse(e.data));
+    const d = JSON.parse(e.data);
+    _addLiveBanner('Run completed: ' + esc(String(d.step_count || '')) + ' steps, stop=' + esc(String(d.stop_reason || '')), 'var(--kind-done)');
     _sse.close(); _sse = null;
-    document.getElementById('streamBtn').textContent = 'live stream';
+    document.getElementById('streamBtn').textContent = 'live';
+    document.getElementById('streamBtn').style.borderColor = '';
+    setTimeout(function(){{ location.reload(); }}, 1500);
   }});
   _sse.onerror = () => {{
     _sse.close(); _sse = null;
-    document.getElementById('streamBtn').textContent = 'live stream';
+    document.getElementById('streamBtn').textContent = 'live';
+    document.getElementById('streamBtn').style.borderColor = '';
   }};
+}}
+function _addLiveBanner(text, color){{
+  const banner = document.createElement('div');
+  banner.style.cssText = 'padding:6px 12px;margin:2px 0;border-radius:var(--radius-md);background:var(--surface-2);border:1px solid var(--line);font-size:12px;color:'+color+';animation:fadeIn 0.3s ease';
+  banner.textContent = text;
+  // Add to top of flow
+  if(flow.firstChild){{
+    flow.insertBefore(banner, flow.firstChild);
+  }} else {{
+    flow.appendChild(banner);
+  }}
+  // Auto-remove after 30 seconds to prevent DOM bloat
+  setTimeout(function(){{ if(banner.parentNode) banner.parentNode.removeChild(banner); }}, 30000);
 }}
 </script>
 </body></html>"""

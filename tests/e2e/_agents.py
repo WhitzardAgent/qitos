@@ -158,3 +158,78 @@ class StringWorker(AgentModule[WorkerState, Any, Any]):
             state.final_result = str(decision.final_answer or "")
             state.work_done = True
         return state
+
+
+# ---------------------------------------------------------------------------
+# Weather agent
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class WeatherState(StateSchema):
+    """State for weather agent."""
+    last_city: str = ""
+
+
+class WeatherAgent(AgentModule[WeatherState, Any, Any]):
+    """Agent with weather tools for E2E tool-calling tests."""
+
+    name = "weather_agent"
+
+    def __init__(self, llm: Any = None, **kwargs):
+        from ._tools import WeatherToolSet
+        super().__init__(llm=llm, toolset=[WeatherToolSet()], model_parser=ReActTextParser(), **kwargs)
+
+    def init_state(self, task: str, **kwargs) -> WeatherState:
+        return WeatherState(task=task, max_steps=int(kwargs.get("max_steps", 8)))
+
+    def build_system_prompt(self, state: WeatherState) -> str | None:
+        return "You are a weather assistant. Use weather tools to look up weather information."
+
+    def prepare(self, state: WeatherState) -> str:
+        return f"Task: {state.task}\nLast city: {state.last_city}"
+
+    def reduce(self, state: WeatherState, observation: Any, decision: Decision) -> WeatherState:
+        if decision.mode == "final":
+            state.final_result = str(decision.final_answer or "")
+        return state
+
+
+# ---------------------------------------------------------------------------
+# Delegating orchestrator
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class DelegateOrchestratorState(StateSchema):
+    """State for delegating orchestrator."""
+    delegated_tasks: list[str] = field(default_factory=list)
+
+
+class DelegatingOrchestrator(AgentModule[DelegateOrchestratorState, Any, Any]):
+    """Orchestrator that uses delegate_to_* tools to delegate tasks."""
+
+    name = "delegating_orchestrator"
+
+    handoff_targets = ["math_worker", "string_worker"]
+
+    def __init__(self, llm: Any = None, **kwargs):
+        super().__init__(llm=llm, model_parser=ReActTextParser(), **kwargs)
+
+    def init_state(self, task: str, **kwargs) -> DelegateOrchestratorState:
+        return DelegateOrchestratorState(task=task, max_steps=int(kwargs.get("max_steps", 8)))
+
+    def build_system_prompt(self, state: DelegateOrchestratorState) -> str | None:
+        return (
+            "You are an orchestrator. Use delegate_to_math_worker to delegate math tasks, "
+            "and delegate_to_string_worker to delegate string tasks. "
+            "You can also use the fanout tool to run tasks in parallel."
+        )
+
+    def prepare(self, state: DelegateOrchestratorState) -> str:
+        return f"Task: {state.task}"
+
+    def reduce(self, state: DelegateOrchestratorState, observation: Any, decision: Decision) -> DelegateOrchestratorState:
+        if decision.mode == "final":
+            state.final_result = str(decision.final_answer or "")
+        return state
