@@ -1,0 +1,250 @@
+---
+title: "Snowl 集成"
+description: "将 QitOS 智能体连接到 Snowl，实现评估、比较和生产部署。"
+---
+
+QitOS 提供了导出 API，允许 Snowl（或任何兼容适配器）消费智能体配置、工具权限、评审轨迹和交接轨迹。本指南介绍三种集成路径，并逐一说明每个导出 API。
+
+---
+
+## 集成路径
+
+| 路径 | 适用场景 | 提供能力 |
+|------|---------|---------|
+| **QitOSAdapter** | 直接 Python 集成 | 完整桥接类，将 Engine 结果封装为 Snowl 可消费格式 |
+| **snowl_compat.py** | 轻量兼容层 | 最小依赖的薄兼容层 |
+| **InstalledAgent** | Snowl 托管部署 | 以 Snowl 插件形式打包，提供生命周期钩子 |
+
+---
+
+## 引擎配置导出
+
+`Engine.export_config()` 返回 `EngineConfig` 快照，捕获智能体的运行时配置：
+
+```python
+from qitos.engine import Engine
+
+engine = Engine(agent=my_agent, budget=budget, critics=[critic])
+config = engine.export_config()
+
+# 访问各字段
+print(config.agent_name)       # "my_agent"
+print(config.budget_max_steps) # 10
+print(config.critic_names)     # ["ScoreCritic"]
+print(config.tool_count)       # 5
+
+# 序列化用于传输
+config_dict = config.to_dict()
+```
+
+### EngineConfig 字段
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `agent_name` | `str` | 智能体模块名称 |
+| `model_id` | `str` | 解析后的模型标识 |
+| `budget_max_steps` | `int` | 最大步数预算 |
+| `budget_max_runtime_seconds` | `float \| None` | 运行时间预算 |
+| `budget_max_tokens` | `int \| None` | Token 预算 |
+| `critic_names` | `list[str]` | 附加评审器名称 |
+| `stop_criteria_names` | `list[str]` | 停止条件名称 |
+| `has_checkpoint_store` | `bool` | 是否启用检查点 |
+| `has_tracing_provider` | `bool` | 是否启用追踪 |
+| `protocol_id` | `str \| None` | 提示协议标识 |
+| `delegate_depth` | `int` | 当前委派深度 |
+| `has_shared_memory` | `bool` | 是否附加共享内存 |
+| `has_env` | `bool` | 是否附加环境 |
+| `tool_count` | `int` | 注册工具数量 |
+
+---
+
+## 工具权限导出
+
+`ToolRegistry.export_permissions()` 返回 `ToolPermissionSpec` 对象列表，描述每个工具的能力和安全配置：
+
+```python
+from qitos.core import ToolRegistry, ToolMeta, ToolPermission
+
+registry = ToolRegistry()
+
+def search(query: str) -> str:
+    """搜索网页。"""
+    ...
+
+registry.register(search, meta=ToolMeta(
+    name="search",
+    permissions=ToolPermission(network=True),
+    needs_approval=True,
+    read_only=False,
+))
+
+specs = registry.export_permissions()
+for spec in specs:
+    print(spec.name)                 # "search"
+    print(spec.permissions.network)  # True
+    print(spec.needs_approval)       # True
+    print(spec.read_only)            # False
+```
+
+### ToolPermissionSpec 字段
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `name` | `str` | 工具名称 |
+| `description` | `str` | 工具描述 |
+| `permissions` | `ToolPermission` | 网络、文件系统、子进程标志 |
+| `needs_approval` | `bool` | 是否需要人工审批 |
+| `read_only` | `bool` | 是否只读（无副作用） |
+| `concurrency_safe` | `bool` | 是否可并行执行 |
+| `required_ops` | `list[str]` | 所需操作列表 |
+
+---
+
+## 评审轨迹提取
+
+`EngineResult` 包含 `critic_traces` — 运行过程中每次评审评估的 `CriticTrace` 记录：
+
+```python
+from qitos.engine import Engine
+
+result = engine.run(task="分析此文档")
+
+for trace in result.critic_traces:
+    print(f"步骤 {trace.step_id}: {trace.critic_name} "
+          f"动作={trace.action} 分数={trace.score}")
+    if trace.instruction_patch:
+        print(f"  补丁: {trace.instruction_patch}")
+```
+
+### CriticTrace 字段
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `step_id` | `int` | 评审触发的步骤 |
+| `critic_name` | `str` | 评审器名称 |
+| `action` | `str` | `"continue"`、`"stop"` 或 `"retry"` |
+| `reason` | `str` | 可读原因 |
+| `score` | `float` | 数值分数（0–1） |
+| `details` | `dict` | 附加结构化数据 |
+| `instruction_patch` | `str \| None` | 建议的指令修改 |
+| `state_patch` | `dict \| None` | 建议的状态修改 |
+
+### 从 StepRecord 手动提取
+
+如果有原始 `StepRecord.critic_outputs` 而非 `EngineResult`：
+
+```python
+from qitos.engine.states import CriticTrace
+
+traces = []
+for record in result.records:
+    for output in record.critic_outputs:
+        if not isinstance(output, dict):
+            continue
+        traces.append(CriticTrace(
+            step_id=record.step_id,
+            critic_name=str(output.get("critic_name", "unknown")),
+            action=str(output.get("action", "continue")),
+            reason=str(output.get("reason", "")),
+            score=float(output.get("score", 1.0)),
+            details=output.get("details", {}),
+            instruction_patch=output.get("instruction_patch"),
+            state_patch=output.get("state_patch"),
+        ))
+```
+
+---
+
+## 交接轨迹提取
+
+`EngineResult` 包含 `handoff_traces` — 运行过程中每次智能体交接的 `HandoffTrace` 记录：
+
+```python
+for trace in result.handoff_traces:
+    print(f"步骤 {trace.step_id}: {trace.from_agent} → {trace.to_agent} "
+          f"策略={trace.context_strategy} 消息数={trace.messages_passed}")
+```
+
+### HandoffTrace 字段
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `step_id` | `int` | 交接发生的步骤 |
+| `from_agent` | `str` | 源智能体名称 |
+| `to_agent` | `str` | 目标智能体名称 |
+| `context_strategy` | `str` | `"ISOLATED"`、`"SUMMARY"` 或 `"FULL"` |
+| `messages_passed` | `int` | 传递的消息数 |
+
+### 从 RuntimeEvent 手动提取
+
+```python
+from qitos.engine.states import HandoffTrace, RuntimePhase
+
+traces = []
+for event in result.events:
+    if event.phase != RuntimePhase.HANDOFF_START:
+        continue
+    payload = event.payload or {}
+    traces.append(HandoffTrace(
+        step_id=event.step_id,
+        from_agent=str(payload.get("from", "")),
+        to_agent=str(payload.get("to", "")),
+        context_strategy=str(payload.get("context_strategy", "")),
+        messages_passed=int(payload.get("messages_passed", 0)),
+    ))
+```
+
+---
+
+## 端到端示例
+
+在 QitOS 中开发智能体，然后在 Snowl 中评估：
+
+```python
+# 1. 在 QitOS 中构建并运行
+from qitos import AgentModule, Engine, ToolRegistry, ToolMeta, ToolPermission
+
+registry = ToolRegistry()
+# ... 注册工具 ...
+
+engine = Engine(agent=my_agent, tool_registry=registry)
+result = engine.run(task="完成任务")
+
+# 2. 导出配置供 Snowl 使用
+config = engine.export_config()
+permission_specs = registry.export_permissions()
+
+# 3. 收集轨迹
+critic_data = [ct.to_dict() for ct in result.critic_traces]
+handoff_data = [ht.to_dict() for ht in result.handoff_traces]
+
+# 4. 打包供 Snowl 适配器消费
+snowl_payload = {
+    "engine_config": config.to_dict(),
+    "tool_permissions": [s.to_dict() for s in permission_specs],
+    "critic_traces": critic_data,
+    "handoff_traces": handoff_data,
+    "step_count": result.step_count,
+}
+
+# 所有输出均为 JSON 可序列化
+import json
+serialized = json.dumps(snowl_payload, ensure_ascii=False)
+```
+
+---
+
+## 一致性测试
+
+QitOS 内置一致性测试，验证所有导出 API 生成正确且可序列化的输出。运行方式：
+
+```bash
+python -m pytest tests/test_adapter_conformance.py -v
+```
+
+测试套件覆盖：
+- `EngineConfig` 字段完整性和 JSON 序列化
+- `ToolPermissionSpec` 字段映射和序列化
+- `CriticTrace` 提取和往返序列化
+- `HandoffTrace` 提取和往返序列化
+- 包含所有轨迹类型的 `EngineResult` 组合验证

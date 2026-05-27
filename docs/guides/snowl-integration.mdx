@@ -1,0 +1,250 @@
+---
+title: "Snowl Integration"
+description: "Connect QitOS agents to Snowl for evaluation, comparison, and production deployment."
+---
+
+QitOS provides export APIs that allow Snowl (or any compatible adapter) to consume agent configuration, tool permissions, critic traces, and handoff traces. This guide covers the three integration paths and walks through each export API.
+
+---
+
+## Integration Paths
+
+| Path | When to use | What it provides |
+|------|-------------|-------------------|
+| **QitOSAdapter** | Direct Python integration | Full bridge class that wraps Engine results for Snowl consumption |
+| **snowl_compat.py** | Lightweight shim | Thin compatibility layer with minimal dependencies |
+| **InstalledAgent** | Snowl-managed deployment | Agent packaged as a Snowl plugin with lifecycle hooks |
+
+---
+
+## Engine Configuration Export
+
+`Engine.export_config()` returns an `EngineConfig` snapshot capturing the agent's runtime configuration:
+
+```python
+from qitos.engine import Engine
+
+engine = Engine(agent=my_agent, budget=budget, critics=[critic])
+config = engine.export_config()
+
+# Access individual fields
+print(config.agent_name)       # "my_agent"
+print(config.budget_max_steps) # 10
+print(config.critic_names)     # ["ScoreCritic"]
+print(config.tool_count)       # 5
+
+# Serialize for transport
+config_dict = config.to_dict()
+```
+
+### EngineConfig Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `agent_name` | `str` | Name of the agent module |
+| `model_id` | `str` | Resolved model identifier |
+| `budget_max_steps` | `int` | Maximum step budget |
+| `budget_max_runtime_seconds` | `float \| None` | Runtime budget |
+| `budget_max_tokens` | `int \| None` | Token budget |
+| `critic_names` | `list[str]` | Names of attached critics |
+| `stop_criteria_names` | `list[str]` | Names of stop criteria |
+| `has_checkpoint_store` | `bool` | Whether checkpointing is enabled |
+| `has_tracing_provider` | `bool` | Whether tracing is enabled |
+| `protocol_id` | `str \| None` | Prompt protocol identifier |
+| `delegate_depth` | `int` | Current delegation depth |
+| `has_shared_memory` | `bool` | Whether shared memory is attached |
+| `has_env` | `bool` | Whether an environment is attached |
+| `tool_count` | `int` | Number of registered tools |
+
+---
+
+## Tool Permission Export
+
+`ToolRegistry.export_permissions()` returns a list of `ToolPermissionSpec` objects describing each tool's capability and safety profile:
+
+```python
+from qitos.core import ToolRegistry, ToolMeta, ToolPermission
+
+registry = ToolRegistry()
+
+def search(query: str) -> str:
+    """Search the web."""
+    ...
+
+registry.register(search, meta=ToolMeta(
+    name="search",
+    permissions=ToolPermission(network=True),
+    needs_approval=True,
+    read_only=False,
+))
+
+specs = registry.export_permissions()
+for spec in specs:
+    print(spec.name)              # "search"
+    print(spec.permissions.network)  # True
+    print(spec.needs_approval)    # True
+    print(spec.read_only)         # False
+```
+
+### ToolPermissionSpec Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | `str` | Tool name |
+| `description` | `str` | Tool description |
+| `permissions` | `ToolPermission` | Network, filesystem, subprocess flags |
+| `needs_approval` | `bool` | Whether human approval is required |
+| `read_only` | `bool` | Whether the tool only reads (no side effects) |
+| `concurrency_safe` | `bool` | Whether the tool can run in parallel |
+| `required_ops` | `list[str]` | Required operations |
+
+---
+
+## Critic Trace Extraction
+
+`EngineResult` includes `critic_traces` — a list of `CriticTrace` records from every critic evaluation during the run:
+
+```python
+from qitos.engine import Engine
+
+result = engine.run(task="Analyze this document")
+
+for trace in result.critic_traces:
+    print(f"Step {trace.step_id}: {trace.critic_name} "
+          f"action={trace.action} score={trace.score}")
+    if trace.instruction_patch:
+        print(f"  Patch: {trace.instruction_patch}")
+```
+
+### CriticTrace Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `step_id` | `int` | Step where the critic fired |
+| `critic_name` | `str` | Name of the critic |
+| `action` | `str` | `"continue"`, `"stop"`, or `"retry"` |
+| `reason` | `str` | Human-readable reason |
+| `score` | `float` | Numeric score (0–1) |
+| `details` | `dict` | Additional structured data |
+| `instruction_patch` | `str \| None` | Suggested instruction modification |
+| `state_patch` | `dict \| None` | Suggested state modification |
+
+### Manual Extraction from StepRecords
+
+If you have raw `StepRecord.critic_outputs` instead of `EngineResult`:
+
+```python
+from qitos.engine.states import CriticTrace
+
+traces = []
+for record in result.records:
+    for output in record.critic_outputs:
+        if not isinstance(output, dict):
+            continue
+        traces.append(CriticTrace(
+            step_id=record.step_id,
+            critic_name=str(output.get("critic_name", "unknown")),
+            action=str(output.get("action", "continue")),
+            reason=str(output.get("reason", "")),
+            score=float(output.get("score", 1.0)),
+            details=output.get("details", {}),
+            instruction_patch=output.get("instruction_patch"),
+            state_patch=output.get("state_patch"),
+        ))
+```
+
+---
+
+## Handoff Trace Extraction
+
+`EngineResult` includes `handoff_traces` — a list of `HandoffTrace` records from every agent handoff during the run:
+
+```python
+for trace in result.handoff_traces:
+    print(f"Step {trace.step_id}: {trace.from_agent} → {trace.to_agent} "
+          f"strategy={trace.context_strategy} msgs={trace.messages_passed}")
+```
+
+### HandoffTrace Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `step_id` | `int` | Step where the handoff occurred |
+| `from_agent` | `str` | Source agent name |
+| `to_agent` | `str` | Target agent name |
+| `context_strategy` | `str` | `"ISOLATED"`, `"SUMMARY"`, or `"FULL"` |
+| `messages_passed` | `int` | Number of messages transferred |
+
+### Manual Extraction from RuntimeEvents
+
+```python
+from qitos.engine.states import HandoffTrace, RuntimePhase
+
+traces = []
+for event in result.events:
+    if event.phase != RuntimePhase.HANDOFF_START:
+        continue
+    payload = event.payload or {}
+    traces.append(HandoffTrace(
+        step_id=event.step_id,
+        from_agent=str(payload.get("from", "")),
+        to_agent=str(payload.get("to", "")),
+        context_strategy=str(payload.get("context_strategy", "")),
+        messages_passed=int(payload.get("messages_passed", 0)),
+    ))
+```
+
+---
+
+## End-to-End Example
+
+Develop an agent in QitOS, then evaluate it in Snowl:
+
+```python
+# 1. Build and run in QitOS
+from qitos import AgentModule, Engine, ToolRegistry, ToolMeta, ToolPermission
+
+registry = ToolRegistry()
+# ... register tools ...
+
+engine = Engine(agent=my_agent, tool_registry=registry)
+result = engine.run(task="Complete the task")
+
+# 2. Export configuration for Snowl
+config = engine.export_config()
+permission_specs = registry.export_permissions()
+
+# 3. Collect traces
+critic_data = [ct.to_dict() for ct in result.critic_traces]
+handoff_data = [ht.to_dict() for ht in result.handoff_traces]
+
+# 4. Package for Snowl adapter consumption
+snowl_payload = {
+    "engine_config": config.to_dict(),
+    "tool_permissions": [s.to_dict() for s in permission_specs],
+    "critic_traces": critic_data,
+    "handoff_traces": handoff_data,
+    "step_count": result.step_count,
+}
+
+# All output is JSON-serializable
+import json
+serialized = json.dumps(snowl_payload, ensure_ascii=False)
+```
+
+---
+
+## Conformance Testing
+
+QitOS ships conformance tests that verify all export APIs produce correct, serializable output. Run them with:
+
+```bash
+python -m pytest tests/test_adapter_conformance.py -v
+```
+
+The test suite covers:
+- `EngineConfig` field completeness and JSON serialization
+- `ToolPermissionSpec` field mapping and serialization
+- `CriticTrace` extraction and round-trip serialization
+- `HandoffTrace` extraction and round-trip serialization
+- Combined `EngineResult` with all trace types

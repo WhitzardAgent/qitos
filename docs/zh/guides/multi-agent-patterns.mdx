@@ -1,0 +1,110 @@
+# 多智能体模式：DelegateTool vs FanOutTool vs Handoff
+
+QitOS 提供三种多智能体协调机制。本指南帮助你根据使用场景选择合适的模式。
+
+## 决策树
+
+```
+需要多个智能体？
+├── 1:1 委派（父智能体委派，子智能体返回结果）
+│   └── 使用 DelegateTool
+├── 1:N 并行委派（分发 N 个任务，聚合结果）
+│   └── 使用 FanOutTool
+└── 线性工作流（A → B → C，无返回）
+    └── 使用 Decision.handoff()
+```
+
+## DelegateTool
+
+**拓扑**：树形（父 → 子 → 孙）
+**结果流**：子智能体结果作为工具输出返回给父智能体
+**执行**：同步，嵌套 `Engine.run()`
+
+```python
+from qitos import AgentSpec, AgentRegistry, ContextStrategy
+
+registry = AgentRegistry()
+registry.register(AgentSpec(
+    name="researcher",
+    description="研究特定主题",
+    agent=ResearcherAgent(llm=llm),
+    context_strategy=ContextStrategy.SUMMARY,
+))
+tools = registry.get_delegate_tools()  # [DelegateTool(name="delegate_to_researcher")]
+```
+
+**适用场景**：
+- 协调器需要从专家获取返回结果
+- 顺序依赖：步骤 2 依赖步骤 1 的输出
+- 嵌套式 研究 → 实现 → 验证
+
+## FanOutTool
+
+**拓扑**：扇出（1 → N 并行，然后扇入）
+**结果流**：所有 N 个结果聚合为摘要
+**执行**：通过 ThreadPoolExecutor 并行
+
+```python
+registry = AgentRegistry()
+registry.register(AgentSpec(name="explorer", ...))
+fanout_tool = registry.get_fanout_tool(max_workers=4, per_task_timeout=120.0)
+```
+
+LLM 调用：`fanout(tasks=[{"agent":"explorer","task":"探索 /auth"}, {"agent":"explorer","task":"探索 /api"}])`
+
+**适用场景**：
+- 并行探索不同目录的代码
+- 并行测试不同端点
+- 子任务相互独立的任何场景
+
+**关键特性**：
+- `max_workers`：线程池大小（默认 4）
+- `per_task_timeout`：单任务超时秒数（默认 120s）
+- 聚合结果包含成功/部分成功/失败统计
+
+## Decision.handoff()
+
+**拓扑**：链式（A → B → C）
+**结果流**：无返回 — 控制权永久转移
+**执行**：同一 Engine 循环，智能体切换
+
+```python
+from qitos import Decision
+
+# 在智能体的 decide() 方法中：
+return Decision.handoff(target="coder", rationale="这需要代码修改")
+```
+
+**适用场景**：
+- 工作流式流水线（分流 → 编码 → 审查）
+- 线性处理阶段
+- 下游智能体不需要向上汇报
+
+## ContextStrategy
+
+控制子智能体接收的上下文：
+
+| 策略 | 父级上下文 | 使用场景 |
+|------|-----------|---------|
+| `ISOLATED` | 无 | 子智能体独立工作 |
+| `SUMMARY` | 最近 4 条草稿条目 | 子智能体需要简要上下文 |
+| `FULL` | 最近 16 条草稿条目 | 子智能体需要完整上下文 |
+
+## 深度保护
+
+DelegateTool 和 FanOutTool 均强制 `MAX_DELEGATE_DEPTH=3`，防止无限递归委派。Handoff 有 `max_handoffs`（默认 10，可通过 `ContextConfig.max_handoffs` 配置）和循环检测。
+
+## 模式模板
+
+QitOS 提供内置模式模板：
+
+```python
+# 管理者-工人：并行扇出
+from qitos.kit.patterns import build_manager_worker_system, ManagerWorkerConfig
+
+# 规划者-执行者：规划后交接
+from qitos.kit.patterns import build_planner_executor_system, PlannerExecutorConfig
+
+# 提议者-验证者：探索后验证
+from qitos.kit.patterns import build_proposer_verifier_system, ProposerVerifierConfig
+```

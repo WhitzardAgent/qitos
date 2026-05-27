@@ -321,6 +321,77 @@ def _build_handler(root: Path):
                 return
             self._send_json({"error": "not found", "route": route}, status=404)
 
+        def do_POST(self) -> None:  # noqa: N802
+            parsed = urlparse(self.path)
+            route = parsed.path
+
+            # POST /api/fork/{run_id}/{step_id}
+            import re as _re
+            fork_match = _re.match(r"^/api/fork/([^/]+)/(\d+)$", route)
+            if fork_match:
+                run_id = _slug_run_id(fork_match.group(1))
+                step_id = int(fork_match.group(2))
+                # Read body
+                content_length = int(self.headers.get("Content-Length", 0))
+                body_bytes = self.rfile.read(content_length) if content_length > 0 else b""
+                try:
+                    body = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    body = {}
+
+                override_decision = body.get("override_decision")
+                override_observation = body.get("override_observation")
+
+                # Resolve run directory
+                run_dir = None
+                for candidate in _discover_runs(logdir_root):
+                    if candidate.get("run_id") == run_id or Path(candidate.get("path", "")).name == run_id:
+                        run_dir = Path(candidate["path"])
+                        break
+
+                if run_dir is None or not run_dir.is_dir():
+                    self._send_json({"error": f"Run not found: {run_id}"}, status=404)
+                    return
+
+                # Use ReplaySession to fork
+                from qitos.debug.replay import ReplaySession
+                try:
+                    session = ReplaySession(str(run_dir))
+                    override = {}
+                    if override_decision:
+                        override["decision"] = override_decision
+                    if override_observation:
+                        override["observation"] = override_observation
+                    forked = session.fork_with_step_override(step_id, override)
+                except Exception as exc:
+                    self._send_json({"error": str(exc)}, status=500)
+                    return
+
+                # Write forked run as a new run directory
+                fork_run_id = f"{run_id}_fork_s{step_id}"
+                fork_dir = run_dir.parent / fork_run_id
+                fork_dir.mkdir(parents=True, exist_ok=True)
+                if "manifest" in forked:
+                    (fork_dir / "manifest.json").write_text(
+                        json.dumps(forked["manifest"], ensure_ascii=False, indent=2),
+                        encoding="utf-8",
+                    )
+                if "events" in forked:
+                    lines = [json.dumps(e, ensure_ascii=False) for e in forked["events"]]
+                    (fork_dir / "events.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
+                if "steps" in forked:
+                    lines = [json.dumps(s, ensure_ascii=False) for s in forked["steps"]]
+                    (fork_dir / "steps.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+                self._send_json({
+                    "fork_run_id": fork_run_id,
+                    "fork_dir": str(fork_dir),
+                    "step_id": step_id,
+                })
+                return
+
+            self._send_json({"error": "not found", "route": route}, status=404)
+
         def log_message(self, fmt: str, *args: Any) -> None:
             # Keep console clean; qita already prints startup summary.
             _ = fmt
@@ -888,6 +959,18 @@ def _render_board_html() -> str:
     <button class="btn" id="refresh">Refresh</button>
   </div>
   <div id="stats" class="grid" style="grid-template-columns:repeat(auto-fill,minmax(240px,1fr));margin-bottom:12px"></div>
+  <section id="trendSection" style="margin-bottom:14px;display:none">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
+      <span style="font-size:13px;font-weight:600;color:var(--txt)">trend</span>
+      <select id="trendMetric" style="border:1px solid var(--line);background:var(--surface-1);color:var(--txt);border-radius:var(--radius-md);padding:4px 8px;font-size:12px">
+        <option value="tokens">tokens</option>
+        <option value="steps">steps</option>
+        <option value="runtime">runtime (s)</option>
+        <option value="cost">cost ($)</option>
+      </select>
+    </div>
+    <div id="trendChart" style="background:var(--surface-1);border:1px solid var(--line);border-radius:var(--radius-lg);padding:10px;overflow-x:auto"></div>
+  </section>
   <div id="runs" class="grid"></div>
 </div>
 <script>
@@ -1059,6 +1142,52 @@ function ctxPeak(ctx){
   const v = ctxPeakNum(ctx);
   return v ? ((v*100).toFixed(1) + '%') : '-';
 }
+function buildTrendChart(){
+  const el = document.getElementById('trendChart');
+  const section = document.getElementById('trendSection');
+  if(!el || !section) return;
+  if(allRuns.length < 2){ section.style.display = 'none'; return; }
+  section.style.display = '';
+  const metric = document.getElementById('trendMetric').value;
+  const sorted = allRuns.slice().sort((a,b)=>parseTime(a.updated_at)-parseTime(b.updated_at));
+  const pts = sorted.map(function(r){
+    const m = r.manifest_meta || {};
+    let val = 0;
+    if(metric === 'tokens') val = Number(m.token_usage || 0);
+    else if(metric === 'steps') val = Number(r.step_count || 0);
+    else if(metric === 'runtime') val = Number(m.latency_seconds || 0);
+    else if(metric === 'cost') val = Number(m.cost || 0);
+    return {id: r.id || '', val: val};
+  });
+  const maxVal = Math.max(...pts.map(p=>p.val), 1);
+  const w = 900, h = 140, padL = 50, padR = 16, padT = 12, padB = 28;
+  const plotW = w - padL - padR, plotH = h - padT - padB;
+  function xAt(i){ return pts.length === 1 ? padL + plotW/2 : padL + (plotW * i / (pts.length - 1)); }
+  function yAt(v){ return padT + plotH - (v / maxVal) * plotH; }
+  const colors = {tokens:'#5e6ad2', steps:'#3dc9b0', runtime:'#e5c100', cost:'#e5484d'};
+  const color = colors[metric] || '#5e6ad2';
+  let polyPts = [], dots = [], labels = [];
+  for(let i = 0; i < pts.length; i++){
+    const x = xAt(i), y = yAt(pts[i].val);
+    polyPts.push(x+','+y);
+    dots.push('<circle cx="'+x+'" cy="'+y+'" r="3" fill="'+color+'"><title>'+esc(pts[i].id)+': '+pts[i].val+'</title></circle>');
+    if(pts.length <= 20 || i % Math.ceil(pts.length / 20) === 0){
+      labels.push('<text class="gantt-step-label" x="'+x+'" y="'+(h-4)+'" text-anchor="middle" fill="var(--muted)" font-size="9">'+esc(pts[i].id.slice(0,8))+'</text>');
+    }
+  }
+  const gridLines = [];
+  for(let g = 0; g <= 4; g++){
+    const yVal = (maxVal * g / 4);
+    const y = yAt(yVal);
+    gridLines.push('<line x1="'+padL+'" y1="'+y+'" x2="'+(w-padR)+'" y2="'+y+'" stroke="var(--line)" stroke-width="0.5"/>');
+    gridLines.push('<text x="'+(padL-4)+'" y="'+(y+3)+'" text-anchor="end" fill="var(--muted)" font-size="9">'+Math.round(yVal)+'</text>');
+  }
+  el.innerHTML = '<svg viewBox="0 0 '+w+' '+h+'" role="img" aria-label="Trend chart" style="width:100%;max-width:'+w+'px">' +
+    gridLines.join('') +
+    '<polyline points="'+polyPts.join(' ')+'" fill="none" stroke="'+color+'" stroke-width="1.5" stroke-linejoin="round"/>' +
+    dots.join('') + labels.join('') +
+    '</svg>';
+}
 async function loadRuns(){
   const rsp = await fetch('/api/runs');
   const data = await rsp.json();
@@ -1069,11 +1198,13 @@ async function loadRuns(){
   statusEl.innerHTML = '<option value="">All status</option>' + Array.from(statusSet).sort().map((s)=>`<option value="${s}">${s}</option>`).join('');
   if(keep){ statusEl.value = keep; }
   paint();
+  buildTrendChart();
 }
 document.getElementById('q').addEventListener('input', paint);
 document.getElementById('status').addEventListener('change', paint);
 document.getElementById('sort').addEventListener('change', paint);
 document.getElementById('compareBtn').addEventListener('click', openCompare);
+document.getElementById('trendMetric').addEventListener('change', buildTrendChart);
 document.getElementById('refresh').addEventListener('click', ()=>loadRuns().catch((e)=>{document.getElementById('runs').innerHTML=`<div class="empty">Load failed: ${e}</div>`;}));
 setInterval(()=>{ if(document.getElementById('auto').checked){ loadRuns().catch(()=>{}); } }, 2500);
 loadRuns().catch((e)=>{document.getElementById('runs').innerHTML=`<div class="empty">Load failed: ${e}</div>`;});
@@ -1305,6 +1436,10 @@ pre{{margin:0;background:var(--surface-2);border:1px solid var(--line);padding:1
       </div>
       <section class="panel active" id="panelTraj">
         <section class="overview" id="overview"></section>
+        <section class="timeline" id="costPanelSection">
+          <h4>cost summary</h4>
+          <div id="costPanel"></div>
+        </section>
         <div class="controls">
           <input id="q" placeholder="Filter by text in observation/decision/action/critic/events"/>
           <select id="eventFilter"><option value="">All events</option></select>
@@ -2139,6 +2274,43 @@ function buildHandoffGantt(items){{
   p.push('</svg>');
   el.innerHTML = p.join('');
 }}
+function buildCostPanel(items){{
+  const el = document.getElementById('costPanel');
+  if(!el) return;
+  const m = typeof manifest === 'object' ? manifest : {{}};
+  const s = m.summary || {{}};
+  const c = s.context || {{}};
+  const totalSteps = Number(m.step_count || items.length);
+  const tokensTotal = Number(c.tokens_total || m.token_usage || 0);
+  const avgTokens = totalSteps > 0 ? Math.round(tokensTotal / totalSteps) : 0;
+  const runtimeSec = Number(m.latency_seconds || 0);
+  const costVal = m.cost != null ? Number(m.cost) : 0;
+  if(!tokensTotal && !runtimeSec && !costVal){{
+    el.innerHTML = '<div class="muted">No cost/performance data available.</div>';
+    document.getElementById('costPanelSection').style.display = 'none';
+    return;
+  }}
+  const barH = 24, maxBar = 280, gap = 18, labelW = 130, padTop = 10, padBottom = 8;
+  const rows = [
+    {{label: 'tokens total', value: tokensTotal, max: Math.max(tokensTotal, 1), color: '#5e6ad2'}},
+    {{label: 'avg tokens/step', value: avgTokens, max: Math.max(avgTokens, 1), color: '#3dc9b0'}},
+    {{label: 'runtime (s)', value: runtimeSec, max: Math.max(runtimeSec, 1), color: '#e5c100'}},
+    {{label: 'cost ($)', value: costVal, max: Math.max(costVal, 0.001), color: '#e5484d'}},
+  ];
+  const totalH = padTop + rows.length * (barH + gap) + padBottom;
+  const width = labelW + maxBar + 80;
+  let p = ['<svg class="gantt-svg" viewBox="0 0 '+width+' '+totalH+'" role="img" aria-label="Cost summary">'];
+  rows.forEach(function(r, i){{
+    const y = padTop + i * (barH + gap);
+    const barW = Math.max(4, (r.value / r.max) * maxBar);
+    p.push('<text class="gantt-label" x="'+(labelW-8)+'" y="'+(y+barH/2+4)+'" text-anchor="end">'+esc(r.label)+'</text>');
+    p.push('<rect x="'+labelW+'" y="'+y+'" width="'+barW+'" height="'+barH+'" fill="'+r.color+'" rx="4" ry="4" fill-opacity="0.7"/>');
+    const valText = r.label.includes('cost') ? Number(r.value).toFixed(4) : String(r.value);
+    p.push('<text class="gantt-step-label" x="'+(labelW+barW+8)+'" y="'+(y+barH/2+4)+'" fill="'+r.color+'">'+esc(valText)+'</text>');
+  }});
+  p.push('</svg>');
+  el.innerHTML = p.join('');
+}}
 function buildContextTimeline(items){{
   const points = items.map(function(it){{
     const ctx = (it.step && typeof it.step.context === 'object') ? it.step.context : {{}};
@@ -2459,6 +2631,7 @@ function render(){{
   buildVisualTimeline(items);
   buildTimeline(items);
   buildHandoffGantt(items);
+  buildCostPanel(items);
   buildContextTimeline(items);
   buildParserTimeline(items);
   buildCriticTimeline(items);
@@ -2967,8 +3140,9 @@ function fmt(r){{
   const err = r.error ? '<span class="tag kind-error">error</span>' : '';
   const raw = esc(JSON.stringify(r.body, null, 2));
   const agentTag = r.agent_id ? '<span class="tag" style="border-color:var(--line-strong);color:var(--accent)">'+esc(r.agent_id)+'</span>' : '';
+  const forkBtn = r.step_id !== undefined ? '<button class="btn fork-btn" data-step="'+esc(String(r.step_id))+'" style="font-size:10px;padding:2px 6px" title="Fork from this step">fork</button>' : '';
   return '<article class="card kind-'+esc(r.kind)+'">' +
-    '<div class="ctitle"><span>'+esc(r.title)+'</span><span><span class="tag">'+esc(r.phase||'')+'</span> <span class="tag kind-'+esc(r.kind)+'">'+esc(r.kind)+'</span> '+agentTag+' '+err+'</span></div>' +
+    '<div class="ctitle"><span>'+esc(r.title)+'</span><span><span class="tag">'+esc(r.phase||'')+'</span> <span class="tag kind-'+esc(r.kind)+'">'+esc(r.kind)+'</span> '+agentTag+' '+err+' '+forkBtn+'</span></div>' +
     '<div class="cbody">'+renderRecordBody(r)+'</div>' +
     '<details style="margin-top:8px"><summary style="cursor:pointer;color:var(--muted)">Raw</summary><pre style="white-space:pre-wrap;background:var(--surface-1);border:1px solid var(--line);border-radius:var(--radius-md);padding:8px">'+raw+'</pre></details>' +
     '</article>';
@@ -3031,5 +3205,21 @@ resetBtn.onclick = ()=>{{ i = 0; render(); if(playing) tick(); }};
 progress.oninput = ()=>{{ i = Number(progress.value || 0); render(); }};
 speedEl.onchange = ()=>{{ if(playing){{ clearTimeout(timer); tick(); }} }};
 onlyErr.onchange = render;
+// Fork button handler — delegate clicks via event delegation on the screen
+screen.addEventListener('click', function(e){{
+  const btn = e.target.closest('.fork-btn');
+  if(!btn) return;
+  const stepId = btn.getAttribute('data-step');
+  if(stepId === null) return;
+  fetch('/api/fork/{run_id}/' + stepId, {{method: 'POST', headers: {{'Content-Type': 'application/json'}}, body: JSON.dumps({{}})}})
+  .then(function(r){{ return r.json(); }})
+  .then(function(data){{
+    if(data.error){{ alert('Fork failed: ' + data.error); return; }}
+    const msg = 'Forked run created: ' + data.fork_run_id + '\\nView at /run/' + data.fork_run_id;
+    alert(msg);
+    window.open('/run/' + data.fork_run_id, '_blank');
+  }})
+  .catch(function(err){{ alert('Fork request failed: ' + err); }});
+}});
 tick();
 </script></body></html>"""

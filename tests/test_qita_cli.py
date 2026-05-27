@@ -592,3 +592,69 @@ def test_handoff_gantt_hidden_for_single_agent(tmp_path: Path):
     html = _render_run_html(payload, embedded=False)
     assert "buildHandoffGantt" in html  # function defined
     assert "No handoff events recorded" in html
+
+
+def test_cost_panel_section_in_run_page(tmp_path: Path):
+    """Cost panel section is rendered in run detail pages."""
+    run = _make_run(tmp_path, "cp1")
+    event_lines = [
+        json.loads(line)
+        for line in (run / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    step_data = json.loads((run / "steps.jsonl").read_text(encoding="utf-8").strip())
+    manifest = json.loads((run / "manifest.json").read_text(encoding="utf-8"))
+    payload = {
+        "run": str(run),
+        "run_id": "cp1",
+        "manifest": manifest,
+        "events": event_lines,
+        "steps": [step_data],
+        "events_by_step": {"0": event_lines},
+    }
+    html = _render_run_html(payload, embedded=False)
+    assert "costPanel" in html
+    assert "buildCostPanel" in html
+    assert "cost summary" in html
+
+
+def test_cost_panel_hidden_when_no_data(tmp_path: Path):
+    """Cost panel is hidden when no cost/performance data."""
+    run = _make_run(tmp_path, "cp2")
+    event_lines = [
+        json.loads(line)
+        for line in (run / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    step_data = json.loads((run / "steps.jsonl").read_text(encoding="utf-8").strip())
+    manifest = json.loads((run / "manifest.json").read_text(encoding="utf-8"))
+    # Zero out cost data
+    manifest["token_usage"] = 0
+    manifest["latency_seconds"] = 0
+    manifest["cost"] = 0
+    manifest["summary"]["context"]["tokens_total"] = 0
+    payload = {
+        "run": str(run),
+        "run_id": "cp2",
+        "manifest": manifest,
+        "events": event_lines,
+        "steps": [step_data],
+        "events_by_step": {"0": event_lines},
+    }
+    html = _render_run_html(payload, embedded=False)
+    assert "buildCostPanel" in html
+    assert "No cost/performance data available" in html
+
+
+def test_board_trend_chart_section():
+    """Board page includes trend chart section with metric selector."""
+    html = _render_board_html()
+    assert "trendSection" in html
+    assert "trendChart" in html
+    assert "trendMetric" in html
+    assert "buildTrendChart" in html
+    # Metric options
+    assert '<option value="tokens">tokens</option>' in html
+    assert '<option value="steps">steps</option>' in html
+    assert '<option value="runtime">runtime (s)</option>' in html
+    assert '<option value="cost">cost ($)</option>' in html
