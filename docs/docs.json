@@ -87,7 +87,8 @@
                   "guides/memory-and-history",
                   "guides/critics-and-stop-criteria",
                   "guides/observability",
-                  "guides/wandb-integration"
+                  "guides/wandb-integration",
+                  "guides/mlflow-integration"
                 ]
               },
               {

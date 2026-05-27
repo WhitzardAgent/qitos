@@ -1,0 +1,186 @@
+---
+title: "MLflow 集成"
+description: "将 QitOS 运行指标流式传输到 MLflow 进行实验追踪与可视化。"
+---
+
+`MlflowTraceProcessor` 实现了 `TraceProcessor` 抽象基类，可将 QitOS 运行数据流式传输到 MLflow 追踪服务器。挂载后，它会在运行过程中自动记录每个 span 的指标，并在 trace 结束时写入最终汇总。
+
+## 安装
+
+```bash
+pip install qitos[mlflow]
+```
+
+该命令会将 `mlflow` SDK 作为可选依赖安装。若未安装，导入 `MlflowTraceProcessor` 会抛出 `ImportError`。
+
+---
+
+## 快速上手
+
+```python
+from qitos.tracing import add_trace_processor
+from qitos.tracing.mlflow_processor import MlflowTraceProcessor
+
+processor = MlflowTraceProcessor(
+    experiment_name="qitos-runs",
+    run_name="gaia-eval-001",
+    tracking_uri="http://localhost:5000",
+    tags={"env": "dev", "benchmark": "gaia"},
+)
+add_trace_processor(processor)
+
+result = agent.run(task="...", return_state=True)
+```
+
+运行开始时，`MlflowTraceProcessor` 会使用传入的参数调用 `mlflow.set_experiment()` 和 `mlflow.start_run()`。当 trace 结束时（正常结束或出错），它会写入汇总并默认调用 `mlflow.end_run()`。
+
+---
+
+## 构造参数
+
+| 参数 | 类型 | 默认值 | 说明 |
+|---|---|---|---|
+| `experiment_name` | `str` | `"qitos"` | 传给 `mlflow.set_experiment` 的 MLflow 实验名称 |
+| `run_name` | `str \| None` | `None` | MLflow 运行名称。若未指定则使用 QitOS trace 名称 |
+| `tracking_uri` | `str \| None` | `None` | MLflow 追踪服务器的 URI（例如 `http://localhost:5000`） |
+| `tags` | `dict \| None` | `None` | MLflow 运行的标签字典 |
+| `auto_end_run` | `bool` | `True` | 是否在 trace 结束时自动调用 `mlflow.end_run()` |
+
+---
+
+## 记录的指标
+
+### 逐 span 指标
+
+处理器拦截 span 结束事件，在运行过程中增量记录指标。
+
+| Span 类型 | 记录的指标 |
+|---|---|
+| `GenerationSpanData` | `generation/prompt_tokens`、`generation/completion_tokens`、`generation/total_tokens` |
+| `StepSpanData` | `step/number` |
+| `CriticSpanData` | `critic/score` |
+| `ToolSpanData` | `tool/name`（以标签形式记录） |
+| `ActSpanData` | `action/name`（以标签形式记录） |
+
+工具名称和动作名称以 MLflow 标签而非指标的形式记录，因为它们是字符串值。
+
+### 最终汇总
+
+当 trace 结束时，处理器将聚合指标写入 MLflow 运行：
+
+| 汇总键 | 说明 |
+|---|---|
+| `total_tokens` | 所有 generation span 的 prompt + completion 累计 token 数 |
+| `total_steps` | 处理的 step span 数量 |
+| `total_tool_calls` | tool 和 action span 的总数 |
+| `critic/avg_score` | 所有 critic 分数的平均值（仅在有分数时记录） |
+| `critic/min_score` | 最低 critic 分数 |
+| `critic/max_score` | 最高 critic 分数 |
+| `stop_reason` | 从 trace 元数据中提取的运行停止原因，以标签形式记录 |
+
+---
+
+## 使用本地追踪服务器
+
+先在本地启动 MLflow 追踪服务器，然后将处理器指向该服务器：
+
+```bash
+mlflow server --host 127.0.0.1 --port 5000
+```
+
+```python
+from qitos.tracing import add_trace_processor
+from qitos.tracing.mlflow_processor import MlflowTraceProcessor
+
+processor = MlflowTraceProcessor(
+    experiment_name="qitos-runs",
+    tracking_uri="http://localhost:5000",
+)
+add_trace_processor(processor)
+
+result = agent.run(task="...", return_state=True)
+```
+
+若未设置 `tracking_uri`，MLflow 默认使用本地 `mlruns` 目录。
+
+---
+
+## 与其他处理器组合
+
+`add_trace_processor` 会将处理器追加到全局列表，因此可以将 `MlflowTraceProcessor` 与其他 `TraceProcessor` 组合使用，包括 `WandbTraceProcessor`：
+
+```python
+from qitos.tracing import add_trace_processor
+from qitos.tracing.mlflow_processor import MlflowTraceProcessor
+from qitos.tracing.wandb_processor import WandbTraceProcessor
+
+mlflow_processor = MlflowTraceProcessor(
+    experiment_name="qitos-runs",
+    tracking_uri="http://localhost:5000",
+    tags={"env": "dev"},
+)
+wandb_processor = WandbTraceProcessor(
+    project="my-qitos-runs",
+    config={"model": "gpt-4o"},
+)
+add_trace_processor(mlflow_processor)
+add_trace_processor(wandb_processor)
+
+# 两个处理器都会收到所有 trace 事件
+result = agent.run(task="...", return_state=True)
+```
+
+若要替换所有处理器（移除默认写入器），请使用 `set_trace_processors`：
+
+```python
+from qitos.tracing import set_trace_processors
+
+set_trace_processors([mlflow_processor, wandb_processor])
+```
+
+---
+
+## 生命周期控制
+
+### auto_end_run
+
+默认 `auto_end_run=True`，处理器会在 `on_trace_end` 触发时自动调用 `mlflow.end_run()`。如果需要在 QitOS trace 结束后继续向同一 MLflow 运行写入自定义指标，可设置 `auto_end_run=False`：
+
+```python
+import mlflow
+from qitos.tracing import add_trace_processor
+from qitos.tracing.mlflow_processor import MlflowTraceProcessor
+
+processor = MlflowTraceProcessor(
+    experiment_name="qitos-runs",
+    auto_end_run=False,
+)
+add_trace_processor(processor)
+
+result = agent.run(task="...", return_state=True)
+
+# 向同一 MLflow 运行写入额外的自定义指标
+mlflow.log_metric("custom/accuracy", 0.92)
+
+mlflow.end_run()
+```
+
+### shutdown()
+
+调用 `shutdown()` 可提前关闭 MLflow 运行（例如在 `SIGTERM` 信号处理或 notebook 清理步骤中）：
+
+```python
+processor.shutdown()
+```
+
+如果运行处于活跃状态且 `auto_end_run` 为 `True`，它会调用 `mlflow.end_run()`。该方法可安全地多次调用。
+
+### force_flush()
+
+调用 `force_flush()` 可确保所有缓冲指标已写入 MLflow 追踪服务器：
+
+```python
+processor.force_flush()
+```
+
+该方法会刷新 MLflow 客户端缓冲区中的所有待处理指标。

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import inspect
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Any, Callable, Dict, List, Optional, cast
 
 
@@ -13,6 +13,30 @@ class ToolPermission:
     filesystem_write: bool = False
     network: bool = False
     command: bool = False
+
+
+@dataclass(frozen=True)
+class ToolPermissionSpec:
+    """Serializable snapshot of a tool's permission and capability profile."""
+
+    name: str
+    description: str = ""
+    permissions: ToolPermission = field(default_factory=ToolPermission)
+    needs_approval: bool = False
+    read_only: bool = False
+    concurrency_safe: bool = False
+    required_ops: List[str] = field(default_factory=list)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "name": self.name,
+            "description": self.description,
+            "permissions": asdict(self.permissions),
+            "needs_approval": self.needs_approval,
+            "read_only": self.read_only,
+            "concurrency_safe": self.concurrency_safe,
+            "required_ops": list(self.required_ops),
+        }
 
 
 @dataclass

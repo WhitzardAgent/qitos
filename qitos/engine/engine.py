@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any, Callable, Dict, Generic, List, Optional, TypeVar
 from uuid import uuid4
 
@@ -43,7 +43,17 @@ from .hooks import EngineHook, HookContext
 from .parser import Parser
 from .recovery import RecoveryPolicy, build_failure_report
 from .search import Search
-from .states import ContextConfig, RuntimeBudget, RuntimeEvent, RuntimePhase, StepRecord, StepResult
+from .states import (
+    ContextConfig,
+    CriticTrace,
+    EngineConfig,
+    HandoffTrace,
+    RuntimeBudget,
+    RuntimeEvent,
+    RuntimePhase,
+    StepRecord,
+    StepResult,
+)
 from .stop_criteria import FinalResultCriteria, StopCriteria
 from .validation import StateValidationGate
 
@@ -143,6 +153,8 @@ class EngineResult(Generic[StateT]):
     runtime_seconds: float = 0.0
     total_tokens: int = 0
     run_id: str = ""
+    critic_traces: List[CriticTrace] = field(default_factory=list)
+    handoff_traces: List[HandoffTrace] = field(default_factory=list)
     _cancel_token: Optional[CancelToken] = None
 
     def cancel(self, mode: str = "immediate") -> None:
@@ -230,6 +242,8 @@ class EngineResult(Generic[StateT]):
             "tool_calls_by_name": self.tool_calls_by_name,
             "success_rate": self.success_rate,
             "step_summaries": [item.to_dict() for item in self.step_summaries],
+            "critic_traces": [ct.to_dict() for ct in self.critic_traces],
+            "handoff_traces": [ht.to_dict() for ht in self.handoff_traces],
             "task_result": task_result_dict,
             "state": self.state.to_dict() if hasattr(self.state, "to_dict") else self.state,
         }
@@ -1314,6 +1328,10 @@ class Engine(Generic[StateT, ObservationT, ActionT]):
                 },
             )
 
+        # Extract structured traces from records and events.
+        _critic_traces = self._extract_critic_traces()
+        _handoff_traces = self._extract_handoff_traces()
+
         result = EngineResult(
             state=state,
             records=self.records,
@@ -1325,6 +1343,8 @@ class Engine(Generic[StateT, ObservationT, ActionT]):
             runtime_seconds=time.monotonic() - started_at,
             total_tokens=int(self._token_usage),
             run_id=self._active_run_id,
+            critic_traces=_critic_traces,
+            handoff_traces=_handoff_traces,
             _cancel_token=self._cancel_token,
         )
         self._notify_run_end(result)
@@ -1345,6 +1365,68 @@ class Engine(Generic[StateT, ObservationT, ActionT]):
                 self.budget.max_tokens = int(budget.max_tokens)
         if self._uses_default_stop_criteria:
             self.stop_criteria = [FinalResultCriteria()]
+
+    # -- Configuration export --------------------------------------------------
+
+    def export_config(self) -> EngineConfig:
+        """Return a serializable snapshot of this Engine's configuration."""
+        return EngineConfig(
+            agent_name=getattr(self.agent, "name", "") or "",
+            model_id=getattr(self, "_resolved_model_id", "") or "",
+            budget_max_steps=self.budget.max_steps,
+            budget_max_runtime_seconds=self.budget.max_runtime_seconds,
+            budget_max_tokens=self.budget.max_tokens,
+            critic_names=[type(c).__name__ for c in self.critics],
+            stop_criteria_names=[type(s).__name__ for s in self.stop_criteria],
+            has_checkpoint_store=self._checkpoint_store is not None,
+            has_tracing_provider=self._tracing_provider is not None,
+            protocol_id=getattr(self, "_resolved_protocol_id", None),
+            delegate_depth=self._delegate_depth,
+            has_shared_memory=self._shared_memory is not None,
+            has_env=self.env is not None,
+            tool_count=len(self.tool_registry) if self.tool_registry else 0,
+        )
+
+    # -- Trace extraction helpers ----------------------------------------------
+
+    def _extract_critic_traces(self) -> List[CriticTrace]:
+        """Extract structured CriticTrace entries from step records."""
+        traces: List[CriticTrace] = []
+        for record in self.records:
+            for output in list(getattr(record, "critic_outputs", []) or []):
+                if not isinstance(output, dict):
+                    continue
+                traces.append(
+                    CriticTrace(
+                        step_id=record.step_id,
+                        critic_name=str(output.get("critic_name", "unknown")),
+                        action=str(output.get("action", "continue")),
+                        reason=str(output.get("reason", "")),
+                        score=float(output.get("score", 1.0)),
+                        details=output.get("details", {}),
+                        instruction_patch=output.get("instruction_patch"),
+                        state_patch=output.get("state_patch"),
+                    )
+                )
+        return traces
+
+    def _extract_handoff_traces(self) -> List[HandoffTrace]:
+        """Extract structured HandoffTrace entries from runtime events."""
+        traces: List[HandoffTrace] = []
+        for event in self.events:
+            if event.phase != RuntimePhase.HANDOFF_START:
+                continue
+            payload = event.payload or {}
+            traces.append(
+                HandoffTrace(
+                    step_id=event.step_id,
+                    from_agent=str(payload.get("from", "")),
+                    to_agent=str(payload.get("to", "")),
+                    context_strategy=str(payload.get("context_strategy", "")),
+                    messages_passed=int(payload.get("messages_passed", 0)),
+                )
+            )
+        return traces
 
     def _build_env_view(
         self, state: StateT, step_id: int, started_at: float

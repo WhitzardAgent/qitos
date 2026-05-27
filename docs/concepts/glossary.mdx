@@ -164,3 +164,25 @@ Optional fields on `FamilyPreset` (`recommended_max_steps`, `recommended_max_tok
 ### WandbTraceProcessor
 
 A `TraceProcessor` implementation that streams QitOS run metrics (token usage, step counts, critic scores, tool calls, stop reason) to a Weights & Biases project. Requires the `wandb` package (`pip install qitos[wandb]`).
+
+### MlflowTraceProcessor
+
+A `TraceProcessor` implementation that streams QitOS run metrics to an MLflow tracking server. Supports custom `tracking_uri` for remote servers. Requires the `mlflow` package (`pip install qitos[mlflow]`).
+
+## Engine export terms
+
+### CriticTrace
+
+A structured record of a single critic evaluation within a run, captured as `EngineResult.critic_traces`. Contains `step_id`, `critic_name`, `action`, `reason`, `score`, and optional `instruction_patch`/`state_patch`.
+
+### HandoffTrace
+
+A structured record of an agent handoff within a run, captured as `EngineResult.handoff_traces`. Contains `step_id`, `from_agent`, `to_agent`, `context_strategy`, and `messages_passed`.
+
+### EngineConfig
+
+A frozen, serializable snapshot of Engine configuration produced by `Engine.export_config()`. Contains agent name, model ID, budget settings, critic names, protocol, and capability flags.
+
+### ToolPermissionSpec
+
+A frozen, serializable snapshot of a tool's permission and capability profile produced by `ToolRegistry.export_permissions()`. Contains `name`, `permissions`, `needs_approval`, `read_only`, `concurrency_safe`, and `required_ops`.

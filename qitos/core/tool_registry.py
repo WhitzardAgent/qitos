@@ -329,6 +329,31 @@ class ToolRegistry:
             )
         return specs
 
+    def export_permissions(self) -> List["ToolPermissionSpec"]:
+        """Return a ToolPermissionSpec for each registered tool.
+
+        This is a QitOS-native alternative to ``get_all_specs()`` that
+        focuses on permission and capability metadata without the
+        OpenAI-style schema wrapping.
+        """
+        from .tool import ToolPermissionSpec
+
+        specs: List[ToolPermissionSpec] = []
+        for name in self.list_tools():
+            tool = self._tools[name]
+            specs.append(
+                ToolPermissionSpec(
+                    name=tool.spec.name,
+                    description=tool.spec.description,
+                    permissions=tool.spec.permissions,
+                    needs_approval=tool.spec.needs_approval,
+                    read_only=tool.spec.read_only,
+                    concurrency_safe=tool.spec.concurrency_safe,
+                    required_ops=list(tool.spec.required_ops),
+                )
+            )
+        return specs
+
     def _to_tool(self, item: Any, meta: Optional[ToolMeta] = None) -> BaseTool:
         if isinstance(item, BaseTool):
             return item

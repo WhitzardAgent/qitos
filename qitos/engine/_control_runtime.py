@@ -110,7 +110,9 @@ class _ControlRuntime(Generic[StateT, ObservationT, ActionT]):
                 result = CriticResult.from_dict(out)
             else:
                 result = CriticResult(action="continue", reason="invalid_critic_output")
-            outputs.append(result.to_dict())
+            d = result.to_dict()
+            d["critic_name"] = type(critic).__name__
+            outputs.append(d)
         record.critic_outputs = outputs
         engine._emit(
             record.step_id,

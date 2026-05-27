@@ -9,6 +9,7 @@ Public API
 - ``TraceProcessor`` — processor protocol
 - ``TracingMode`` — ENABLED / ENABLED_WITHOUT_DATA / DISABLED
 - ``WandbTraceProcessor`` — W&B integration (requires ``qitos[wandb]``)
+- ``MlflowTraceProcessor`` — MLflow integration (requires ``qitos[mlflow]``)
 """
 
 from __future__ import annotations
@@ -24,6 +25,12 @@ from .legacy_processor import LegacyTraceWriterProcessor
 # Optional W&B processor — only available when wandb is installed
 try:
     from .wandb_processor import WandbTraceProcessor  # noqa: F401
+except ImportError:
+    pass
+
+# Optional MLflow processor — only available when mlflow is installed
+try:
+    from .mlflow_processor import MlflowTraceProcessor  # noqa: F401
 except ImportError:
     pass
 
@@ -95,4 +102,5 @@ __all__ = [
     "create_trace",
     # optional integrations
     "WandbTraceProcessor",
+    "MlflowTraceProcessor",
 ]

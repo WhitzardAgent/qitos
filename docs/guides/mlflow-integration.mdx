@@ -1,0 +1,186 @@
+---
+title: "MLflow Integration"
+description: "Stream QitOS run metrics to MLflow for experiment tracking and visualization."
+---
+
+`MlflowTraceProcessor` implements the `TraceProcessor` ABC and streams QitOS run data to an MLflow tracking server. Once attached, it automatically logs per-span metrics during the run and writes a final summary when the trace ends.
+
+## Installation
+
+```bash
+pip install qitos[mlflow]
+```
+
+This installs the `mlflow` SDK as an optional dependency. Without it, importing `MlflowTraceProcessor` raises an `ImportError`.
+
+---
+
+## Quick start
+
+```python
+from qitos.tracing import add_trace_processor
+from qitos.tracing.mlflow_processor import MlflowTraceProcessor
+
+processor = MlflowTraceProcessor(
+    experiment_name="qitos-runs",
+    run_name="gaia-eval-001",
+    tracking_uri="http://localhost:5000",
+    tags={"env": "dev", "benchmark": "gaia"},
+)
+add_trace_processor(processor)
+
+result = agent.run(task="...", return_state=True)
+```
+
+When the run starts, `MlflowTraceProcessor` calls `mlflow.set_experiment()` and `mlflow.start_run()` with the provided arguments. When the trace ends (either normally or on error), it writes a summary and calls `mlflow.end_run()` by default.
+
+---
+
+## Constructor parameters
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `experiment_name` | `str` | `"qitos"` | MLflow experiment name passed to `mlflow.set_experiment` |
+| `run_name` | `str \| None` | `None` | MLflow run name. Falls back to the QitOS trace name |
+| `tracking_uri` | `str \| None` | `None` | URI of the MLflow tracking server (e.g. `http://localhost:5000`) |
+| `tags` | `dict \| None` | `None` | Tags for the MLflow run |
+| `auto_end_run` | `bool` | `True` | Whether to call `mlflow.end_run()` when the trace ends |
+
+---
+
+## What gets logged
+
+### Per-span metrics
+
+The processor intercepts span-end events and logs metrics incrementally during the run.
+
+| Span type | Metrics logged |
+|---|---|
+| `GenerationSpanData` | `generation/prompt_tokens`, `generation/completion_tokens`, `generation/total_tokens` |
+| `StepSpanData` | `step/number` |
+| `CriticSpanData` | `critic/score` |
+| `ToolSpanData` | `tool/name` (logged as a tag) |
+| `ActSpanData` | `action/name` (logged as a tag) |
+
+Tool names and action names are recorded as MLflow tags rather than metrics, since they are string values.
+
+### Final summary
+
+When the trace ends, the processor writes aggregate metrics to the MLflow run:
+
+| Summary key | Description |
+|---|---|
+| `total_tokens` | Cumulative prompt + completion tokens across all generation spans |
+| `total_steps` | Number of step spans processed |
+| `total_tool_calls` | Count of tool and action spans |
+| `critic/avg_score` | Mean of all critic scores (only if at least one critic score was logged) |
+| `critic/min_score` | Minimum critic score |
+| `critic/max_score` | Maximum critic score |
+| `stop_reason` | The run's stop reason, extracted from trace metadata and logged as a tag |
+
+---
+
+## Using with a local tracking server
+
+Start an MLflow tracking server locally, then point the processor at it:
+
+```bash
+mlflow server --host 127.0.0.1 --port 5000
+```
+
+```python
+from qitos.tracing import add_trace_processor
+from qitos.tracing.mlflow_processor import MlflowTraceProcessor
+
+processor = MlflowTraceProcessor(
+    experiment_name="qitos-runs",
+    tracking_uri="http://localhost:5000",
+)
+add_trace_processor(processor)
+
+result = agent.run(task="...", return_state=True)
+```
+
+If `tracking_uri` is not set, MLflow defaults to the local `mlruns` directory.
+
+---
+
+## Combining with other processors
+
+`add_trace_processor` appends to the global processor list, so you can combine `MlflowTraceProcessor` with any other `TraceProcessor`, including `WandbTraceProcessor`:
+
+```python
+from qitos.tracing import add_trace_processor
+from qitos.tracing.mlflow_processor import MlflowTraceProcessor
+from qitos.tracing.wandb_processor import WandbTraceProcessor
+
+mlflow_processor = MlflowTraceProcessor(
+    experiment_name="qitos-runs",
+    tracking_uri="http://localhost:5000",
+    tags={"env": "dev"},
+)
+wandb_processor = WandbTraceProcessor(
+    project="my-qitos-runs",
+    config={"model": "gpt-4o"},
+)
+add_trace_processor(mlflow_processor)
+add_trace_processor(wandb_processor)
+
+# Both processors receive every trace event.
+result = agent.run(task="...", return_state=True)
+```
+
+To replace all processors (removing the default writer), use `set_trace_processors`:
+
+```python
+from qitos.tracing import set_trace_processors
+
+set_trace_processors([mlflow_processor, wandb_processor])
+```
+
+---
+
+## Lifecycle control
+
+### auto_end_run
+
+By default, `auto_end_run=True` and the processor calls `mlflow.end_run()` automatically when `on_trace_end` fires. Set `auto_end_run=False` if you want to continue logging custom metrics to the same MLflow run after the QitOS trace ends:
+
+```python
+import mlflow
+from qitos.tracing import add_trace_processor
+from qitos.tracing.mlflow_processor import MlflowTraceProcessor
+
+processor = MlflowTraceProcessor(
+    experiment_name="qitos-runs",
+    auto_end_run=False,
+)
+add_trace_processor(processor)
+
+result = agent.run(task="...", return_state=True)
+
+# Log additional custom metrics to the same MLflow run
+mlflow.log_metric("custom/accuracy", 0.92)
+
+mlflow.end_run()
+```
+
+### shutdown()
+
+Call `shutdown()` to close the MLflow run early (for example, on `SIGTERM` or in a notebook cleanup step):
+
+```python
+processor.shutdown()
+```
+
+This calls `mlflow.end_run()` if a run is active and `auto_end_run` is `True`. It is safe to call multiple times.
+
+### force_flush()
+
+Call `force_flush()` to ensure all buffered metrics are written to the MLflow tracking server:
+
+```python
+processor.force_flush()
+```
+
+This flushes any pending metrics in the MLflow client buffer.
