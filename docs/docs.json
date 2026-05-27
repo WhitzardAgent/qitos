@@ -86,7 +86,8 @@
                   "guides/qwen-family-best-practice",
                   "guides/memory-and-history",
                   "guides/critics-and-stop-criteria",
-                  "guides/observability"
+                  "guides/observability",
+                  "guides/wandb-integration"
                 ]
               },
               {
@@ -207,7 +208,8 @@
                   "zh/guides/qwen-family-best-practice",
                   "zh/guides/memory-and-history",
                   "zh/guides/critics-and-stop-criteria",
-                  "zh/guides/observability"
+                  "zh/guides/observability",
+                  "zh/guides/wandb-integration"
                 ]
               },
               {

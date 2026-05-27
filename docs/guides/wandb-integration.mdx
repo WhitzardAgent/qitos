@@ -1,0 +1,182 @@
+---
+title: "W&B Integration"
+description: "Stream QitOS run metrics to Weights & Biases for experiment tracking and visualization."
+---
+
+`WandbTraceProcessor` implements the `TraceProcessor` ABC and streams QitOS run data to a Weights & Biases project. Once attached, it automatically logs per-span metrics during the run and writes a final summary when the trace ends.
+
+## Installation
+
+```bash
+pip install qitos[wandb]
+```
+
+This installs the `wandb` SDK as an optional dependency. Without it, importing `WandbTraceProcessor` raises an `ImportError`.
+
+---
+
+## Quick start
+
+```python
+from qitos.tracing import add_trace_processor
+from qitos.tracing.wandb_processor import WandbTraceProcessor
+
+processor = WandbTraceProcessor(
+    project="my-qitos-runs",
+    name="gaia-eval-001",
+    tags=["benchmark", "gaia"],
+    config={"model": "gpt-4o", "max_steps": 15},
+)
+add_trace_processor(processor)
+
+result = agent.run(task="...", return_state=True)
+```
+
+When the run starts, `WandbTraceProcessor` calls `wandb.init()` with the provided arguments. When the trace ends (either normally or on error), it writes a summary and calls `wandb.finish()` by default.
+
+---
+
+## Constructor parameters
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `project` | `str` | `"qitos"` | W&B project name passed to `wandb.init` |
+| `name` | `str \| None` | `None` | W&B run name. Falls back to the QitOS trace name |
+| `config` | `dict \| None` | `None` | Dictionary passed as `config` to `wandb.init` |
+| `tags` | `list[str] \| None` | `None` | Tags for the W&B run |
+| `entity` | `str \| None` | `None` | W&B entity (user or team) |
+| `auto_finish` | `bool` | `True` | Whether to call `wandb.finish()` when the trace ends |
+
+---
+
+## What gets logged
+
+### Per-span metrics
+
+The processor intercepts span-end events and logs metrics incrementally during the run.
+
+| Span type | Metrics logged |
+|---|---|
+| `GenerationSpanData` | `generation/prompt_tokens`, `generation/completion_tokens`, `generation/total_tokens`, `generation/model` |
+| `StepSpanData` | `step/number` |
+| `CriticSpanData` | `critic/score`, `critic/name` |
+| `ToolSpanData` | `tool/name` |
+| `ActSpanData` | `action/name` |
+
+Each `wandb.log()` call increments an internal step counter so that the W&B time-series charts align with the agent's progression through the run.
+
+### Final summary
+
+When the trace ends, the processor writes aggregate metrics to `run.summary`:
+
+| Summary key | Description |
+|---|---|
+| `total_tokens` | Cumulative prompt + completion tokens across all generation spans |
+| `total_steps` | Number of step spans processed |
+| `total_tool_calls` | Count of tool and action spans |
+| `critic/avg_score` | Mean of all critic scores (only if at least one critic score was logged) |
+| `critic/min_score` | Minimum critic score |
+| `critic/max_score` | Maximum critic score |
+| `stop_reason` | The run's stop reason, extracted from trace metadata |
+
+---
+
+## Combining with other processors
+
+`add_trace_processor` appends to the global processor list, so you can combine `WandbTraceProcessor` with any other `TraceProcessor` (for example, the default `LegacyTraceWriterProcessor` that writes to disk):
+
+```python
+from qitos.tracing import add_trace_processor
+from qitos.tracing.wandb_processor import WandbTraceProcessor
+
+wandb_processor = WandbTraceProcessor(
+    project="my-qitos-runs",
+    config={"model": "gpt-4o"},
+)
+add_trace_processor(wandb_processor)
+
+# The default file-based trace writer is still active.
+result = agent.run(task="...", return_state=True)
+```
+
+To replace all processors (removing the default writer), use `set_trace_processors`:
+
+```python
+from qitos.tracing import set_trace_processors
+
+set_trace_processors([wandb_processor])
+```
+
+---
+
+## Using with presets for config
+
+Family presets provide recommended model parameters. Use them to populate the W&B `config` dictionary so that your W&B dashboard reflects the same settings the agent used:
+
+```python
+from qitos.harness import resolve_family_preset
+from qitos.tracing import add_trace_processor
+from qitos.tracing.wandb_processor import WandbTraceProcessor
+
+preset = resolve_family_preset("qwen")
+
+processor = WandbTraceProcessor(
+    project="qwen-experiments",
+    config={
+        "model": preset.model_id,
+        "max_steps": preset.recommended_max_steps,
+        "max_tokens": preset.recommended_max_tokens,
+    },
+    tags=[preset.family],
+)
+add_trace_processor(processor)
+
+result = agent.run(task="...", return_state=True)
+```
+
+---
+
+## Lifecycle control
+
+### auto_finish
+
+By default, `auto_finish=True` and the processor calls `wandb.finish()` automatically when `on_trace_end` fires. Set `auto_finish=False` if you want to continue logging custom metrics to the same W&B run after the QitOS trace ends:
+
+```python
+import wandb
+from qitos.tracing import add_trace_processor
+from qitos.tracing.wandb_processor import WandbTraceProcessor
+
+processor = WandbTraceProcessor(
+    project="my-qitos-runs",
+    auto_finish=False,
+)
+add_trace_processor(processor)
+
+result = agent.run(task="...", return_state=True)
+
+# Log additional custom metrics to the same W&B run
+wandb.log({"custom/accuracy": 0.92})
+
+wandb.finish()
+```
+
+### shutdown()
+
+Call `shutdown()` to close the W&B run early (for example, on `SIGTERM` or in a notebook cleanup step):
+
+```python
+processor.shutdown()
+```
+
+This calls `wandb.finish()` if a run is active and `auto_finish` is `True`. It is safe to call multiple times.
+
+### force_flush()
+
+Call `force_flush()` to ensure all buffered metrics are written to the W&B backend:
+
+```python
+processor.force_flush()
+```
+
+This logs an empty record at the current step counter, which triggers a flush of the W&B internal buffer.

@@ -1,0 +1,26 @@
+benchmark: gaia
+display_name: GAIA
+description: "General AI Assistants benchmark — multi-step reasoning with web browsing and file handling"
+
+splits:
+  - validation
+  - test
+
+defaults:
+  model: gpt-4o
+  max_steps: 20
+  max_tokens: 500_000
+  temperature: 0.2
+  retry_budget: 3
+
+scorer: exact_match
+
+tools:
+  - web_search
+  - file_read
+  - bash
+
+notes: >
+  GAIA requires tool access for web browsing, file inspection, and code
+  execution. The validation split is recommended for development; the test
+  split should be reserved for final evaluation.

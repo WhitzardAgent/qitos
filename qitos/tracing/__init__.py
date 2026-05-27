@@ -8,6 +8,7 @@ Public API
 - ``Trace``, ``Span``, ``SpanData``, ``SpanType`` — core models
 - ``TraceProcessor`` — processor protocol
 - ``TracingMode`` — ENABLED / ENABLED_WITHOUT_DATA / DISABLED
+- ``WandbTraceProcessor`` — W&B integration (requires ``qitos[wandb]``)
 """
 
 from __future__ import annotations
@@ -19,6 +20,12 @@ from .models import Span, SpanData, SpanType, Trace
 from .processor import TraceProcessor
 from .provider import TracingProvider
 from .legacy_processor import LegacyTraceWriterProcessor
+
+# Optional W&B processor — only available when wandb is installed
+try:
+    from .wandb_processor import WandbTraceProcessor  # noqa: F401
+except ImportError:
+    pass
 
 # ---------------------------------------------------------------------------
 # Global provider singleton
@@ -86,4 +93,6 @@ __all__ = [
     "set_tracing_mode",
     "get_tracing_provider",
     "create_trace",
+    # optional integrations
+    "WandbTraceProcessor",
 ]

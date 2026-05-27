@@ -1,0 +1,25 @@
+benchmark: cybench
+display_name: CyBench
+description: "Cybersecurity CTF benchmark — capture-the-flag challenges across multiple difficulty levels"
+
+splits:
+  - easy
+  - medium
+  - hard
+
+defaults:
+  model: gpt-4o
+  max_steps: 30
+  max_tokens: 500_000
+  temperature: 0.2
+  retry_budget: 3
+
+scorer: flag_match
+
+tools:
+  - bash
+
+notes: >
+  CyBench challenges require shell access to interact with remote CTF
+  infrastructure. The scoring function checks whether the submitted flag
+  matches the expected value for each challenge.

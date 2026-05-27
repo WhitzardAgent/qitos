@@ -32,29 +32,50 @@ Dataset-specific integration belongs here:
 
 If something involves `test_all.json`, evaluator bridges, setup/postconfig, qcow2 boot inputs, or benchmark-native scoring, it belongs here.
 
+<Note>
+  The benchmark layer is the **legacy interface** for dataset adapters. New code should
+  use recipes directly. The benchmark runners are being simplified into thin delegation
+  layers that call recipes.
+</Note>
+
 ## 3. Recipe layer
 
-Recipes are reproducible baseline methods:
+Recipes are the **canonical location** for reproducible baseline methods:
 
 - canonical single-agent baselines
 - benchmark baseline methods
 - multimodal starter methods
 
-The desktop baseline now lives in:
+Available benchmark recipes:
 
-- `qitos/recipes/desktop/osworld_starter.py`
+| Recipe | Module | Description |
+|--------|--------|-------------|
+| GAIA | `qitos.recipes.benchmarks.gaia` | Multi-step reasoning with web and file tools |
+| TauBench | `qitos.recipes.benchmarks.tau_bench` | Airline/retail customer service simulation |
+| CyBench | `qitos.recipes.benchmarks.cybench` | Cybersecurity CTF challenges |
+| CyberGym | `qitos.recipes.benchmarks.cybergym` | Interactive cybersecurity gym environments |
+| Desktop | `qitos.recipes.desktop.osworld_starter` | Desktop UI automation |
 
-The public example:
+Each recipe may be accompanied by an `eval_config.yaml` in `qitos/recipes/benchmarks/eval_configs/` that specifies recommended defaults (model, max steps, max tokens, scorer).
 
-- `examples/real/openai_cua_agent.py`
+### Using eval configs
 
-is now only a thin entrypoint around the recipe.
+```python
+import yaml
+from pathlib import Path
+from qitos.harness import resolve_builtin_preset
 
-The same structure now also applies to:
+config_path = Path("qitos/recipes/benchmarks/eval_configs/gaia.yaml")
+with open(config_path) as f:
+    config = yaml.safe_load(f)
 
-- `qitos.recipes.benchmarks.gaia`
-- `qitos.recipes.benchmarks.tau_bench`
-- `qitos.recipes.benchmarks.cybench`
+# Apply defaults from config
+model = config["defaults"]["model"]
+max_steps = config["defaults"]["max_steps"]
+
+# Combine with a family preset for advisory defaults
+preset = resolve_builtin_preset(model)
+```
 
 ## Why this split matters
 
@@ -65,5 +86,22 @@ This split solves three real problems:
 - future `qitos-recipes` extraction becomes a packaging move instead of a redesign
 
 This separation keeps QitOS viable as a research-first framework.
+
+### W&B integration
+
+To stream benchmark metrics to Weights & Biases alongside recipe execution:
+
+```python
+from qitos.tracing import add_trace_processor
+from qitos.tracing.wandb_processor import WandbTraceProcessor
+
+processor = WandbTraceProcessor(
+    project="qitos-benchmarks",
+    tags=["gaia", "eval"],
+)
+add_trace_processor(processor)
+```
+
+See [W&B Integration](/guides/wandb-integration) for full documentation.
 
 If you are adding a new benchmark family, continue with [Third-party benchmark integration](/guides/third-party-benchmark-integration).

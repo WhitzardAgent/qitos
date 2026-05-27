@@ -158,3 +158,9 @@ A stop criterion that halts the Engine when cumulative token usage exceeds a bud
 ### Advisory defaults
 
 Optional fields on `FamilyPreset` (`recommended_max_steps`, `recommended_max_tokens`, `recommended_retry_budget`, `recommended_temperature`) that document tested baseline values. These are advisory only — the engine does not auto-apply them.
+
+## Tracing integration terms
+
+### WandbTraceProcessor
+
+A `TraceProcessor` implementation that streams QitOS run metrics (token usage, step counts, critic scores, tool calls, stop reason) to a Weights & Biases project. Requires the `wandb` package (`pip install qitos[wandb]`).

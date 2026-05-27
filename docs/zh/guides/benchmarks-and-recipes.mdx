@@ -32,29 +32,48 @@ QitOS 把三层明确分开。
 
 凡是 `test_all.json`、评估器桥接、setup/postconfig、qcow2 启动输入、基准测试原生评分这类内容，都应该放这里。
 
+<Note>
+  基准测试层是数据集适配器的**遗留接口**。新代码应直接使用配方（recipe）。基准测试运行器正在简化为调用配方的薄委托层。
+</Note>
+
 ## 3. 配方层
 
-配方是可复现的基线方法：
+配方是可复现基线方法的**规范位置**：
 
 - 规范单智能体基线
 - 基准测试基线方法
 - 多模态入门方法
 
-桌面基线已经下沉到：
+可用的基准测试配方：
 
-- `qitos/recipes/desktop/osworld_starter.py`
+| 配方 | 模块 | 说明 |
+|------|------|------|
+| GAIA | `qitos.recipes.benchmarks.gaia` | 搜索与文件工具的多步推理 |
+| TauBench | `qitos.recipes.benchmarks.tau_bench` | 航空/零售客服仿真 |
+| CyBench | `qitos.recipes.benchmarks.cybench` | 网络安全 CTF 挑战 |
+| CyberGym | `qitos.recipes.benchmarks.cybergym` | 交互式网络安全训练环境 |
+| Desktop | `qitos.recipes.desktop.osworld_starter` | 桌面 UI 自动化 |
 
-而公开示例：
+每个配方可附带 `qitos/recipes/benchmarks/eval_configs/` 目录下的 `eval_config.yaml` 文件，其中指定推荐默认值（模型、最大步数、最大 token 数、评分器）。
 
-- `examples/real/openai_cua_agent.py`
+### 使用 eval_config
 
-只保留为一个很薄的入口包装。
+```python
+import yaml
+from pathlib import Path
+from qitos.harness import resolve_builtin_preset
 
-同样的结构也已扩展到：
+config_path = Path("qitos/recipes/benchmarks/eval_configs/gaia.yaml")
+with open(config_path) as f:
+    config = yaml.safe_load(f)
 
-- `qitos.recipes.benchmarks.gaia`
-- `qitos.recipes.benchmarks.tau_bench`
-- `qitos.recipes.benchmarks.cybench`
+# 使用配置中的默认值
+model = config["defaults"]["model"]
+max_steps = config["defaults"]["max_steps"]
+
+# 结合家族预设的推荐值
+preset = resolve_builtin_preset(model)
+```
 
 ## 为什么这个拆分重要
 
@@ -65,5 +84,22 @@ QitOS 把三层明确分开。
 - 未来独立 `qitos-recipes` 时，几乎只需要迁移打包边界，不需要重构设计
 
 这也是以研究为先的框架应有的演进方式。
+
+### W&B 集成
+
+在配方执行时将基准测试指标流式传输到 Weights & Biases：
+
+```python
+from qitos.tracing import add_trace_processor
+from qitos.tracing.wandb_processor import WandbTraceProcessor
+
+processor = WandbTraceProcessor(
+    project="qitos-benchmarks",
+    tags=["gaia", "eval"],
+)
+add_trace_processor(processor)
+```
+
+完整文档参见 [W&B 集成](/zh/guides/wandb-integration)。
 
 如果你要新增基准测试家族，下一步请直接看[第三方基准测试接入规范](/zh/guides/third-party-benchmark-integration)。

@@ -1,0 +1,24 @@
+benchmark: desktop
+display_name: Desktop Automation
+description: "Desktop UI automation benchmark — multi-step GUI interaction tasks"
+
+splits:
+  - test
+
+defaults:
+  model: gpt-4o
+  max_steps: 25
+  max_tokens: 500_000
+  temperature: 0.2
+  retry_budget: 3
+
+scorer: task_completion
+
+tools:
+  - bash
+  - screenshot
+
+notes: >
+  Desktop tasks require a display environment and screenshot capability.
+  Ensure a virtual framebuffer (e.g. Xvfb) is available in headless
+  environments.

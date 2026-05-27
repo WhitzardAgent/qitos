@@ -68,6 +68,7 @@ setup(
         "models": ["openai>=1.0.0", "litellm>=1.52.0"],
         "yaml": ["pyyaml>=6.0"],
         "benchmarks": ["datasets>=2.20.0", "huggingface_hub>=0.24.0"],
+        "wandb": ["wandb>=0.16.0"],
         "dev": [
             "build>=1.2.1",
             "twine>=5.1.1",
@@ -85,6 +86,7 @@ setup(
             "pyyaml>=6.0",
             "datasets>=2.20.0",
             "huggingface_hub>=0.24.0",
+            "wandb>=0.16.0",
         ],
     },
     package_data={

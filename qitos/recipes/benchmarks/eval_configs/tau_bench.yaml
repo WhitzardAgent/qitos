@@ -1,0 +1,24 @@
+benchmark: tau_bench
+display_name: TauBench
+description: "Tool-use benchmark for airline and retail customer service environments"
+
+splits:
+  - airline
+  - retail
+
+defaults:
+  model: gpt-4o
+  max_steps: 30
+  max_tokens: 500_000
+  temperature: 0.2
+  retry_budget: 3
+
+scorer: policy_match
+
+tools:
+  - bash
+
+notes: >
+  TauBench simulates realistic customer-service interactions. Each split
+  (airline, retail) provides a distinct policy environment with its own
+  database of user and policy records.
