@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import html
 import json
+import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import mimetypes
 from pathlib import Path
@@ -42,7 +43,8 @@ _DESIGN_FONT_MONO = "var(--font-mono)"
 
 
 def main(argv: Optional[List[str]] = None) -> int:
-    if argv and argv[0] == "--version":
+    args = list(sys.argv[1:] if argv is None else argv)
+    if args and args[0] == "--version":
         from qitos import __version__
         print(f"qita {__version__}")
         return 0
@@ -63,7 +65,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     p_export.add_argument("--run", required=True, help="Run directory path")
     p_export.add_argument("--html", required=True, help="Output html file path")
 
-    args = parser.parse_args(argv)
+    args = parser.parse_args(args)
     if args.command == "board":
         return _cmd_board(
             logdir=args.logdir,
