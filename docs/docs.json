@@ -116,7 +116,8 @@
               {
                 "group": "Contributing",
                 "pages": [
-                  "contributing/development"
+                  "contributing/development",
+                  "contributing/writing-a-method-template"
                 ]
               }
             ]
@@ -240,7 +241,8 @@
               {
                 "group": "贡献",
                 "pages": [
-                  "zh/contributing/development"
+                  "zh/contributing/development",
+                  "zh/contributing/writing-a-method-template"
                 ]
               }
             ]

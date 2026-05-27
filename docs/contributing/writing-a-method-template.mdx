@@ -1,0 +1,325 @@
+# Writing a Method Template
+
+A **method template** in QitOS is an Agent + Critic pair implementing a well-known agentic reasoning pattern. This guide walks through creating one from scratch.
+
+## What Makes a Method Template
+
+Every method template consists of:
+
+1. **Recipe implementation** — `qitos/recipes/<method_name>/__init__.py` with AgentModule, Critic, and State
+2. **Template assets** — `templates/<method_name>/` with config, docs, and scaffold code
+3. **Tests** — `tests/test_<method_name>.py`
+4. **CLI registration** — Entry in `_METHOD_TEMPLATES` dict in `qitos/cli.py`
+
+## Directory Structure
+
+```
+qitos/recipes/<method_name>/
+  __init__.py              # AgentModule + Critic + State dataclass
+
+templates/<method_name>/
+  __init__.py              # Empty or minimal imports
+  agent.py                 # Config dataclass + build_registry()
+  config.yaml              # Default configuration
+  paper.md                 # Pattern description + QitOS mapping
+
+tests/test_<method_name>.py
+```
+
+## Step 1: Define State
+
+Create a dataclass tracking method-specific fields:
+
+```python
+from dataclasses import dataclass, field
+from typing import List
+
+@dataclass
+class MyMethodState:
+    """State tracked across steps for MyMethod."""
+    iterations: int = 0
+    max_iterations: int = 3
+    history: List[str] = field(default_factory=list)
+    is_complete: bool = False
+```
+
+State is stored in `EngineResult.state` after execution and is accessible to the Critic at each step.
+
+## Step 2: Implement AgentModule
+
+Subclass `AgentModule` with `build_system_prompt()` and `reduce()`:
+
+```python
+from qitos.core.agent import AgentModule
+from qitos.core.decision import Decision
+
+class MyMethodAgent(AgentModule):
+    """Agent for MyMethod pattern."""
+
+    def build_system_prompt(self, task: str, state: dict | None = None) -> str:
+        parts = [
+            "You are an agent implementing the MyMethod pattern.",
+            f"Task: {task}",
+        ]
+        # Inject state-aware context
+        if state:
+            my_state = MyMethodState(**state) if isinstance(state, dict) else state
+            if my_state.history:
+                parts.append(f"Previous attempts: {my_state.iterations}")
+                parts.append("\n".join(my_state.history))
+        return "\n\n".join(parts)
+
+    def reduce(self, decision: Decision, state: dict | None = None) -> dict:
+        """Extract state updates from the decision."""
+        my_state = MyMethodState(**state) if state else MyMethodState()
+        my_state.iterations += 1
+        if decision.thought:
+            my_state.history.append(decision.thought)
+        return {
+            "iterations": my_state.iterations,
+            "history": my_state.history,
+            "is_complete": my_state.is_complete,
+        }
+```
+
+### Key points
+
+- `build_system_prompt()` receives `task` (str) and `state` (dict). Use state to inject context like reflections, proposals, or task ledgers.
+- `reduce()` receives the current `Decision` and `state`, and returns a dict of state updates. The engine merges this into the running state.
+- Always handle `state=None` gracefully (first step).
+
+## Step 3: Implement Critic
+
+Subclass `Critic` with `evaluate()` returning `CriticResult`:
+
+```python
+from qitos.engine.critic import Critic
+from qitos.engine.critic_result import CriticResult
+
+class MyMethodCritic(Critic):
+    """Critic for MyMethod — stops on completion, retries on failure."""
+
+    def __init__(self, max_iterations: int = 3, quality_threshold: float = 0.7):
+        super().__init__(name="my_method_critic")
+        self.max_iterations = max_iterations
+        self.quality_threshold = quality_threshold
+
+    def evaluate(self, state, decision, results):
+        my_state = MyMethodState(**state) if isinstance(state, dict) else state
+
+        # Check if task is complete
+        if my_state.is_complete:
+            return CriticResult(
+                action="stop",
+                reason="Task completed successfully",
+                score=1.0,
+            )
+
+        # Check iteration budget
+        if my_state.iterations >= self.max_iterations:
+            return CriticResult(
+                action="stop",
+                reason=f"Max iterations ({self.max_iterations}) reached",
+                score=0.0,
+            )
+
+        # Check for errors in results — retry with guidance
+        has_error = any(
+            hasattr(r, "error") and r.error
+            for r in (results or [])
+        )
+        if has_error:
+            return CriticResult(
+                action="retry",
+                reason="Error detected in results",
+                score=0.3,
+                instruction_patch="Review the error and try a different approach.",
+            )
+
+        # Normal continuation
+        return CriticResult(
+            action="continue",
+            reason="Progress being made",
+            score=0.5,
+        )
+```
+
+### CriticResult actions
+
+| Action | Effect | When to use |
+|--------|--------|-------------|
+| `continue` | Engine proceeds normally | Making progress, no issues |
+| `stop` | Engine halts, returns result | Task complete or budget exhausted |
+| `retry` | Engine retries with `instruction_patch` injected into the prompt | Error detected, need to change approach |
+
+### Key fields
+
+- `instruction_patch`: String injected into the next prompt to guide the agent
+- `state_patch`: Dict merged into state to update method-specific fields
+- `score`: Float (0-1) indicating quality; used by qita for visualization
+
+## Step 4: Create Template Assets
+
+### agent.py
+
+```python
+"""MyMethod template configuration."""
+from dataclasses import dataclass
+
+@dataclass
+class MyMethodConfig:
+    agent_name: str = "my_method_agent"
+    max_iterations: int = 3
+    quality_threshold: float = 0.7
+    max_steps: int = 15
+
+def build_my_method_registry(config: MyMethodConfig) -> dict:
+    return {
+        "max_iterations": config.max_iterations,
+        "quality_threshold": config.quality_threshold,
+        "max_steps": config.max_steps,
+    }
+```
+
+### config.yaml
+
+```yaml
+name: my_method_template
+max_steps: 15
+max_iterations: 3
+quality_threshold: 0.7
+model:
+  provider: openai_compatible
+  base_url: https://api.siliconflow.cn/v1/
+  api_key: ${OPENAI_API_KEY}
+  model: Qwen/Qwen3-8B
+  model_name: Qwen/Qwen3-8B
+  temperature: 0.0
+  max_tokens: 2048
+```
+
+### paper.md
+
+```markdown
+# MyMethod Template Notes
+
+## Source idea
+Brief description of the original paper's algorithm and key insight.
+
+## Mapping in QitOS
+- `MyMethodAgent` manages ... with `build_system_prompt()` ...
+- `MyMethodCritic` detects ... and returns ...
+- `MyMethodState` tracks ...
+
+## Key differences from the paper
+- Notable adaptations or simplifications
+
+## Scope in this template
+What the template covers and what extensions users might add
+```
+
+## Step 5: Register in CLI
+
+Add to `_METHOD_TEMPLATES` in `qitos/cli.py`:
+
+```python
+_METHOD_TEMPLATES = {
+    # ... existing entries ...
+    "my_method": "MyMethod — brief description of the pattern",
+}
+```
+
+This makes it appear in `qit list-templates` output.
+
+## Step 6: Write Tests
+
+Minimum test coverage:
+
+```python
+"""Tests for MyMethod template."""
+import pytest
+from qitos.recipes.my_method import MyMethodAgent, MyMethodCritic, MyMethodState
+from qitos.core.decision import Decision
+from qitos.engine.critic_result import CriticResult
+
+class TestMyMethodState:
+    def test_default_values(self):
+        state = MyMethodState()
+        assert state.iterations == 0
+        assert state.max_iterations == 3
+        assert state.is_complete is False
+
+class TestMyMethodAgent:
+    def test_build_system_prompt(self):
+        agent = MyMethodAgent(llm=None)
+        prompt = agent.build_system_prompt(task="Test task", state=None)
+        assert "MyMethod" in prompt
+        assert "Test task" in prompt
+
+    def test_build_system_prompt_with_state(self):
+        agent = MyMethodAgent(llm=None)
+        state = MyMethodState(iterations=2, history=["attempt 1", "attempt 2"])
+        prompt = agent.build_system_prompt(task="Test", state=state.__dict__)
+        assert "2" in prompt
+
+    def test_reduce_updates_iterations(self):
+        agent = MyMethodAgent(llm=None)
+        decision = Decision(thought="trying again", actions=[])
+        result = agent.reduce(decision, state={"iterations": 1, "history": [], "is_complete": False})
+        assert result["iterations"] == 2
+
+class TestMyMethodCritic:
+    def test_stop_on_completion(self):
+        critic = MyMethodCritic()
+        state = MyMethodState(is_complete=True)
+        result = critic.evaluate(state.__dict__, None, None)
+        assert result.action == "stop"
+        assert result.score == 1.0
+
+    def test_stop_on_max_iterations(self):
+        critic = MyMethodCritic(max_iterations=2)
+        state = MyMethodState(iterations=2)
+        result = critic.evaluate(state.__dict__, None, None)
+        assert result.action == "stop"
+
+    def test_retry_on_error(self):
+        critic = MyMethodCritic()
+        state = MyMethodState(iterations=1)
+        class ErrResult:
+            error = "timeout"
+        result = critic.evaluate(state.__dict__, None, [ErrResult()])
+        assert result.action == "retry"
+        assert result.instruction_patch is not None
+
+    def test_continue_on_progress(self):
+        critic = MyMethodCritic()
+        state = MyMethodState(iterations=1)
+        result = critic.evaluate(state.__dict__, None, [])
+        assert result.action == "continue"
+```
+
+Aim for at least 15 tests per template covering Agent, Critic, State, and edge cases.
+
+## Checklist
+
+Before submitting a method template PR:
+
+- [ ] Agent subclasses `AgentModule` with `build_system_prompt()` and `reduce()`
+- [ ] Critic subclasses `Critic` with `evaluate()` returning `CriticResult`
+- [ ] State dataclass with method-specific fields
+- [ ] `templates/<method_name>/` has `__init__.py`, `agent.py`, `config.yaml`, `paper.md`
+- [ ] Method name added to `_METHOD_TEMPLATES` in `qitos/cli.py`
+- [ ] Tests cover Agent, Critic, and State with edge cases (minimum 15 tests)
+- [ ] paper.md explains mapping from paper to QitOS and key differences
+- [ ] `pytest tests/test_<method_name>.py` passes
+- [ ] Full test suite `pytest tests/ -q` shows no regressions
+
+## Existing Templates for Reference
+
+| Template | File | Pattern |
+|----------|------|---------|
+| Self-Refine | `qitos/recipes/self_refine/` | Generate → Critique → Refine |
+| Reflexion | `qitos/recipes/reflexion/` | Act → Reflect → Retry |
+| LATS | `qitos/recipes/lats/` | Monte Carlo Tree Search |
+| MoA | `qitos/recipes/moa/` | Parallel Proposals + Aggregation |
+| Magentic-One | `qitos/recipes/magentic_one/` | Orchestrator + Specialists |

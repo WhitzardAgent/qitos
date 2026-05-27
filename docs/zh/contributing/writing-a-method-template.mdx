@@ -1,0 +1,325 @@
+# 编写方法模板
+
+QitOS 中的**方法模板**是实现经典 agentic 推理模式的 Agent + Critic 组合。本指南从零开始介绍如何创建一个方法模板。
+
+## 方法模板的组成
+
+每个方法模板由以下部分组成：
+
+1. **Recipe 实现** — `qitos/recipes/<method_name>/__init__.py`，包含 AgentModule、Critic 和 State
+2. **模板资产** — `templates/<method_name>/`，包含配置、文档和脚手架代码
+3. **测试** — `tests/test_<method_name>.py`
+4. **CLI 注册** — `qitos/cli.py` 中 `_METHOD_TEMPLATES` 字典的条目
+
+## 目录结构
+
+```
+qitos/recipes/<method_name>/
+  __init__.py              # AgentModule + Critic + State dataclass
+
+templates/<method_name>/
+  __init__.py              # 空或最小导入
+  agent.py                 # Config dataclass + build_registry()
+  config.yaml              # 默认配置
+  paper.md                 # 模式描述 + QitOS 映射
+
+tests/test_<method_name>.py
+```
+
+## 第 1 步：定义 State
+
+创建一个跟踪方法特定字段的数据类：
+
+```python
+from dataclasses import dataclass, field
+from typing import List
+
+@dataclass
+class MyMethodState:
+    """MyMethod 的跨步骤状态跟踪。"""
+    iterations: int = 0
+    max_iterations: int = 3
+    history: List[str] = field(default_factory=list)
+    is_complete: bool = False
+```
+
+State 在执行后存储在 `EngineResult.state` 中，并且在每一步都可以被 Critic 访问。
+
+## 第 2 步：实现 AgentModule
+
+继承 `AgentModule`，实现 `build_system_prompt()` 和 `reduce()`：
+
+```python
+from qitos.core.agent import AgentModule
+from qitos.core.decision import Decision
+
+class MyMethodAgent(AgentModule):
+    """MyMethod 模式的 Agent。"""
+
+    def build_system_prompt(self, task: str, state: dict | None = None) -> str:
+        parts = [
+            "你是一个实现 MyMethod 模式的 agent。",
+            f"任务: {task}",
+        ]
+        # 注入状态感知上下文
+        if state:
+            my_state = MyMethodState(**state) if isinstance(state, dict) else state
+            if my_state.history:
+                parts.append(f"之前的尝试: {my_state.iterations}")
+                parts.append("\n".join(my_state.history))
+        return "\n\n".join(parts)
+
+    def reduce(self, decision: Decision, state: dict | None = None) -> dict:
+        """从 Decision 中提取状态更新。"""
+        my_state = MyMethodState(**state) if state else MyMethodState()
+        my_state.iterations += 1
+        if decision.thought:
+            my_state.history.append(decision.thought)
+        return {
+            "iterations": my_state.iterations,
+            "history": my_state.history,
+            "is_complete": my_state.is_complete,
+        }
+```
+
+### 要点
+
+- `build_system_prompt()` 接收 `task`（str）和 `state`（dict）。使用 state 注入上下文，如反思、提议或任务账本。
+- `reduce()` 接收当前 `Decision` 和 `state`，返回状态更新的 dict。引擎将其合并到运行状态中。
+- 始终优雅处理 `state=None`（第一步）。
+
+## 第 3 步：实现 Critic
+
+继承 `Critic`，实现 `evaluate()` 返回 `CriticResult`：
+
+```python
+from qitos.engine.critic import Critic
+from qitos.engine.critic_result import CriticResult
+
+class MyMethodCritic(Critic):
+    """MyMethod 的 Critic — 完成时停止，失败时重试。"""
+
+    def __init__(self, max_iterations: int = 3, quality_threshold: float = 0.7):
+        super().__init__(name="my_method_critic")
+        self.max_iterations = max_iterations
+        self.quality_threshold = quality_threshold
+
+    def evaluate(self, state, decision, results):
+        my_state = MyMethodState(**state) if isinstance(state, dict) else state
+
+        # 检查任务是否完成
+        if my_state.is_complete:
+            return CriticResult(
+                action="stop",
+                reason="Task completed successfully",
+                score=1.0,
+            )
+
+        # 检查迭代预算
+        if my_state.iterations >= self.max_iterations:
+            return CriticResult(
+                action="stop",
+                reason=f"Max iterations ({self.max_iterations}) reached",
+                score=0.0,
+            )
+
+        # 检查结果中的错误 — 带指导重试
+        has_error = any(
+            hasattr(r, "error") and r.error
+            for r in (results or [])
+        )
+        if has_error:
+            return CriticResult(
+                action="retry",
+                reason="Error detected in results",
+                score=0.3,
+                instruction_patch="Review the error and try a different approach.",
+            )
+
+        # 正常继续
+        return CriticResult(
+            action="continue",
+            reason="Progress being made",
+            score=0.5,
+        )
+```
+
+### CriticResult 动作
+
+| 动作 | 效果 | 何时使用 |
+|------|------|----------|
+| `continue` | 引擎正常执行 | 正在进展，没有问题 |
+| `stop` | 引擎停止，返回结果 | 任务完成或预算耗尽 |
+| `retry` | 引擎重试，注入 `instruction_patch` | 检测到错误，需要改变策略 |
+
+### 关键字段
+
+- `instruction_patch`：注入到下一个 prompt 中指导 agent 的字符串
+- `state_patch`：合并到 state 中更新方法特定字段的 dict
+- `score`：浮点数（0-1）表示质量；被 qita 用于可视化
+
+## 第 4 步：创建模板资产
+
+### agent.py
+
+```python
+"""MyMethod 模板配置。"""
+from dataclasses import dataclass
+
+@dataclass
+class MyMethodConfig:
+    agent_name: str = "my_method_agent"
+    max_iterations: int = 3
+    quality_threshold: float = 0.7
+    max_steps: int = 15
+
+def build_my_method_registry(config: MyMethodConfig) -> dict:
+    return {
+        "max_iterations": config.max_iterations,
+        "quality_threshold": config.quality_threshold,
+        "max_steps": config.max_steps,
+    }
+```
+
+### config.yaml
+
+```yaml
+name: my_method_template
+max_steps: 15
+max_iterations: 3
+quality_threshold: 0.7
+model:
+  provider: openai_compatible
+  base_url: https://api.siliconflow.cn/v1/
+  api_key: ${OPENAI_API_KEY}
+  model: Qwen/Qwen3-8B
+  model_name: Qwen/Qwen3-8B
+  temperature: 0.0
+  max_tokens: 2048
+```
+
+### paper.md
+
+```markdown
+# MyMethod 模板说明
+
+## 来源思想
+原始论文算法和关键洞察的简要描述。
+
+## QitOS 映射
+- `MyMethodAgent` 通过 `build_system_prompt()` 管理 ...
+- `MyMethodCritic` 检测 ... 并返回 ...
+- `MyMethodState` 跟踪 ...
+
+## 与论文的主要差异
+- 显著的适配或简化
+
+## 本模板范围
+模板涵盖的内容和用户可能添加的扩展
+```
+
+## 第 5 步：在 CLI 中注册
+
+在 `qitos/cli.py` 的 `_METHOD_TEMPLATES` 中添加：
+
+```python
+_METHOD_TEMPLATES = {
+    # ... 已有条目 ...
+    "my_method": "MyMethod — 模式简要描述",
+}
+```
+
+这会让它出现在 `qit list-templates` 的输出中。
+
+## 第 6 步：编写测试
+
+最低测试覆盖：
+
+```python
+"""MyMethod 模板测试。"""
+import pytest
+from qitos.recipes.my_method import MyMethodAgent, MyMethodCritic, MyMethodState
+from qitos.core.decision import Decision
+from qitos.engine.critic_result import CriticResult
+
+class TestMyMethodState:
+    def test_default_values(self):
+        state = MyMethodState()
+        assert state.iterations == 0
+        assert state.max_iterations == 3
+        assert state.is_complete is False
+
+class TestMyMethodAgent:
+    def test_build_system_prompt(self):
+        agent = MyMethodAgent(llm=None)
+        prompt = agent.build_system_prompt(task="Test task", state=None)
+        assert "MyMethod" in prompt
+        assert "Test task" in prompt
+
+    def test_build_system_prompt_with_state(self):
+        agent = MyMethodAgent(llm=None)
+        state = MyMethodState(iterations=2, history=["attempt 1", "attempt 2"])
+        prompt = agent.build_system_prompt(task="Test", state=state.__dict__)
+        assert "2" in prompt
+
+    def test_reduce_updates_iterations(self):
+        agent = MyMethodAgent(llm=None)
+        decision = Decision(thought="trying again", actions=[])
+        result = agent.reduce(decision, state={"iterations": 1, "history": [], "is_complete": False})
+        assert result["iterations"] == 2
+
+class TestMyMethodCritic:
+    def test_stop_on_completion(self):
+        critic = MyMethodCritic()
+        state = MyMethodState(is_complete=True)
+        result = critic.evaluate(state.__dict__, None, None)
+        assert result.action == "stop"
+        assert result.score == 1.0
+
+    def test_stop_on_max_iterations(self):
+        critic = MyMethodCritic(max_iterations=2)
+        state = MyMethodState(iterations=2)
+        result = critic.evaluate(state.__dict__, None, None)
+        assert result.action == "stop"
+
+    def test_retry_on_error(self):
+        critic = MyMethodCritic()
+        state = MyMethodState(iterations=1)
+        class ErrResult:
+            error = "timeout"
+        result = critic.evaluate(state.__dict__, None, [ErrResult()])
+        assert result.action == "retry"
+        assert result.instruction_patch is not None
+
+    def test_continue_on_progress(self):
+        critic = MyMethodCritic()
+        state = MyMethodState(iterations=1)
+        result = critic.evaluate(state.__dict__, None, [])
+        assert result.action == "continue"
+```
+
+每个模板至少 15 个测试，覆盖 Agent、Critic、State 和边界情况。
+
+## 检查清单
+
+提交方法模板 PR 前：
+
+- [ ] Agent 继承 `AgentModule`，实现 `build_system_prompt()` 和 `reduce()`
+- [ ] Critic 继承 `Critic`，实现 `evaluate()` 返回 `CriticResult`
+- [ ] State dataclass 包含方法特定字段
+- [ ] `templates/<method_name>/` 包含 `__init__.py`、`agent.py`、`config.yaml`、`paper.md`
+- [ ] 方法名称已添加到 `qitos/cli.py` 的 `_METHOD_TEMPLATES`
+- [ ] 测试覆盖 Agent、Critic、State 和边界情况（至少 15 个测试）
+- [ ] paper.md 解释了从论文到 QitOS 的映射和主要差异
+- [ ] `pytest tests/test_<method_name>.py` 通过
+- [ ] 完整测试套件 `pytest tests/ -q` 无回归
+
+## 参考模板
+
+| 模板 | 文件 | 模式 |
+|------|------|------|
+| Self-Refine | `qitos/recipes/self_refine/` | 生成 → 批评 → 改进 |
+| Reflexion | `qitos/recipes/reflexion/` | 行动 → 反思 → 重试 |
+| LATS | `qitos/recipes/lats/` | 蒙特卡洛树搜索 |
+| MoA | `qitos/recipes/moa/` | 并行提议 + 聚合 |
+| Magentic-One | `qitos/recipes/magentic_one/` | 编排器 + 专家 |
