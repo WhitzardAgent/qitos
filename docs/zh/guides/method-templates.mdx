@@ -1,6 +1,6 @@
 ---
 title: "方法模板"
-description: "使用内置方法模板（Self-Refine、Reflexion）以最少的样板代码实现经过验证的智能体模式。"
+description: "使用内置方法模板（Self-Refine、Reflexion、LATS、MoA、Magentic-One）以最少的样板代码实现经过验证的智能体模式。"
 ---
 
 QitOS 提供**方法模板**——即现成的 Agent + Critic 组合，实现了知名的智能体推理模式。每个模板封装了专用的状态、评论器和智能体，让你无需重写控制循环即可应用该模式。
@@ -115,6 +115,130 @@ print(result.state.final_result)  # 如果提取到 FINAL ANSWER
 | `max_reflections` | `int` | 反思预算 |
 | `last_action_success` | `bool` | 上一步是否成功 |
 | `attempt` | `int` | 当前尝试编号 |
+
+## LATS
+
+**LATS** 模式（Zhou et al. 2023）将蒙特卡洛树搜索应用于语言智能体：**选择 → 扩展 → 评估 → 回溯**。失败的轨迹生成反思，引导未来探索避开类似错误。
+
+### 适用场景
+
+- 需要系统探索多条解路的任务
+- 逻辑谜题、编程挑战和多步推理
+- 尝试不同策略能提高成功率的问题
+
+### 快速开始
+
+```python
+from qitos.recipes.lats import LATSAgent, LATSCritic
+
+agent = LATSAgent(llm=my_llm)
+result = agent.run(
+    task="解决逻辑谜题 ...",
+    critics=[LATSCritic(max_simulations=5, exploration_weight=1.41)],
+    max_steps=20,
+    return_state=True,
+)
+print(result.state.best_answer)    # 找到的最佳答案
+print(result.state.best_reward)    # 最佳奖励分数
+```
+
+### LATSCritic 参数
+
+| 参数 | 默认值 | 描述 |
+|---|---|---|
+| `max_simulations` | 5 | 最大模拟迭代次数 |
+| `exploration_weight` | 1.41 | UCB1 探索常数 (c) |
+| `success_threshold` | 0.8 | 提前停止的奖励阈值 |
+
+### LATSState 字段
+
+| 字段 | 类型 | 描述 |
+|---|---|---|
+| `simulations_done` | `int` | 已完成的模拟次数 |
+| `max_simulations` | `int` | 模拟预算 |
+| `best_reward` | `float` | 目前最佳奖励 |
+| `best_answer` | `str` | 最佳轨迹的答案 |
+| `reflections` | `List[str]` | 失败路径的反思 |
+
+## MoA（混合智能体）
+
+**MoA** 模式（Wang et al. 2024）独立运行多个提议者并综合其输出：**提议 → 聚合**。提议的多样性提高质量，即使单个提议者较弱。
+
+### 适用场景
+
+- 受益于多元视角或创造性回应的任务
+- 分析、评估和综合问题
+- 通过集成推理提升质量
+
+### 快速开始
+
+```python
+from qitos.recipes.moa import MoAOrchestrator, MoACritic
+
+agent = MoAOrchestrator(llm=my_llm)
+result = agent.run(
+    task="评估...的系统架构设计",
+    critics=[MoACritic(proposer_count=3, max_rounds=1)],
+    max_steps=15,
+    return_state=True,
+)
+print(result.state.synthesis)  # 聚合后的答案
+```
+
+### MoACritic 参数
+
+| 参数 | 默认值 | 描述 |
+|---|---|---|
+| `proposer_count` | 3 | 预期的提议数量 |
+| `max_rounds` | 1 | 最大提议-聚合轮数 |
+| `quality_threshold` | 0.6 | 接受综合结果的最低分数 |
+
+## Magentic-One
+
+**Magentic-One** 模式（Furtado et al. 2024）使用编排器的双账本架构：**规划 → 委派 → 跟踪进度 → 停滞时重新规划**。编排器维护事实库和任务账本，委派给专家智能体，在停滞时重新规划。
+
+### 适用场景
+
+- 需要协调不同能力的复杂多步任务
+- 编排器需要根据中间结果调整计划的场景
+- 涉及研究、编码和分析子任务的开放性问题
+
+### 快速开始
+
+```python
+from qitos.recipes.magentic_one import (
+    MagenticOneOrchestrator,
+    ProgressCritic,
+    MagenticOneState,
+)
+
+agent = MagenticOneOrchestrator(llm=my_llm)
+result = agent.run(
+    task="研究并总结...的最新发现",
+    critics=[ProgressCritic(max_stalls=3)],
+    max_steps=30,
+    return_state=True,
+)
+print(result.state.fact_bank)        # 累积的事实
+print(result.state.completed_tasks)  # 已完成的子任务
+```
+
+### ProgressCritic 参数
+
+| 参数 | 默认值 | 描述 |
+|---|---|---|
+| `max_stalls` | 3 | 最大连续无进展步数 |
+| `progress_threshold` | 0.5 | 认为有进展的最低分数 |
+
+### MagenticOneState 字段
+
+| 字段 | 类型 | 描述 |
+|---|---|---|
+| `fact_bank` | `List[str]` | 累积的事实和推测 |
+| `task_ledger` | `List[str]` | 当前的子任务计划 |
+| `completed_tasks` | `List[str]` | 已完成的子任务 |
+| `stall_count` | `int` | 连续无进展步数 |
+| `specialist_calls` | `int` | 专家委派次数 |
 
 ## 脚手架工具
 

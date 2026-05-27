@@ -416,6 +416,9 @@ _METHOD_TEMPLATES = {
     "debate": "Debate — multi-agent debate for reasoning",
     "manager_worker": "Manager-Worker — orchestration with delegation",
     "planner_executor": "Planner-Executor — plan decomposition with execution",
+    "lats": "LATS — Monte Carlo tree search with language evaluation",
+    "moa": "MoA — parallel proposals and aggregation",
+    "magentic_one": "Magentic-One — orchestrator with specialist workers",
 }
 
 

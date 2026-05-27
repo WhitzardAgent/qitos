@@ -1,0 +1,18 @@
+benchmark: generic
+display_name: LATS — Language Agent Tree Search
+description: >
+  Monte Carlo Tree Search with language evaluation. The agent
+  explores solution paths, evaluates with LLM-powered scoring,
+  and reflects on failed trajectories.
+splits:
+  - default
+defaults:
+  model: qwen-plus
+  max_steps: 20
+  max_tokens: 4096
+  temperature: 0.2
+  retry_budget: 3
+scorer: exact_match
+tools: []
+notes: >
+  Override LATSCritic.evaluate() for LLM-based value functions.

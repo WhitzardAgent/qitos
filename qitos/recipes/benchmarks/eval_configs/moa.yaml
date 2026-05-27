@@ -1,0 +1,17 @@
+benchmark: generic
+display_name: MoA — Mixture of Agents
+description: >
+  Multiple proposers generate independently, then an aggregator
+  synthesizes the best insights from all proposals.
+splits:
+  - default
+defaults:
+  model: qwen-plus
+  max_steps: 15
+  max_tokens: 4096
+  temperature: 0.7
+  retry_budget: 2
+scorer: llm_judge
+tools: []
+notes: >
+  Use build_moa_system() from qitos.kit.patterns.moa for parallel execution.

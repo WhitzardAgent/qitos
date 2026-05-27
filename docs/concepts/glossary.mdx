@@ -191,7 +191,7 @@ A frozen, serializable snapshot of a tool's permission and capability profile pr
 
 ### Method template
 
-A ready-made Agent + Critic pair that implements a well-known agentic reasoning pattern. QitOS ships with Self-Refine and Reflexion templates in `qitos.recipes`. Each template packages a specialized state, critic, and agent.
+A ready-made Agent + Critic pair that implements a well-known agentic reasoning pattern. QitOS ships with Self-Refine, Reflexion, LATS, MoA, and Magentic-One templates in `qitos.recipes`. Each template packages a specialized state, critic, and agent.
 
 ### Self-Refine
 
@@ -200,3 +200,15 @@ An iterative refinement pattern (Madaan et al. 2023) where the agent generates a
 ### Reflexion
 
 An iterative reflection pattern (Shinn et al. 2023) where the agent acts, evaluates results, and on failure generates a verbal reflection stored in state. The `ReflexionCritic` detects failures and produces reflections as instruction patches; the `ReflexionAgent` injects previous reflections into the system prompt so the LLM learns from past mistakes.
+
+### LATS
+
+Language Agent Tree Search (Zhou et al. 2023) applies Monte Carlo Tree Search to language agents. The `LATSAgent` explores solution paths, the `LATSCritic` evaluates each path using UCB1-inspired scoring and generates reflections on failed trajectories, and the `LATSState` tracks tree statistics including best reward, failed paths, and reflections.
+
+### MoA (Mixture-of-Agents)
+
+A layered pattern (Wang et al. 2024) where multiple proposers independently generate responses and an aggregator synthesizes the best insights. The `MoAOrchestrator` manages proposal collection and aggregation; the `MoACritic` drives the loop by checking proposal count and prompting for collection or synthesis.
+
+### Magentic-One
+
+A dual-ledger orchestration pattern (Furtado et al. 2024) where an orchestrator maintains a Fact Bank and Task Ledger, delegates to specialist agents, and re-plans when stuck. The `ProgressCritic` detects stalls and triggers re-planning; the `MagenticOneOrchestrator` enriches prompts with facts and task progress.

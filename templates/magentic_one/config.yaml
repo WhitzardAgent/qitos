@@ -1,0 +1,11 @@
+name: magentic_one_template
+max_steps: 30
+max_stalls: 3
+model:
+  provider: openai_compatible
+  base_url: https://api.siliconflow.cn/v1/
+  api_key: ${OPENAI_API_KEY}
+  model: Qwen/Qwen3-8B
+  model_name: Qwen/Qwen3-8B
+  temperature: 0.0
+  max_tokens: 4096

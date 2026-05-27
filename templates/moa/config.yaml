@@ -1,0 +1,12 @@
+name: moa_template
+max_steps: 15
+proposer_count: 3
+max_rounds: 1
+model:
+  provider: openai_compatible
+  base_url: https://api.siliconflow.cn/v1/
+  api_key: ${OPENAI_API_KEY}
+  model: Qwen/Qwen3-8B
+  model_name: Qwen/Qwen3-8B
+  temperature: 0.7
+  max_tokens: 2048

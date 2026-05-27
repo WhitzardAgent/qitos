@@ -1,6 +1,6 @@
 ---
 title: "Method Templates"
-description: "Use built-in method templates (Self-Refine, Reflexion) to implement proven agent patterns with minimal boilerplate."
+description: "Use built-in method templates (Self-Refine, Reflexion, LATS, MoA, Magentic-One) to implement proven agent patterns with minimal boilerplate."
 ---
 
 QitOS provides **method templates** — ready-made Agent + Critic pairs that implement well-known agentic reasoning patterns. Each template packages a specialized state, critic, and agent so you can apply the pattern without rewriting the control loop.
@@ -142,6 +142,168 @@ print(result.state.final_result)  # FINAL ANSWER if extracted
 | `max_reflections` | `int` | Reflection budget |
 | `last_action_success` | `bool` | Whether the last step succeeded |
 | `attempt` | `int` | Current attempt number |
+
+## LATS
+
+The **LATS** pattern (Zhou et al. 2023) applies Monte Carlo Tree Search to language agents: **select → expand → evaluate → backpropagate**. Failed trajectories generate reflections that guide future exploration away from similar mistakes.
+
+### When to use it
+
+- Tasks requiring systematic exploration of multiple solution paths
+- Logic puzzles, coding challenges, and multi-step reasoning
+- Problems where trying different strategies improves success
+
+### Quick start
+
+```python
+from qitos.recipes.lats import LATSAgent, LATSCritic
+
+agent = LATSAgent(llm=my_llm)
+result = agent.run(
+    task="Solve the logic puzzle ...",
+    critics=[LATSCritic(max_simulations=5, exploration_weight=1.41)],
+    max_steps=20,
+    return_state=True,
+)
+print(result.state.best_answer)    # best answer found
+print(result.state.best_reward)    # best reward score
+```
+
+### How it works
+
+1. **Simulate**: The agent takes an action, producing a result.
+2. **Evaluate**: `LATSCritic` computes a reward from the result (errors → low reward, FINAL ANSWER → high reward).
+3. **Reflect**: Failed paths (reward < 0.3) generate reflections stored in `state.reflections`.
+4. **Guide**: On retry, the critic provides an `instruction_patch` that includes reflections and UCB1-style exploration guidance.
+5. **Stop**: When a path succeeds (reward ≥ success_threshold) or `max_simulations` is reached.
+
+### LATSCritic parameters
+
+| Parameter | Default | Description |
+|---|---|---|
+| `max_simulations` | 5 | Maximum simulation iterations |
+| `exploration_weight` | 1.41 | UCB1 exploration constant (c) |
+| `success_threshold` | 0.8 | Reward value for early stopping |
+
+### LATSState fields
+
+| Field | Type | Description |
+|---|---|---|
+| `simulations_done` | `int` | Number of simulations completed |
+| `max_simulations` | `int` | Simulation budget |
+| `exploration_weight` | `float` | UCB1 c parameter |
+| `best_reward` | `float` | Best reward found so far |
+| `best_answer` | `str` | Answer from the best trajectory |
+| `failed_paths` | `List[str]` | Descriptions of failed paths |
+| `reflections` | `List[str]` | Reflections from failures |
+
+## MoA (Mixture-of-Agents)
+
+The **MoA** pattern (Wang et al. 2024) runs multiple proposers independently and synthesizes their outputs: **propose → aggregate**. Diversity of proposals improves quality, even when individual proposers are weaker models.
+
+### When to use it
+
+- Tasks benefiting from diverse perspectives or creative responses
+- Analysis, evaluation, and synthesis problems
+- Quality improvement through ensemble reasoning
+
+### Quick start
+
+```python
+from qitos.recipes.moa import MoAOrchestrator, MoACritic
+
+agent = MoAOrchestrator(llm=my_llm)
+result = agent.run(
+    task="Evaluate the system architecture design for ...",
+    critics=[MoACritic(proposer_count=3, max_rounds=1)],
+    max_steps=15,
+    return_state=True,
+)
+print(result.state.synthesis)  # the aggregated answer
+```
+
+### How it works
+
+1. **Collect**: `MoACritic` checks if enough proposals have been gathered. If not, it returns `retry` with an instruction to gather more proposals.
+2. **Aggregate**: When all proposals are collected, the critic prompts for synthesis.
+3. **Output**: When synthesis is complete and meets the quality threshold, the critic returns `stop`.
+
+For parallel proposer execution with actual multi-agent delegation, use `qitos.kit.patterns.moa.build_moa_system()`.
+
+### MoACritic parameters
+
+| Parameter | Default | Description |
+|---|---|---|
+| `proposer_count` | 3 | Expected number of proposals |
+| `max_rounds` | 1 | Maximum proposal-aggregation rounds |
+| `quality_threshold` | 0.6 | Minimum score to accept synthesis |
+
+### MoARecipeState fields
+
+| Field | Type | Description |
+|---|---|---|
+| `proposals` | `List[Dict]` | Collected proposals with proposer and content |
+| `synthesis` | `str` | Final synthesized answer |
+| `round_count` | `int` | Current round number |
+| `max_rounds` | `int` | Round budget |
+| `proposer_count` | `int` | Expected proposal count |
+
+## Magentic-One
+
+The **Magentic-One** pattern (Furtado et al. 2024) uses an orchestrator with a dual-ledger architecture: **plan → delegate → track progress → re-plan when stuck**. The orchestrator maintains a Fact Bank and Task Ledger, delegates to specialist agents, and re-plans when progress stalls.
+
+### When to use it
+
+- Complex, multi-step tasks requiring coordination of different capabilities
+- Tasks where an orchestrator needs to adapt its plan based on intermediate results
+- Open-ended problems with research, coding, and analysis subtasks
+
+### Quick start
+
+```python
+from qitos.recipes.magentic_one import (
+    MagenticOneOrchestrator,
+    ProgressCritic,
+    MagenticOneState,
+)
+
+agent = MagenticOneOrchestrator(llm=my_llm)
+result = agent.run(
+    task="Research and summarize the latest findings on ...",
+    critics=[ProgressCritic(max_stalls=3)],
+    max_steps=30,
+    return_state=True,
+)
+print(result.state.fact_bank)        # accumulated facts
+print(result.state.completed_tasks)  # finished subtasks
+```
+
+### How it works
+
+1. **Plan**: The orchestrator creates a task ledger and gathers initial facts.
+2. **Delegate**: At each step, a subtask is assigned to a specialist.
+3. **Track**: `ProgressCritic` evaluates whether new facts have been gathered or tasks completed.
+4. **Re-plan**: If no progress is detected for `max_stalls` consecutive steps, the critic returns `retry` with re-planning guidance.
+5. **Stop**: When a FINAL ANSWER is provided, or when stall budget is exhausted.
+
+### ProgressCritic parameters
+
+| Parameter | Default | Description |
+|---|---|---|
+| `max_stalls` | 3 | Maximum consecutive no-progress steps |
+| `progress_threshold` | 0.5 | Minimum score to consider progress |
+
+### MagenticOneState fields
+
+| Field | Type | Description |
+|---|---|---|
+| `fact_bank` | `List[str]` | Accumulated facts and educated guesses |
+| `task_ledger` | `List[str]` | Current plan of subtasks |
+| `completed_tasks` | `List[str]` | Finished subtasks |
+| `stall_count` | `int` | Consecutive no-progress steps |
+| `max_stalls` | `int` | Stall budget before forced stop |
+| `specialist_calls` | `int` | Number of specialist delegations |
+| `current_subtask` | `str` | Currently active subtask |
 
 ## Scaffolding a new agent
 

@@ -1,0 +1,17 @@
+benchmark: generic
+display_name: Magentic-One — Orchestrator with Specialists
+description: >
+  Generalist orchestrator maintains Fact Bank and Task Ledger,
+  delegates to specialists, tracks progress, and re-plans when stuck.
+splits:
+  - default
+defaults:
+  model: qwen-plus
+  max_steps: 30
+  max_tokens: 4096
+  temperature: 0.0
+  retry_budget: 3
+scorer: llm_judge
+tools: []
+notes: >
+  Register specialist agents via AgentRegistry before running.
