@@ -15,6 +15,15 @@ How to update:
 - Move `Unreleased` notes into a dated or versioned section when publishing a release
 - Prefer user-facing changes, upgrade notes, and important engineering changes over low-level edit logs
 
+## Unreleased
+
+### Fixed
+
+- Fixed OpenAI-compatible tool schema generation for postponed or string annotations so CyberGym tools no longer emit invalid JSON Schema types.
+- Fixed CyberGym batch trace/result/render redaction so API keys and auth token markers are scrubbed before persisted artifacts are written.
+- Fixed CyberGym PoC generation runs so benchmark-local Bash commands can run without interactive command review while the default coding toolset review guard remains intact.
+- Fixed tool registration with name overrides so CyberGym uppercase aliases do not mutate source tool specs shared with ordinary coding toolsets.
+
 ## v0.6.0 (2026-05-28)
 
 ### Added

@@ -434,6 +434,23 @@ class CodingToolSet:
         :param run_in_background: Whether to detach the command and return a log path.
         :param runtime_context: Optional runtime context injected by the executor.
         """
+        return self._run_bash_command(
+            command=command,
+            read_only=read_only,
+            allow_destructive=allow_destructive,
+            run_in_background=run_in_background,
+            runtime_context=runtime_context,
+        )
+
+    def _run_bash_command(
+        self,
+        command: str,
+        read_only: bool = False,
+        allow_destructive: bool = False,
+        run_in_background: bool = False,
+        allow_needs_review: bool = False,
+        runtime_context: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         _ = runtime_context
         text = str(command or "").strip()
         if not text:
@@ -463,6 +480,7 @@ class CodingToolSet:
         if (
             analysis.safety == CommandSafety.NEEDS_REVIEW
             and not allow_destructive
+            and not allow_needs_review
             and not python_inline_smoke
         ):
             return {

@@ -101,6 +101,24 @@ def test_tool_registry_include_and_toolset_lifecycle(tmp_path):
     assert "str_replace" in editor.list_tools()
 
 
+def test_register_name_override_does_not_mutate_source_tool(tmp_path):
+    coding = CodingToolSet(
+        workspace_root=str(tmp_path),
+        include_notebook=False,
+        enable_lsp=False,
+        enable_tasks=False,
+        enable_web=False,
+        expose_modern_names=False,
+        profile="editor",
+    )
+
+    registry = ToolRegistry()
+    registry.register(coding.str_replace, name="STR_REPLACE")
+
+    assert "STR_REPLACE" in registry.list_tools()
+    assert coding.str_replace.spec.name == "str_replace"
+
+
 def test_curated_toolsets_register_cleanly(tmp_path):
     toolsets = [
         NotebookToolSet(workspace_root=str(tmp_path)),

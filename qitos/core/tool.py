@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import inspect
 from dataclasses import asdict, dataclass, field
-from typing import Any, Callable, Dict, List, Optional, cast
+from typing import Any, Callable, Dict, List, Optional, cast, get_type_hints
 
 
 @dataclass
@@ -504,6 +504,20 @@ def get_tool_meta(func: Callable[..., Any]) -> Optional[ToolMeta]:
 
 def build_tool_spec(func: Callable[..., Any], meta: ToolMeta) -> ToolSpec:
     sig = inspect.signature(func)
+    target = getattr(func, "__func__", func)
+    module = inspect.getmodule(target)
+    globalns = getattr(module, "__dict__", {})
+    try:
+        resolved_hints = get_type_hints(
+            target, globalns=globalns, localns=globalns, include_extras=True
+        )
+    except TypeError:
+        try:
+            resolved_hints = get_type_hints(target, globalns=globalns, localns=globalns)
+        except Exception:
+            resolved_hints = {}
+    except Exception:
+        resolved_hints = {}
     params = {}
     required = []
 
@@ -518,7 +532,8 @@ def build_tool_spec(func: Callable[..., Any], meta: ToolMeta) -> ToolSpec:
             "process_ops",
         }:
             continue
-        params[name] = {"type": _type_to_json(p.annotation), "description": ""}
+        annotation = resolved_hints.get(name, p.annotation)
+        params[name] = {"type": _type_to_json(annotation), "description": ""}
         if p.default is inspect.Parameter.empty:
             required.append(name)
 
@@ -556,6 +571,27 @@ def build_tool_spec(func: Callable[..., Any], meta: ToolMeta) -> ToolSpec:
 
 
 def _type_to_json(annotation: Any) -> str:
+    if annotation in {inspect.Parameter.empty, inspect.Signature.empty}:
+        return "string"
+
+    if isinstance(annotation, str):
+        normalized = annotation.strip().removeprefix("typing.")
+        return {
+            "str": "string",
+            "int": "integer",
+            "float": "number",
+            "bool": "boolean",
+            "dict": "object",
+            "Dict": "object",
+            "list": "array",
+            "List": "array",
+            "None": "null",
+            "NoneType": "null",
+        }.get(normalized, "string")
+
+    if annotation is Any:
+        return "object"
+
     mapping = {
         str: "string",
         int: "integer",
@@ -573,7 +609,7 @@ def _type_to_json(annotation: Any) -> str:
     schema = type_to_json_schema(annotation)
     if isinstance(schema, dict) and "type" in schema and isinstance(schema["type"], str):
         return schema["type"]
-    return "any"
+    return "object"
 
 
 __all__ = [

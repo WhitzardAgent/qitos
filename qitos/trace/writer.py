@@ -9,6 +9,8 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
+from qitos.tracing.config import _redact_dict
+
 from .events import TraceEvent, TraceStep
 from .schema import TraceSchemaValidator
 
@@ -52,7 +54,7 @@ class TraceWriter:
 
     def _append_jsonl(self, path: str, payload: Dict[str, Any]) -> None:
         with open(path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(payload, ensure_ascii=False))
+            f.write(json.dumps(_redact_dict(payload), ensure_ascii=False))
             f.write("\n")
 
     def _write_manifest(
@@ -101,7 +103,7 @@ class TraceWriter:
             "handoff_count": self.metadata.get("handoff_count"),
         }
         with open(self.manifest_path, "w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False, indent=2)
+            json.dump(_redact_dict(payload), f, ensure_ascii=False, indent=2)
 
     def _summary_totals(self, summary: Dict[str, Any]) -> tuple[int, float, float]:
         task_result = summary.get("task_result")

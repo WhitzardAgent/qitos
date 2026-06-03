@@ -37,6 +37,10 @@ class ToolRegistry:
             name or getattr(item, "name", None) or getattr(item, "_name", None)
         )
         if resolved_name:
+            from copy import copy
+
+            tool_obj = copy(tool_obj)
+            tool_obj.spec = copy(tool_obj.spec)
             tool_obj.spec.name = str(resolved_name)
         self._register_tool_object(tool_obj, origin=ToolOrigin(source="function"))
         return self

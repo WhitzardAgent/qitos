@@ -12,6 +12,8 @@ from rich.rule import Rule
 from rich.syntax import Syntax
 from rich.text import Text
 
+from qitos.tracing.config import _redact_dict
+
 from ..core.action import Action
 from ..engine.hooks import EngineHook, HookContext
 from .cli_render import RichRender
@@ -318,7 +320,7 @@ class RenderStreamHook(RenderHook):
         self.events.append(evt)
         if self._path is not None:
             with self._path.open("a", encoding="utf-8") as f:
-                f.write(json.dumps(evt.to_dict(), ensure_ascii=False))
+                f.write(json.dumps(_redact_dict(evt.to_dict()), ensure_ascii=False))
                 f.write("\n")
         self.on_render_event(evt)
 

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
 
 from qitos.core.spec import BenchmarkRunResult, ExperimentSpec, RunSpec
+from qitos.tracing.config import _redact_dict
 
 
 def build_experiment_spec(
@@ -43,7 +44,7 @@ def write_benchmark_results(
     target.parent.mkdir(parents=True, exist_ok=True)
     with target.open("w", encoding="utf-8") as f:
         for row in rows:
-            f.write(json.dumps(row.to_dict(), ensure_ascii=False))
+            f.write(json.dumps(_redact_dict(row.to_dict()), ensure_ascii=False))
             f.write("\n")
     return target
 
