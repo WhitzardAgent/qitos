@@ -27,8 +27,9 @@ class DelegateTool(BaseTool):
         self.agent_spec = spec
         self.agent_registry = agent_registry
         self._execution_context: str = ""
+        public_tool_name = str(spec.tool_name or "").strip() or f"delegate_to_{spec.name}"
         tool_spec = ToolSpec(
-            name=f"delegate_to_{spec.name}",
+            name=public_tool_name,
             description=spec.description,
             parameters={
                 "task": {
@@ -78,7 +79,11 @@ class DelegateTool(BaseTool):
             if sub_agent is not None and self._execution_context:
                 setattr(sub_agent, '_execution_context', self._execution_context)
             prepared_task = self._prepare_task(task, runtime_context)
-            result = sub_engine.run(prepared_task)
+            run_kwargs: Dict[str, Any] = {}
+            context_arg = args.get("context")
+            if isinstance(context_arg, dict):
+                run_kwargs["context"] = dict(context_arg)
+            result = sub_engine.run(prepared_task, **run_kwargs)
         except Exception as exc:
             self._emit_delegate_event(
                 trace_writer,

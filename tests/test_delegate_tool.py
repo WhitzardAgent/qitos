@@ -88,6 +88,15 @@ class TestAgentSpec:
         assert spec.context_strategy == ContextStrategy.FULL
         assert spec.shared_env is False
 
+    def test_tool_name_override(self):
+        spec = AgentSpec(
+            name="researcher",
+            description="Researches a topic",
+            agent=DummyAgent(),
+            tool_name="research_topic",
+        )
+        assert spec.tool_name == "research_topic"
+
 
 class TestAgentRegistry:
     def test_register_and_resolve(self):
@@ -123,6 +132,20 @@ class TestAgentRegistry:
         assert isinstance(tools[0], DelegateTool)
         assert tools[0].name == "delegate_to_researcher"
 
+    def test_get_delegate_tools_uses_public_tool_name_override(self):
+        registry = AgentRegistry()
+        registry.register(
+            AgentSpec(
+                name="researcher",
+                description="Researches a topic",
+                agent=DummyAgent(),
+                tool_name="research_topic",
+            )
+        )
+        tools = registry.get_delegate_tools()
+        assert len(tools) == 1
+        assert tools[0].name == "research_topic"
+
 
 class TestHandoffContext:
     def test_defaults(self):
@@ -150,6 +173,18 @@ class TestDelegateTool:
         registry.register(spec)
         tool = registry.get_delegate_tools()[0]
         assert tool.name == "delegate_to_researcher"
+
+    def test_public_tool_name_override(self):
+        spec = AgentSpec(
+            name="researcher",
+            description="Researches a topic",
+            agent=DummyAgent(),
+            tool_name="research_topic",
+        )
+        registry = AgentRegistry()
+        registry.register(spec)
+        tool = registry.get_delegate_tools()[0]
+        assert tool.name == "research_topic"
 
     def test_spec_description_propagated(self):
         spec = AgentSpec(
@@ -239,6 +274,28 @@ class TestDelegateToolExecution:
 
         assert result["status"] == "partial"
         assert result["stop_reason"] == "max_steps"
+
+    def test_execute_passes_context_argument_to_sub_engine(self):
+        spec = _make_spec()
+        registry = AgentRegistry()
+        registry.register(spec)
+        tool = registry.get_delegate_tools()[0]
+
+        mock_result = MagicMock()
+        mock_result.state.final_result = "research complete"
+        mock_result.state.stop_reason = "final"
+        mock_result.step_count = 2
+
+        context = {"repo_summary": "src/", "parser_paths": ["src/parser.c"]}
+        with patch("qitos.engine.engine.Engine") as MockEngine:
+            MockEngine.return_value.run.return_value = mock_result
+            result = tool.execute({"task": "find the bug", "context": context})
+
+        assert result["status"] == "success"
+        MockEngine.return_value.run.assert_called_once_with(
+            "find the bug",
+            context=context,
+        )
 
 
 # ── RuntimePhase extension tests ─────────────────────────────────────────

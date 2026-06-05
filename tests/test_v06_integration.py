@@ -84,6 +84,31 @@ class TestDelegateToolIntegration:
         assert spec.model_override == "gpt-4o"
         assert spec.tools_override is None
 
+    def test_agent_spec_tool_name_override_field(self):
+        """AgentSpec.tool_name customizes the model-facing delegate tool name."""
+        from qitos.core.agent_spec import AgentSpec, AgentRegistry
+        from qitos.core.state import StateSchema
+        from qitos.core.agent_module import AgentModule
+
+        class _TestAgent(AgentModule):
+            def init_state(self):
+                return StateSchema()
+            def reduce(self, decision, state=None):
+                return state or {}
+
+        agent = _TestAgent(llm=None)
+        registry = AgentRegistry()
+        registry.register(
+            AgentSpec(
+                name="worker",
+                description="A worker",
+                agent=agent,
+                tool_name="research_topic",
+            )
+        )
+        tools = registry.get_delegate_tools()
+        assert tools[0].name == "research_topic"
+
     def test_agent_registry_get_handoff_tools(self):
         """AgentRegistry.get_handoff_tools() returns HandoffTool instances."""
         from qitos.core.agent_spec import AgentSpec, AgentRegistry

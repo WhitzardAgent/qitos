@@ -29,9 +29,15 @@ registry.register(AgentSpec(
     description="研究特定主题",
     agent=ResearcherAgent(llm=llm),
     context_strategy=ContextStrategy.SUMMARY,
+    tool_name="research_topic",  # 可选；默认是 delegate_to_researcher
 ))
-tools = registry.get_delegate_tools()  # [DelegateTool(name="delegate_to_researcher")]
+tools = registry.get_delegate_tools()  # [DelegateTool(name="research_topic")]
 ```
+
+`DelegateTool` 暴露 `task` 和可选的 `context` 参数。`task` 会成为子智能体的目标；
+当 `context` 是字典时，它会通过 `init_state(..., context=context)` 传给子智能体。
+如果希望模型看到的是面向任务的工具名，而不是默认的 `delegate_to_{agent_name}`，
+可以设置 `AgentSpec.tool_name`。
 
 **适用场景**：
 - 协调器需要从专家获取返回结果

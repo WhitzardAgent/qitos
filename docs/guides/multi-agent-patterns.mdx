@@ -30,9 +30,16 @@ registry.register(AgentSpec(
     description="Researches a topic",
     agent=ResearcherAgent(llm=llm),
     context_strategy=ContextStrategy.SUMMARY,
+    tool_name="research_topic",  # optional; defaults to delegate_to_researcher
 ))
-tools = registry.get_delegate_tools()  # [DelegateTool(name="delegate_to_researcher")]
+tools = registry.get_delegate_tools()  # [DelegateTool(name="research_topic")]
 ```
+
+`DelegateTool` exposes `task` and optional `context` parameters. The `task`
+becomes the child agent objective, while a dict `context` is passed to the child
+agent as `init_state(..., context=context)`. Use `AgentSpec.tool_name` when the
+model-facing tool should read like a task affordance instead of the default
+`delegate_to_{agent_name}`.
 
 **When to use**:
 - A coordinator needs results back from a specialist

@@ -57,10 +57,16 @@ class AgentSpec:
     shared_memory: Optional[Any] = None  # SharedMemory instance
     model_override: Optional[str] = None
     tools_override: Optional[Any] = None  # ToolRegistry instance
+    tool_name: Optional[str] = None
 
     def __post_init__(self) -> None:
         if not self.name or not self.name.strip():
             raise ValueError("AgentSpec.name must be non-empty")
+        if self.tool_name is not None:
+            normalized_tool_name = str(self.tool_name).strip()
+            if not normalized_tool_name:
+                raise ValueError("AgentSpec.tool_name must be non-empty when set")
+            self.tool_name = normalized_tool_name
 
 
 class AgentRegistry:
