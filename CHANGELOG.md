@@ -27,11 +27,16 @@ How to update:
 - **AgentRegistry.validate_topology()**: Validates the handoff graph at registration time — detects unknown handoff targets, cycles (A→B→A), and isolated agents.
 - **_execute_handoff_step()**: Extracted handoff execution into a reusable method on Engine, called from both `Decision.handoff()` and HandoffTool interception paths.
 - **qita handoff gantt enhancements**: Context strategy labels (SUMMARY/FULL/ISOLATED) on handoff arrows, per-agent token breakdown below the gantt chart, click-to-expand handoff detail panels showing context strategy and messages passed.
-- **Canonical multi-agent templates**: Three new example templates in `examples/patterns/`:
+- **Canonical multi-agent templates**: Four new example templates in `examples/patterns/`:
   - `manager_worker_handoff.py` — Manager-Worker with `ContextStrategy.SUMMARY`, `HandoffContext.payload`, and shared memory
   - `planner_executor_handoff.py` — Planner-Executor with `ContextStrategy.FULL` and `StateAdapter`
   - `proposer_verifier_handoff.py` — Proposer-Verifier with alternating handoffs and convergence detection
+  - `actor_critic_handoff.py` — Actor-Critic with alternating handoffs, shared memory, and iteration tracking
+- **Benchmark-style multi-agent example**: `examples/patterns/benchmark_multiagent.py` — compares single-agent vs multi-agent (triage→coder) on 3 bug-fix tasks with token/step comparison table
+- **qita role contribution view**: Per-agent table in run detail pages showing steps, tokens, actions, tool calls, and contribution bars for multi-agent runs
 - **E2E tests for v0.7 handoff**: `tests/e2e/test_handoff_v07.py` with 6 real-model API tests covering HandoffTool interception, payload consumption, shared memory cross-read, return handoff, manager-worker template, and loop detection.
+- **Multi-agent handoff tutorial**: Updated `docs/tutorials/multi-agent.mdx` to cover both handoff and fanout approaches, context strategies, shared memory, and pattern selection guide
+- **Shared vs Private Memory guide**: New `docs/guides/shared-vs-private-memory.mdx` covering when to use shared vs private memory, HandoffContext.payload, namespace isolation, and common patterns
 
 ### Changed
 

@@ -1,22 +1,28 @@
 # Build Your First Multi-Agent System in QitOS
 
-This tutorial walks through building a multi-agent code exploration system that
-dispatches parallel sub-agents to investigate different parts of a codebase.
+This tutorial walks through two approaches to building multi-agent systems in QitOS:
 
-## What You'll Build
-
-A coordinator agent that uses the `fanout` tool to spawn multiple explorer
-agents in parallel, each investigating a different directory. Results are
-aggregated and synthesized.
+1. **Handoff** — agents transfer control to each other in a workflow (A → B → C)
+2. **Fanout** — a coordinator dispatches parallel sub-agents (1 → N → 1)
 
 ## Prerequisites
 
 - QitOS installed (`pip install qitos`)
 - An OpenAI-compatible API key
 
-## Step 1: Define Your Sub-Agent
+---
 
-First, create an explorer agent that can investigate directories:
+## Approach 1: Multi-Agent via Handoff
+
+Handoff is the primary multi-agent mechanism in QitOS. When agent A hands off to agent B, the Engine switches execution to agent B in the same run loop. This is ideal for workflow-style pipelines: triage → code → review, or planner → executor.
+
+### What You'll Build
+
+A triage agent that inspects a bug, then hands off to a coder agent that fixes it.
+
+### Step 1: Define the Triage Agent
+
+The triage agent reads the code, then uses `Decision.handoff()` to transfer control:
 
 ```python
 from dataclasses import dataclass, field
@@ -25,18 +31,186 @@ from qitos import Action, AgentModule, Decision, StateSchema, ToolRegistry
 from qitos.kit import CodingToolSet, REACT_SYSTEM_PROMPT, ReActTextParser, format_action, render_prompt
 
 @dataclass
+class WorkState(StateSchema):
+    scratchpad: list[str] = field(default_factory=list)
+    target_file: str = "buggy_module.py"
+
+class TriageAgent(AgentModule[WorkState, dict[str, Any], Action]):
+    name = "triage"
+
+    def __init__(self, llm, workspace_root):
+        registry = ToolRegistry()
+        registry.include(CodingToolSet(
+            workspace_root=workspace_root,
+            include_notebook=False,
+            enable_lsp=False,
+            enable_tasks=False,
+            enable_web=False,
+            expose_modern_names=False,
+        ))
+        super().__init__(tool_registry=registry, llm=llm, model_parser=ReActTextParser())
+
+    def init_state(self, task, **kwargs):
+        return WorkState(task=task, max_steps=8)
+
+    def decide(self, state, observation):
+        """After the first step, hand off to the coder."""
+        if state.current_step >= 1:
+            return Decision.handoff(
+                target="coder",
+                rationale="Inspection complete. Delegating to coder.",
+                handoff_message="Fix the bug so add(20, 22) returns 42.",
+            )
+        return None
+
+    def build_system_prompt(self, state):
+        return render_prompt(REACT_SYSTEM_PROMPT, {"tool_schema": self.tool_registry.get_tool_descriptions()})
+
+    def prepare(self, state):
+        lines = [f"Task: {state.task}", f"You are the triage agent. Read the code, then hand off to coder.", f"Step: {state.current_step}/{state.max_steps}"]
+        if state.scratchpad:
+            lines.extend(state.scratchpad[-8:])
+        return "\n".join(lines)
+
+    def reduce(self, state, observation, decision):
+        action_results = observation.get("action_results", []) if isinstance(observation, dict) else []
+        if decision.rationale:
+            state.scratchpad.append(f"Thought: {decision.rationale}")
+        if decision.actions:
+            state.scratchpad.append(f"Action: {format_action(decision.actions[0])}")
+        if action_results:
+            state.scratchpad.append(f"Observation: {action_results[0]}")
+        state.scratchpad = state.scratchpad[-20:]
+        return state
+```
+
+### Step 2: Define the Coder Agent
+
+The coder agent receives context from the triage agent and applies the fix:
+
+```python
+class CoderAgent(AgentModule[WorkState, dict[str, Any], Action]):
+    name = "coder"
+
+    def __init__(self, llm, workspace_root):
+        registry = ToolRegistry()
+        registry.include(CodingToolSet(
+            workspace_root=workspace_root,
+            include_notebook=False,
+            enable_lsp=False,
+            enable_tasks=False,
+            enable_web=False,
+            expose_modern_names=False,
+        ))
+        super().__init__(tool_registry=registry, llm=llm, model_parser=ReActTextParser())
+
+    def init_state(self, task, **kwargs):
+        return WorkState(task=task, max_steps=8)
+
+    def build_system_prompt(self, state):
+        return render_prompt(REACT_SYSTEM_PROMPT, {"tool_schema": self.tool_registry.get_tool_descriptions()})
+
+    def prepare(self, state):
+        lines = [f"Task: {state.task}", f"Target file: {state.target_file}", f"You are the coder agent. Apply the fix and verify.", f"Step: {state.current_step}/{state.max_steps}"]
+        if state.scratchpad:
+            lines.append("Previous context (from triage):")
+            lines.extend(state.scratchpad[-8:])
+        return "\n".join(lines)
+
+    def reduce(self, state, observation, decision):
+        action_results = observation.get("action_results", []) if isinstance(observation, dict) else []
+        if decision.rationale:
+            state.scratchpad.append(f"Thought: {decision.rationale}")
+        if decision.actions:
+            state.scratchpad.append(f"Action: {format_action(decision.actions[0])}")
+        if action_results:
+            first = action_results[0]
+            state.scratchpad.append(f"Observation: {first}")
+            if isinstance(first, dict) and int(first.get("returncode", 1)) == 0:
+                state.final_result = "Fix applied and verified."
+        state.scratchpad = state.scratchpad[-20:]
+        return state
+```
+
+### Step 3: Register Agents and Run
+
+Register both agents with `AgentSpec`, configure the context strategy, and use `Engine.run()`:
+
+```python
+from qitos import AgentRegistry, AgentSpec, ContextStrategy, Engine
+from qitos.core.shared_memory import InMemorySharedMemory
+
+llm = ...  # your model instance
+workspace = "./workspace"
+
+shared_mem = InMemorySharedMemory()
+triage = TriageAgent(llm=llm, workspace_root=workspace)
+coder = CoderAgent(llm=llm, workspace_root=workspace)
+
+registry = AgentRegistry()
+registry.register(AgentSpec(
+    name="triage",
+    description="Triage agent that inspects and delegates",
+    agent=triage,
+))
+registry.register(AgentSpec(
+    name="coder",
+    description="Coder agent that applies fixes and verifies",
+    agent=coder,
+    context_strategy=ContextStrategy.SUMMARY,
+    shared_memory=shared_mem,
+))
+
+engine = Engine(agent=triage, agent_registry=registry, budget=None)
+result = engine.run(
+    "Find and fix the bug in buggy_module.py so that add(20, 22) returns 42.",
+    workspace=workspace,
+    max_steps=10,
+)
+
+print(result.state.final_result)
+print(result.state.stop_reason)
+```
+
+### How Handoff Works
+
+1. The Engine starts with the triage agent
+2. Triage reads the file, then `decide()` returns `Decision.handoff(target="coder")`
+3. The Engine applies the context strategy (SUMMARY = compressed history)
+4. The Engine switches to the coder agent in the same run loop
+5. The coder agent sees the task plus a summary of the triage agent's work
+6. The coder applies the fix and verifies
+
+### Two Ways to Trigger Handoff
+
+**Programmatic handoff** (shown above): the agent's `decide()` method returns `Decision.handoff()`.
+
+**Tool-based handoff**: the LLM calls `transfer_to_coder` (auto-generated by `AgentRegistry.get_handoff_tools()`), and the Engine intercepts it:
+
+```python
+# Register handoff tools in the triage agent's tool registry
+for handoff_tool in registry.get_handoff_tools():
+    triage_tool_registry.register(handoff_tool)
+```
+
+The LLM then decides when to hand off by calling the tool, instead of the `decide()` method doing it programmatically.
+
+---
+
+## Approach 2: Multi-Agent via Fanout
+
+Fanout is for parallel delegation: a coordinator dispatches N sub-agents simultaneously, then aggregates results.
+
+### What You'll Build
+
+A coordinator that spawns multiple explorer agents in parallel, each investigating a different directory.
+
+### Step 1: Define Your Sub-Agent
+
+```python
+@dataclass
 class ExplorerState(StateSchema):
     scratchpad: list[str] = field(default_factory=list)
-
-EXPLORER_PROMPT = """\
-You are a code explorer agent. Investigate directories and report findings.
-
-Output contract (strict):
-Thought: <reasoning>
-Action: <tool_name>(arg=value, ...)
-or
-Final Answer: <summary>
-"""
 
 class ExplorerAgent(AgentModule[ExplorerState, dict[str, Any], Action]):
     def __init__(self, llm, workspace_root):
@@ -55,7 +229,7 @@ class ExplorerAgent(AgentModule[ExplorerState, dict[str, Any], Action]):
         return ExplorerState(task=task, max_steps=5)
 
     def build_system_prompt(self, state):
-        return render_prompt(EXPLORER_PROMPT, {"tool_schema": self.tool_registry.get_tool_descriptions()})
+        return render_prompt(REACT_SYSTEM_PROMPT, {"tool_schema": self.tool_registry.get_tool_descriptions()})
 
     def prepare(self, state):
         lines = [f"Task: {state.task}", f"Step: {state.current_step}/{state.max_steps}"]
@@ -75,79 +249,100 @@ class ExplorerAgent(AgentModule[ExplorerState, dict[str, Any], Action]):
         return state
 ```
 
-## Step 2: Register the Agent
-
-Use `AgentSpec` and `AgentRegistry` to register your sub-agent:
+### Step 2: Register and Run with Fanout
 
 ```python
-from qitos import AgentRegistry, AgentSpec, ContextStrategy
-
-llm = ...  # your model instance
-
-explorer_spec = AgentSpec(
+registry = AgentRegistry()
+registry.register(AgentSpec(
     name="explorer",
     description="Explores a directory and reports its structure",
     agent=ExplorerAgent(llm=llm, workspace_root="./my-project"),
-    context_strategy=ContextStrategy.ISOLATED,  # sub-agents don't need parent context
+    context_strategy=ContextStrategy.ISOLATED,
     max_steps_override=5,
-)
+))
 
-registry = AgentRegistry()
-registry.register(explorer_spec)
+# Coordinator gets the fanout tool
+coordinator_tools = ToolRegistry()
+coordinator_tools.include(CodingToolSet(workspace_root="./my-project"))
+coordinator_tools.register(registry.get_fanout_tool())
 ```
 
-## Step 3: Create the Coordinator
+The LLM calls: `fanout(tasks=[{"agent":"explorer","task":"Explore /auth"}, {"agent":"explorer","task":"Explore /api"}])`
 
-The coordinator agent has coding tools plus the `fanout` tool:
+---
+
+## Choosing the Right Approach
+
+| Need | Use | Why |
+|------|-----|-----|
+| Linear workflow (A → B → C) | `Decision.handoff()` | Control transfers, no return |
+| 1:1 delegation with result return | `DelegateTool` | Child returns result to parent |
+| 1:N parallel tasks | `FanOutTool` | Parallel execution, aggregate results |
+| LLM decides when to switch agents | HandoffTool | `transfer_to_*` tool calls |
+| Programmatic agent switching | `Decision.handoff()` | Agent's `decide()` returns handoff |
+
+See the [Multi-Agent Patterns guide](/guides/multi-agent-patterns) for the full decision tree.
+
+---
+
+## Context Strategies
+
+When agents hand off, the context strategy controls what the target agent sees:
+
+| Strategy | What the target receives | Use when |
+|----------|------------------------|----------|
+| `SUMMARY` | Compressed history + last few rounds | Target needs brief context (default) |
+| `FULL` | Complete conversation history | Target needs full context to continue |
+| `ISOLATED` | Only system prompt + task | Target works independently |
 
 ```python
-from qitos.kit import CodingToolSet
-
-class CoordinatorAgent(AgentModule[ExplorerState, dict[str, Any], Action]):
-    def __init__(self, llm, workspace_root, agent_registry):
-        registry = ToolRegistry()
-        registry.include(CodingToolSet(workspace_root=workspace_root, ...))
-        # Register delegation and fanout tools
-        for delegate_tool in agent_registry.get_delegate_tools():
-            registry.register(delegate_tool)
-        registry.register(agent_registry.get_fanout_tool())
-
-        super().__init__(tool_registry=registry, llm=llm, model_parser=ReActTextParser())
-    # ... (same init_state, build_system_prompt, prepare, reduce as ExplorerAgent)
+AgentSpec(
+    name="coder",
+    agent=coder_agent,
+    context_strategy=ContextStrategy.SUMMARY,  # compressed context
+)
 ```
 
-## Step 4: Run It
+---
+
+## Shared Memory for Cross-Agent State
+
+For agents that need to share live state (not just conversation history), use `SharedMemoryManager`:
 
 ```python
-coordinator = CoordinatorAgent(llm=llm, workspace_root="./my-project", agent_registry=registry)
-result = coordinator.run(
-    task="Analyze this codebase. Investigate the auth, api, and db modules in parallel.",
-    max_steps=12,
-)
-print(result.state.final_result)
+from qitos.core.shared_memory import InMemorySharedMemory
+
+shared_mem = InMemorySharedMemory()
+
+# Both agents get access via AgentSpec
+AgentSpec(name="triage", agent=triage_agent, shared_memory=shared_mem)
+AgentSpec(name="coder", agent=coder_agent, shared_memory=shared_mem)
 ```
 
-The LLM will call `fanout(tasks=[{"agent":"explorer","task":"Explore /auth"}, ...])`,
-spawning three parallel explorers.
+After handoff, the coder automatically gets read access to the triage agent's namespace. See the [Shared vs Private Memory guide](/guides/shared-vs-private-memory) for details.
 
-## Quick Start with Patterns
+---
+
+## Quick Start with Pattern Templates
 
 For common patterns, use the built-in templates:
 
 ```python
-from qitos.kit.patterns import build_manager_worker_system, ManagerWorkerConfig
+# Manager-Worker: manager delegates to specialist workers
+from examples.patterns.manager_worker_handoff import ManagerAgent, CoderWorker
 
-config = ManagerWorkerConfig(
-    worker_name="explorer",
-    workspace_root="./my-project",
-    llm=llm,
-)
-coordinator, registry = build_manager_worker_system(config)
-result = coordinator.run(task="Explore the codebase structure")
+# Planner-Executor: planner generates plan, executor implements it
+from examples.patterns.planner_executor_handoff import PlannerAgent, ExecutorAgent
+
+# Proposer-Verifier: proposer suggests, verifier critiques
+from examples.patterns.proposer_verifier_handoff import ProposerAgent, VerifierAgent
+
+# Actor-Critic: actor proposes, critic evaluates and refines
+from examples.patterns.actor_critic_handoff import ActorAgent, CriticAgent
 ```
 
 ## What's Next
 
-- Try `ContextStrategy.FULL` to pass parent context to sub-agents
-- Use `DelegateTool` for 1:1 delegation with result return
-- Use `Decision.handoff()` for workflow-style agent chains
+- [Multi-Agent Handoff guide](/guides/multi-agent-handoff) — context strategies and SharedMemory in depth
+- [Multi-Agent Patterns guide](/guides/multi-agent-patterns) — DelegateTool vs FanOutTool vs Handoff
+- [Shared vs Private Memory guide](/guides/shared-vs-private-memory) — when to use shared memory

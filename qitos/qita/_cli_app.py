@@ -1552,6 +1552,10 @@ pre{{margin:0;background:var(--surface-2);border:1px solid var(--line);padding:1
           <h4>handoff gantt</h4>
           <div id="handoffGantt"></div>
         </section>
+        <section class="timeline" id="roleContributionSection">
+          <h4>role contribution</h4>
+          <div id="roleContribution"></div>
+        </section>
         <section class="timeline">
           <h4>context timeline</h4>
           <div id="contextTimeline"></div>
@@ -2519,6 +2523,55 @@ function buildHandoffGantt(items){{
   }});
   el.innerHTML = p.join('');
 }}
+function buildRoleContribution(items){{
+  const el = document.getElementById('roleContribution');
+  if(!el) return;
+  const agents = {{}};
+  const agentColors = ['#5e6ad2','#27a644','#e5c100','#e5484d','#6b8fc4','#d97bf0','#3dc9b0','#f59e42'];
+  items.forEach(function(it){{
+    const aid = it.step && it.step.agent_id;
+    if(!aid) return;
+    if(!agents[aid]) agents[aid] = {{steps:0, prompt_tokens:0, completion_tokens:0, actions:0, tool_calls:0}};
+    agents[aid].steps++;
+    const ctx = it.step && it.step.context;
+    agents[aid].prompt_tokens += Number((ctx && ctx.prompt_tokens) || 0);
+    agents[aid].completion_tokens += Number((ctx && ctx.completion_tokens) || 0);
+    const acts = it.step && it.step.actions || [];
+    agents[aid].actions += acts.length;
+    const ti = it.step && it.step.tool_invocations || [];
+    agents[aid].tool_calls += ti.length;
+  }});
+  const agentNames = Object.keys(agents);
+  if(agentNames.length < 2){{
+    el.innerHTML = '<div class="muted">Only one agent in this run.</div>';
+    document.getElementById('roleContributionSection').style.display = 'none';
+    return;
+  }}
+  function agentColor(i){{ return agentColors[i % agentColors.length]; }}
+  const totalTokens = agentNames.reduce(function(s,a){{ return s + agents[a].prompt_tokens + agents[a].completion_tokens; }}, 0);
+  const totalSteps = agentNames.reduce(function(s,a){{ return s + agents[a].steps; }}, 0);
+  let html = '<table style="width:100%;border-collapse:collapse;font-size:12px">';
+  html += '<thead><tr style="border-bottom:2px solid var(--line)"><th style="text-align:left;padding:4px 8px">Agent</th><th style="text-align:right;padding:4px 8px">Steps</th><th style="text-align:right;padding:4px 8px">Tokens</th><th style="text-align:right;padding:4px 8px">Actions</th><th style="text-align:right;padding:4px 8px">Tool Calls</th><th style="text-align:right;padding:4px 8px">Contribution</th></tr></thead>';
+  html += '<tbody>';
+  agentNames.forEach(function(aid, i){{
+    const a = agents[aid];
+    const tokens = a.prompt_tokens + a.completion_tokens;
+    const stepPct = totalSteps > 0 ? (a.steps / totalSteps * 100).toFixed(1) : '0.0';
+    const tokenPct = totalTokens > 0 ? (tokens / totalTokens * 100).toFixed(1) : '0.0';
+    html += '<tr style="border-bottom:1px solid var(--line)">';
+    html += '<td style="padding:4px 8px"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:'+agentColor(i)+';margin-right:6px"></span>'+esc(aid)+'</td>';
+    html += '<td style="text-align:right;padding:4px 8px">'+a.steps+' ('+stepPct+'%)</td>';
+    html += '<td style="text-align:right;padding:4px 8px">'+tokens.toLocaleString()+' ('+tokenPct+'%)</td>';
+    html += '<td style="text-align:right;padding:4px 8px">'+a.actions+'</td>';
+    html += '<td style="text-align:right;padding:4px 8px">'+a.tool_calls+'</td>';
+    // Contribution bar
+    const barW = Math.max(4, parseFloat(stepPct) * 1.5);
+    html += '<td style="text-align:right;padding:4px 8px"><div style="background:'+agentColor(i)+';width:'+barW+'px;height:12px;border-radius:3px;display:inline-block;fill-opacity:0.7" title="'+stepPct+'% steps, '+tokenPct+'% tokens"></div></td>';
+    html += '</tr>';
+  }});
+  html += '</tbody></table>';
+  el.innerHTML = html;
+}}
 function buildCostPanel(items){{
   const el = document.getElementById('costPanel');
   if(!el) return;
@@ -2877,6 +2930,7 @@ function render(){{
   buildVisualTimeline(items);
   buildTimeline(items);
   buildHandoffGantt(items);
+  buildRoleContribution(items);
   buildCostPanel(items);
   buildContextTimeline(items);
   buildParserTimeline(items);

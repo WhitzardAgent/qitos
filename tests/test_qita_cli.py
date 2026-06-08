@@ -832,3 +832,34 @@ def test_handoff_gantt_detail_panels(tmp_path: Path):
     # Detail panels should exist with handoffDetail IDs
     assert "handoffDetail_" in html
     assert "messages_passed" in html
+
+
+def test_role_contribution_section_in_multi_agent_run(tmp_path: Path):
+    """Role contribution table is rendered for multi-agent runs."""
+    run = _make_multi_agent_run_with_context(tmp_path, "rc1")
+    event_lines = [
+        json.loads(line)
+        for line in (run / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    step_lines = [
+        json.loads(line)
+        for line in (run / "steps.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    manifest = json.loads((run / "manifest.json").read_text(encoding="utf-8"))
+    payload = {
+        "run": str(run),
+        "run_id": "rc1",
+        "manifest": manifest,
+        "events": event_lines,
+        "steps": step_lines,
+        "events_by_step": {
+            str(i): [e for e in event_lines if e["step_id"] == i]
+            for i in range(4)
+        },
+    }
+    html = _render_run_html(payload, embedded=False)
+    assert "role contribution" in html.lower()
+    assert "roleContribution" in html
+    assert "buildRoleContribution" in html

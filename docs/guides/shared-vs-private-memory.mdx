@@ -1,0 +1,219 @@
+---
+title: "Shared vs Private Memory"
+description: "When to use shared memory vs private memory in multi-agent QitOS systems."
+---
+
+# Shared vs Private Memory
+
+QitOS agents have two memory layers with distinct scopes and lifecycles:
+
+- **Private memory** — each agent's own `Memory` adapter, used for internal recall across steps.
+- **Shared memory** — `SharedMemoryManager` with namespaces, used for cross-agent state during handoff or delegation.
+
+Understanding when to use each is critical for designing correct multi-agent systems.
+
+## Private Memory
+
+Private memory is the `Memory` adapter attached to an `AgentModule` instance. It stores `MemoryRecord` objects that only the owning agent can read or write.
+
+```python
+from qitos.kit.memory import WindowMemory
+
+class MyAgent(AgentModule[MyState, dict, Action]):
+    def __init__(self, llm):
+        super().__init__(
+            llm=llm,
+            tool_registry=ToolRegistry(),
+            memory=WindowMemory(window_size=20),  # private to this agent
+        )
+```
+
+Key properties:
+
+- Isolated: no other agent can access this memory
+- Persists across steps within a single `Engine.run()` call
+- Controlled by the agent's `reduce()` method (append, evict, retrieve)
+- Adapters: `WindowMemory`, `SummaryMemory`, `VectorMemory`, `MarkdownFileMemory`
+
+Use private memory when:
+- A single agent needs to recall its own past observations
+- Sub-agents work independently (ISOLATED context strategy)
+- You want per-agent memory strategies (e.g., vector recall for one, window for another)
+
+## Shared Memory
+
+Shared memory is provided by `SharedMemoryManager` with namespace isolation. Agents get their own writable namespace, and cross-agent reads require explicit grants.
+
+```python
+from qitos.core.shared_memory import InMemorySharedMemory, SharedMemoryManager
+
+shared_mem = InMemorySharedMemory()
+manager = SharedMemoryManager(shared_mem)
+
+# Each agent gets a writable namespace
+agent_a_ns = manager.namespace("agent_a")
+agent_b_ns = manager.namespace("agent_b")
+
+# Agent A writes
+agent_a_ns.write("progress", "bug identified")
+
+# Agent B needs explicit read access to Agent A's namespace
+manager.grant_read_access("agent_b", "agent_a")
+agent_a_view = manager.get_readonly_namespace("agent_b", "agent_a")
+progress = agent_a_view.read("progress")  # "bug identified"
+```
+
+Key properties:
+
+- Namespace-isolated: each agent writes to its own namespace by default
+- Cross-namespace reads require `grant_read_access()`
+- Write access is per-namespace — agent B cannot write to agent A's namespace
+- Shared memory is injected via `AgentSpec.shared_memory`
+
+## How Shared Memory Connects to Handoff
+
+When an agent hands off to another agent, the `SharedMemoryManager` automatically grants the target agent read access to the source agent's namespace:
+
+```python
+from qitos import AgentSpec, AgentRegistry, ContextStrategy
+from qitos.core.shared_memory import InMemorySharedMemory
+from qitos.core.agent_spec import HandoffContext
+
+shared_mem = InMemorySharedMemory()
+
+registry = AgentRegistry()
+registry.register(AgentSpec(
+    name="coder",
+    description="Coder specialist",
+    agent=coder_agent,
+    context_strategy=ContextStrategy.SUMMARY,
+    shared_memory=shared_mem,  # <-- shared memory injection
+    handoff_context=HandoffContext(
+        strategy=ContextStrategy.SUMMARY,
+        payload={"task_type": "bug_fix"},  # one-time data transfer
+    ),
+))
+```
+
+When the manager hands off to the coder:
+
+1. The coder's writable namespace is created (`namespace("coder")`)
+2. `grant_read_access("coder", "manager")` is called automatically
+3. The coder can read the manager's namespace (but not write to it)
+4. `HandoffContext.payload` entries are written to the coder's namespace with the `handoff_payload:` prefix
+
+## HandoffContext.payload for One-Time Transfer
+
+`HandoffContext.payload` is for data that should be transferred once during handoff, without requiring the target agent to explicitly read a shared namespace:
+
+```python
+spec = AgentSpec(
+    name="coder",
+    description="Coder specialist",
+    agent=coder_agent,
+    handoff_context=HandoffContext(
+        strategy=ContextStrategy.SUMMARY,
+        payload={
+            "task_type": "bug_fix",
+            "priority": "high",
+            "target_file": "buggy_module.py",
+        },
+    ),
+)
+```
+
+The payload entries appear in the target agent's shared memory namespace as:
+- `handoff_payload:task_type` → `"bug_fix"`
+- `handoff_payload:priority` → `"high"`
+- `handoff_payload:target_file` → `"buggy_module.py"`
+
+Use payload when:
+- You need to pass structured metadata during handoff
+- The target agent needs context that isn't in the conversation history
+- You want to avoid bloating the handoff message with structured data
+
+## Decision Matrix
+
+| Scenario | Private Memory | Shared Memory | Payload |
+|----------|---------------|---------------|---------|
+| Single agent recalling past steps | Yes | No | No |
+| Independent sub-agents (ISOLATED) | Yes | No | No |
+| Manager→Worker with progress tracking | Yes (each) | Yes | Yes (task briefing) |
+| Actor→Critic with iteration history | Yes (each) | Yes (shared scratchpad) | Optional |
+| Planner→Executor with full context | Yes (each) | No | No (FULL strategy instead) |
+| One-time data transfer at handoff | No | No | Yes |
+
+## Common Patterns
+
+### Pattern 1: Private Only
+
+Best for single-agent runs or fully independent sub-agents.
+
+```python
+# No shared_memory on AgentSpec
+spec = AgentSpec(
+    name="explorer",
+    description="Independent explorer",
+    agent=explorer_agent,  # has its own WindowMemory
+    context_strategy=ContextStrategy.ISOLATED,
+)
+```
+
+### Pattern 2: Shared + Private
+
+Best for collaborating agents that need visibility into each other's progress.
+
+```python
+shared_mem = InMemorySharedMemory()
+
+# Manager agent
+manager_spec = AgentSpec(
+    name="manager",
+    description="Delegates and tracks progress",
+    agent=manager_agent,
+)
+
+# Worker agent with shared memory access
+worker_spec = AgentSpec(
+    name="coder",
+    description="Applies fixes",
+    agent=coder_agent,  # also has its own private WindowMemory
+    context_strategy=ContextStrategy.SUMMARY,
+    shared_memory=shared_mem,
+    handoff_context=HandoffContext(
+        strategy=ContextStrategy.SUMMARY,
+        payload={"task_type": "bug_fix"},
+    ),
+)
+```
+
+### Pattern 3: Payload Only (No Shared Namespace)
+
+Use `HandoffContext.payload` without `shared_memory` when you only need one-time data transfer:
+
+```python
+worker_spec = AgentSpec(
+    name="coder",
+    description="Applies fixes",
+    agent=coder_agent,
+    context_strategy=ContextStrategy.SUMMARY,
+    handoff_context=HandoffContext(
+        strategy=ContextStrategy.SUMMARY,
+        payload={"target_file": "buggy_module.py"},
+    ),
+    # No shared_memory — no cross-namespace access
+)
+```
+
+## Pitfalls
+
+- **Namespace isolation is strict**: agent B cannot write to agent A's namespace, even after handoff. Use the target agent's own namespace for writes.
+- **Read access requires explicit grant**: without `grant_read_access()` or `shared_memory` on the `AgentSpec`, the target agent cannot read the source's namespace.
+- **Payload is write-once**: `HandoffContext.payload` is written during handoff and not automatically updated. For live progress tracking, use shared memory namespaces instead.
+- **Private memory is not shared**: if agent A writes to its `WindowMemory`, agent B never sees it. Only `SharedMemoryManager` namespaces are cross-accessible.
+
+## Related Guides
+
+- [Memory & History](/guides/memory-and-history) — private memory adapters in detail
+- [Multi-Agent Handoff](/guides/multi-agent-handoff) — context strategies and handoff mechanics
+- [Multi-Agent Patterns](/guides/multi-agent-patterns) — DelegateTool vs FanOutTool vs Handoff decision tree
