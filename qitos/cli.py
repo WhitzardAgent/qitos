@@ -7,17 +7,6 @@ import json
 from pathlib import Path
 import sys
 
-from qitos.benchmark import (
-    build_experiment_spec,
-    evaluate_benchmark_results,
-    load_benchmark_tasks,
-    normalize_benchmark_name,
-    read_benchmark_results,
-    resolve_builtin_runner,
-    resolve_runner,
-    run_benchmark_tasks,
-    write_benchmark_results,
-)
 from qitos.demo.minimal import main as minimal_demo_main
 from qitos.core.spec import RunSpec
 from qitos.kit.skill.cli import main as skill_main
@@ -193,6 +182,19 @@ def _bench_main(argv: list[str]) -> int:
 
 
 def _bench_run(args: argparse.Namespace) -> int:
+    from qitos.benchmark.common import (
+        build_experiment_spec,
+        evaluate_benchmark_results,
+        write_benchmark_results,
+    )
+    from qitos.benchmark.runner import (
+        load_benchmark_tasks,
+        normalize_benchmark_name,
+        resolve_builtin_runner,
+        resolve_runner,
+        run_benchmark_tasks,
+    )
+
     benchmark = normalize_benchmark_name(args.benchmark)
     tasks = load_benchmark_tasks(
         benchmark=benchmark,
@@ -255,6 +257,8 @@ def _bench_run(args: argparse.Namespace) -> int:
 
 
 def _bench_eval(args: argparse.Namespace) -> int:
+    from qitos.benchmark.common import evaluate_benchmark_results, read_benchmark_results
+
     rows = read_benchmark_results(args.input)
     summary = evaluate_benchmark_results(rows)
     if args.json:
@@ -281,6 +285,8 @@ def _bench_export(args: argparse.Namespace) -> int:
 
 def _bench_list(args: argparse.Namespace) -> int:
     if args.benchmark:
+        from qitos.benchmark.runner import load_benchmark_tasks, normalize_benchmark_name
+
         benchmark = normalize_benchmark_name(args.benchmark)
         try:
             tasks = load_benchmark_tasks(benchmark=benchmark, split="test")

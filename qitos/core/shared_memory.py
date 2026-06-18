@@ -7,7 +7,6 @@ that multiple agents can read from and write to during a multi-agent run.
 from __future__ import annotations
 
 import json
-import os
 import threading
 from abc import ABC, abstractmethod
 from pathlib import Path

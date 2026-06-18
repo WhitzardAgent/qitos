@@ -57,7 +57,6 @@ __all__ = [
     "math_tools",
     "notebook_tools",
     "report_tools",
-    "security_audit_tools",
     "task_tools",
     "web_tools",
 ]

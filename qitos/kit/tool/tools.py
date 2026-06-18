@@ -14,7 +14,6 @@ from qitos.kit.toolset.builders import (
     math_tools,
     notebook_tools,
     report_tools,
-    security_audit_tools,
     task_tools,
     web_tools,
 )
@@ -27,7 +26,6 @@ __all__ = [
     "math_tools",
     "notebook_tools",
     "report_tools",
-    "security_audit_tools",
     "task_tools",
     "web_tools",
 ]

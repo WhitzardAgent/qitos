@@ -28,7 +28,9 @@ from qitos.kit.toolset import (
 )
 from qitos.kit.toolset import editor_tools as editor_tools_builder
 from qitos.kit.toolset import report_tools as report_tools_builder
-from qitos.kit.toolset import security_audit_tools as security_audit_tools_builder
+from qitos.kit.toolset.security_audit import (
+    security_audit_tools as security_audit_tools_builder,
+)
 from qitos.kit.tool.experimental.security_research import SecurityAuditToolSet
 
 
@@ -158,6 +160,16 @@ def test_tool_package_does_not_export_uncurated_cyber_toolsets():
     assert "PasswordToolSet" not in exported
     assert "ExploitToolSet" not in exported
     assert "PasswordToolSet" not in exported
+
+
+def test_toolset_package_does_not_export_security_audit_by_default():
+    import qitos.kit.toolset as toolset_pkg
+
+    exported = set(getattr(toolset_pkg, "__all__", []))
+    assert "SecurityAuditToolSet" not in exported
+    assert "security_audit_tools" not in exported
+    assert not hasattr(toolset_pkg, "SecurityAuditToolSet")
+    assert not hasattr(toolset_pkg, "security_audit_tools")
 
 
 def test_new_tool_domains_and_toolset_surface_are_importable(tmp_path):

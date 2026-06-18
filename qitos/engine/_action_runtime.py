@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, Generic, List, Optional, TypeVar, cast
+from typing import Any, Dict, Generic, List, TypeVar, cast
 
 from ..core.action import Action
 from ..core.decision import Decision

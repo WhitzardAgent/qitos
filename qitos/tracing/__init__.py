@@ -17,7 +17,7 @@ from __future__ import annotations
 from typing import List, Optional
 
 from .config import TracingMode
-from .models import Span, SpanData, SpanType, Trace
+from .models import NoOpTrace, Span, SpanData, SpanType, Trace
 from .processor import TraceProcessor
 from .provider import TracingProvider
 from .legacy_processor import LegacyTraceWriterProcessor
@@ -74,7 +74,7 @@ def create_trace(
     name: str,
     group_id: Optional[str] = None,
     metadata: Optional[dict] = None,
-) -> Trace:
+) -> Trace | NoOpTrace:
     """Create a new trace via the global provider."""
     return _global_provider.create_trace(name, group_id=group_id, metadata=metadata)
 

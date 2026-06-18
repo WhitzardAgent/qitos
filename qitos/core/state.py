@@ -137,7 +137,7 @@ class StateSchema:
         # Check this specific class's own __dict__ (not inherited)
         if "_field_reducers_cache" not in cls.__dict__:
             from .field_reducers import FieldReducerRegistry
-            cls._field_reducers_cache = FieldReducerRegistry.from_schema(cls)
+            setattr(cls, "_field_reducers_cache", FieldReducerRegistry.from_schema(cls))
         return cls.__dict__["_field_reducers_cache"]
 
     def reduce_update(self, update: Dict[str, Any]) -> None:

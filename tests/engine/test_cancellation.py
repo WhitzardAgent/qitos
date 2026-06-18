@@ -43,6 +43,10 @@ class _CountingAgent(AgentModule[_SimpleState, Any, Any]):
 
     name = "counter"
 
+    def __init__(self, *args: Any, step_delay: float = 0.0, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.step_delay = float(step_delay)
+
     def init_state(self, task: str, **kwargs: Any) -> _SimpleState:
         return _SimpleState(task=task, max_steps=kwargs.get("max_steps", 50))
 
@@ -52,6 +56,8 @@ class _CountingAgent(AgentModule[_SimpleState, Any, Any]):
         observation: Any,
         decision: Decision[Any],
     ) -> _SimpleState:
+        if self.step_delay > 0:
+            time.sleep(self.step_delay)
         state.counter += 1
         if state.counter >= state.max_steps:
             state.set_stop("final", "done")
@@ -126,9 +132,9 @@ class _InMemoryCheckpointStore(CheckpointStore):
             del self._data[cid]
 
 
-def _make_engine(max_steps: int = 50) -> Engine:
+def _make_engine(max_steps: int = 50, step_delay: float = 0.0) -> Engine:
     """Create an Engine with a counting agent and mock LLM."""
-    agent = _CountingAgent(llm=MagicMock())
+    agent = _CountingAgent(llm=MagicMock(), step_delay=step_delay)
     return Engine(agent, budget=RuntimeBudget(max_steps=max_steps))
 
 
@@ -229,7 +235,7 @@ class TestEngineResultCancel:
 class TestCancelInEngine:
     def test_immediate_cancel_stops_engine(self):
         """Cancel with immediate mode stops the engine."""
-        engine = _make_engine(max_steps=50)
+        engine = _make_engine(max_steps=50, step_delay=0.005)
         token = engine._cancel_token
 
         # Schedule a cancel after a short delay
@@ -255,7 +261,7 @@ class TestCancelInEngine:
 
     def test_after_step_cancel_stops_after_step(self):
         """Cancel with after_step mode waits for current step to finish."""
-        engine = _make_engine(max_steps=50)
+        engine = _make_engine(max_steps=50, step_delay=0.005)
         token = engine._cancel_token
 
         def cancel_after():

@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import logging
+import asyncio
 import time
 from dataclasses import asdict, dataclass, field
-from typing import Any, Callable, Dict, Generic, List, Optional, TypeVar
+from typing import Any, Callable, Dict, Generic, List, Optional, Type, TypeVar, cast
 from uuid import uuid4
 
 _logger = logging.getLogger("qitos.engine")
@@ -391,7 +392,9 @@ class Engine(Generic[StateT, ObservationT, ActionT]):
             _ControlRuntime(self)
         )
         self._trace_runtime: _TraceRuntime[StateT] = _TraceRuntime(self)
-        self._handoff_runtime = _HandoffRuntime(self)
+        self._handoff_runtime: _HandoffRuntime[StateT, ObservationT, ActionT] = (
+            _HandoffRuntime(self)
+        )
         self._handoff_history: list[str] = []  # tracks agent names for loop detection
         # NOTE (v0.6): Handoff Decision-mode handling is stable for v0.6.
         # Changes to the Engine loop for full handoff context strategies,
@@ -1053,7 +1056,7 @@ class Engine(Generic[StateT, ObservationT, ActionT]):
                     )
                 ):
                     try:
-                        action_results = []
+                        action_results: List[Any] = []
                         observation = self._build_observation_after_action(
                             state=state,
                             step_id=step_id,
@@ -1233,7 +1236,7 @@ class Engine(Generic[StateT, ObservationT, ActionT]):
                     and self._cancel_token.mode == CancelMode.AFTER_STEP
                 ):
                     self._save_checkpoint_if_needed(
-                        state, step_id - 1, force=True
+                        step_id - 1, state, task_text, task_obj
                     )
                     self._emit(
                         step_id - 1,
@@ -1254,7 +1257,7 @@ class Engine(Generic[StateT, ObservationT, ActionT]):
             # Checkpoint on cancellation (immediate mode)
             if self._cancel_token.is_cancel_requested and self._checkpoint_store is not None:
                 try:
-                    self._save_checkpoint(state, step_id)
+                    self._save_checkpoint(step_id, state, task_text, source="cancel")
                 except Exception as exc:
                     _logger.warning("Checkpoint save failed during cancellation: %s", exc)
             # Flush durability manager on run end
@@ -1756,7 +1759,8 @@ class Engine(Generic[StateT, ObservationT, ActionT]):
             raise ValueError(f"Checkpoint not found: {config}")
 
         checkpoint = tuple_.checkpoint
-        state = type(self._active_state or StateSchema).from_dict(checkpoint.state_data)  # type: ignore[misc]
+        state_cls = cast(Type[StateSchema], type(self._active_state) if self._active_state is not None else StateSchema)
+        state = state_cls.from_dict(checkpoint.state_data)
 
         # Restore version tracker
         if self._version_tracker is not None:
@@ -2182,7 +2186,7 @@ class Engine(Generic[StateT, ObservationT, ActionT]):
                 self._connected_mcp_servers.append(server)
                 # Bridge MCP tools into the engine's tool registry
                 if self.tool_registry is not None:
-                    tools = mcp_server_to_function_tools(server)
+                    tools = asyncio.run(mcp_server_to_function_tools(server))
                     for tool in tools:
                         if hasattr(self.tool_registry, "register"):
                             self.tool_registry.register(tool)

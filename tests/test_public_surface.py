@@ -61,3 +61,43 @@ def test_import_qitos_kit_has_no_experimental_security_side_effects() -> None:
     importlib.import_module("qitos.kit")
 
     assert "qitos.kit.tool.experimental.security_research" not in sys.modules
+
+
+def test_broad_kit_toolset_surface_stays_security_free() -> None:
+    module = importlib.import_module("qitos.kit.toolset")
+
+    exported = set(getattr(module, "__all__", []))
+    forbidden = {
+        "SecurityAuditToolSet",
+        "security_audit_tools",
+        "ReconToolSet",
+        "NetworkToolSet",
+        "ExploitToolSet",
+        "PasswordToolSet",
+        "VulnScanToolSet",
+        "WebTestToolSet",
+    }
+
+    assert forbidden.isdisjoint(exported)
+    for name in forbidden:
+        assert not hasattr(module, name)
+
+
+def test_import_qitos_workflow_does_not_require_qitos_dag() -> None:
+    preexisting_dag_modules = {
+        name for name in sys.modules if name == "qitos_dag" or name.startswith("qitos_dag.")
+    }
+    for name in list(sys.modules):
+        if name == "qitos.workflow" or name.startswith("qitos.workflow."):
+            del sys.modules[name]
+
+    module = importlib.import_module("qitos.workflow")
+
+    assert module.__all__
+    new_dag_modules = {
+        name
+        for name in sys.modules
+        if (name == "qitos_dag" or name.startswith("qitos_dag."))
+        and name not in preexisting_dag_modules
+    }
+    assert not new_dag_modules

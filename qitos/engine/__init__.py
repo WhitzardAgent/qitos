@@ -38,6 +38,7 @@ __all__ = [
     "StepSummary",
     "ContextConfig",
     "ContextTelemetry",
+    "critic",
     "RuntimeBudget",
     "RuntimeEvent",
     "RuntimePhase",

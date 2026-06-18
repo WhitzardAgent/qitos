@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import threading
 from enum import Enum
-from typing import Any, Optional
 
 
 class CancelMode(str, Enum):

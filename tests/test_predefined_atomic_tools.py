@@ -7,7 +7,6 @@ from qitos.core.tool_registry import ToolRegistry
 from qitos.kit.tool.advanced import AdvancedCodingToolSet
 from qitos.kit.tool.experimental.security_research import (
     SecurityAuditToolSet,
-    security_audit_tools,
     security_research_tools,
 )
 from qitos.kit.tool import (
@@ -24,6 +23,9 @@ from qitos.kit.tool import (
     web_tools,
 )
 from qitos.kit.tool.tools import advanced_coding_tools
+from qitos.kit.toolset.security_audit import (
+    security_audit_tools as security_audit_toolset_tools,
+)
 
 
 def test_codebase_toolset_glob_grep_read_append(tmp_path):
@@ -145,7 +147,7 @@ def test_predefined_registry_builders_expose_atomic_tools(tmp_path):
     advanced_registry = advanced_coding_tools(str(tmp_path))
     task_registry = task_tools(str(tmp_path))
     report_registry = report_tools(str(tmp_path))
-    audit_registry = security_audit_tools(str(tmp_path))
+    audit_registry = security_audit_toolset_tools(str(tmp_path))
 
     assert "codebase.glob_files" in code_registry.list_tools()
     assert "codebase.grep_files" in code_registry.list_tools()

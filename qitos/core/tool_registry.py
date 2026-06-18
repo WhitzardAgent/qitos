@@ -7,7 +7,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional
 
-from .tool import BaseTool, FunctionTool, ToolMeta, get_tool_meta
+from .tool import BaseTool, FunctionTool, ToolMeta, ToolPermissionSpec, get_tool_meta
 
 
 @dataclass

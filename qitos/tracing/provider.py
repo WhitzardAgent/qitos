@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, cast
 
 from .config import TracingMode, RedactingSpanData
 from .models import (
@@ -157,7 +157,7 @@ class _RedactingProcessor(TraceProcessor):
         rs = Span(
             trace_id=span.trace_id,
             span_id=span.span_id,
-            data=RedactingSpanData(span.data),
+            data=cast(SpanData, RedactingSpanData(span.data)),
             parent_span_id=span.parent_span_id,
         )
         rs.started_at = span.started_at
@@ -182,7 +182,7 @@ class _RedactingProcessor(TraceProcessor):
             rs = Span(
                 trace_id=span.trace_id,
                 span_id=span.span_id,
-                data=RedactingSpanData(span.data),
+                data=cast(SpanData, RedactingSpanData(span.data)),
                 parent_span_id=span.parent_span_id,
             )
             rs.started_at = span.started_at

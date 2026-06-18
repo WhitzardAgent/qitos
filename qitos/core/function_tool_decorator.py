@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, Optional
 
-from .tool import FunctionTool, ToolMeta, ToolPermission, RetryPolicy
+from .tool import FunctionTool, ToolMeta, RetryPolicy
 from .tool_schema import function_schema
 
 
@@ -54,7 +54,7 @@ def function_tool(
         # Build spec using enhanced schema from tool_schema
         import inspect
 
-        from .tool import ToolSpec, build_tool_spec
+        from .tool import build_tool_spec
 
         schema_info = function_schema(fn)
         spec = build_tool_spec(fn, meta)

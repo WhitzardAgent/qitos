@@ -25,3 +25,7 @@ __all__ = [
     "_render_replay_html",
     "_render_run_html",
 ]
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

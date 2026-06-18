@@ -29,7 +29,7 @@ from ..protocols import get_protocol, resolve_protocol_chain
 from ..core.state import StateSchema
 from ._context_runtime import ContextOverflowError
 from ._protocol import _EngineProtocol
-from .streaming import StreamHandler, to_stream_handler
+from .streaming import to_stream_handler
 from .parser import (
     build_parser_diagnostics,
     normalize_parser_diagnostics,
@@ -830,8 +830,9 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
 
             if record is not None:
                 record.decision_source = "native_text_final"
+            response_text = "" if response is None else response.text
             return Decision.final(
-                answer=str(response.text).strip(),
+                answer=str(response_text).strip(),
                 meta={"decision_source": "native_text_final"},
             )
 

@@ -63,7 +63,18 @@ def _import_critic_module():
     make_graceful_shutdown_critic,
     make_reflector_critic,
     make_stuck_detection_critic,
-) = _import_critic_module()
+) = (None, None, None, None, None, None)
+try:
+    (
+        GracefulShutdownCritic,
+        ReflectorCritic,
+        StuckDetectionCritic,
+        make_graceful_shutdown_critic,
+        make_reflector_critic,
+        make_stuck_detection_critic,
+    ) = _import_critic_module()
+except (ImportError, ModuleNotFoundError) as exc:
+    pytest.skip(f"qitos-cyber-agent migration package is unavailable: {exc}", allow_module_level=True)
 
 
 # ---------------------------------------------------------------------------

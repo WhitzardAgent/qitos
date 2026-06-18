@@ -256,6 +256,7 @@ class OpenAIModel(Model):
                 **kwargs,
             )
             accumulated_tool_calls: List[Dict[str, Any]] = []
+            usage_data: Optional[Dict[str, Any]] = None
             for chunk in response:
                 if not chunk.choices:
                     continue
@@ -628,16 +629,17 @@ class OpenAICompatibleModel(Model):
                     **create_kwargs,
                 )
             accumulated_tool_calls: List[Dict[str, Any]] = []
+            stream_usage_data: Optional[Dict[str, Any]] = None
             for chunk in response:
                 if not chunk.choices:
                     # Empty choices chunk may carry usage data (OpenAI sends it last)
                     if hasattr(chunk, "usage") and chunk.usage:
-                        usage_data = {
+                        stream_usage_data = {
                             "prompt_tokens": getattr(chunk.usage, "prompt_tokens", None),
                             "completion_tokens": getattr(chunk.usage, "completion_tokens", None),
                             "total_tokens": getattr(chunk.usage, "total_tokens", None),
                         }
-                        self._set_last_usage(usage_data)
+                        self._set_last_usage(stream_usage_data)
                     continue
                 delta = chunk.choices[0].delta
                 text = delta.content or ""
@@ -669,16 +671,16 @@ class OpenAICompatibleModel(Model):
                             if fn_args:
                                 tc["function"]["arguments"] = tc["function"].get("arguments", "") + fn_args
                 if chunk.choices[0].finish_reason is not None:
-                    usage_data = None
+                    stream_usage_data = None
                     if hasattr(chunk, "usage") and chunk.usage:
-                        usage_data = {
+                        stream_usage_data = {
                             "prompt_tokens": getattr(chunk.usage, "prompt_tokens", None),
                             "completion_tokens": getattr(chunk.usage, "completion_tokens", None),
                             "total_tokens": getattr(chunk.usage, "total_tokens", None),
                         }
-                        self._set_last_usage(usage_data)
+                        self._set_last_usage(stream_usage_data)
                     yield ModelStreamChunk(
-                        text="", done=True, usage=usage_data,
+                        text="", done=True, usage=stream_usage_data,
                         tool_calls=accumulated_tool_calls if accumulated_tool_calls else None,
                     )
         except openai.APIError as e:

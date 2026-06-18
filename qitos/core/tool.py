@@ -379,6 +379,8 @@ class FunctionTool(BaseTool):
     """Tool wrapper around callable functions or bound methods."""
 
     def __init__(self, func: Callable[..., Any], meta: Optional[ToolMeta] = None):
+        self.func: Callable[..., Any]
+        self.meta: ToolMeta
         # If func is already a FunctionTool (e.g. from __get__ binding),
         # unwrap it to get the underlying callable
         if isinstance(func, FunctionTool):

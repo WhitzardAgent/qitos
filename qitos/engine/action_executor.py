@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Any, Dict, List, Optional, Sequence, Tuple, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, Sequence, Tuple, TYPE_CHECKING, cast
 
 from ..core.action import Action, ActionExecutionPolicy, ActionResult, ActionStatus
 from ..core.env import Env
@@ -721,7 +721,7 @@ class ActionExecutor:
             task="",
             step_id=0,
             phase=RuntimePhase.ACT,
-            state=None,
+            state=cast(Any, None),
             tool_name=tool_name,
             tool_args=tool_args,
             tool_result=tool_result,

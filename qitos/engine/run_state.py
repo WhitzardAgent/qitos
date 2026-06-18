@@ -10,11 +10,11 @@ Borrowed from OpenAI Agents RunState design:
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, is_dataclass
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, List, Optional, Type
+from typing import Any, Callable, Dict, List, Optional, cast
 
-from ..core.state import StateSchema, StateMigrationError
+from ..core.state import StateMigrationError
 
 # ---------------------------------------------------------------------------
 # Schema versioning
@@ -98,6 +98,13 @@ class RunState:
         for e in getattr(result, "events", []):
             events.append(asdict(e) if hasattr(e, "__dataclass_fields__") else {})
 
+        budget_obj = getattr(result, "budget", None)
+        budget_data = (
+            asdict(cast(Any, budget_obj))
+            if is_dataclass(budget_obj) and not isinstance(budget_obj, type)
+            else {}
+        )
+
         return cls(
             agent_name=agent_name,
             step=getattr(result, "step_count", 0),
@@ -107,9 +114,7 @@ class RunState:
             records=records,
             events=events,
             checkpoint_id=checkpoint_id,
-            budget=asdict(getattr(result, "budget", {}))
-            if hasattr(getattr(result, "budget", None), "__dataclass_fields__")
-            else {},
+            budget=budget_data,
             token_usage=getattr(result, "total_tokens", 0),
             _serialization_meta={
                 "original_type": "state_dataclass" if state_type else "none",

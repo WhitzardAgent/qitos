@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import uuid
 from abc import ABC, abstractmethod
-from contextvars import ContextVar
+from contextvars import ContextVar, Token
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional
@@ -423,7 +423,7 @@ class Span:
         self.error: Optional[str] = None
         self.output: Optional[Any] = None
         self._processor = processor
-        self._token = None  # ContextVar reset token
+        self._token: Optional[Token[Optional["Span"]]] = None
 
     # -- lifecycle ----------------------------------------------------------
 

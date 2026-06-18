@@ -4,12 +4,17 @@ from __future__ import annotations
 
 import inspect
 import re
-from typing import Any, Dict, List, Optional, Tuple, get_type_hints
-
-try:
-    from typing import get_args, get_origin, Literal, Annotated
-except ImportError:
-    from typing_extensions import get_args, get_origin, Literal, Annotated  # type: ignore[assignment]
+from typing import (
+    Annotated,
+    Any,
+    Dict,
+    List,
+    Literal,
+    Optional,
+    get_args,
+    get_origin,
+    get_type_hints,
+)
 
 
 def function_schema(func: Any) -> Dict[str, Any]:

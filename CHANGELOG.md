@@ -15,6 +15,31 @@ How to update:
 - Move `Unreleased` notes into a dated or versioned section when publishing a release
 - Prefer user-facing changes, upgrade notes, and important engineering changes over low-level edit logs
 
+## v0.8.0 (2026-06-18)
+
+### Added
+
+- Added an architecture-cleanliness plan and v0.8.0 architecture inventory documenting package ownership, large-file hotspots, optional dependency boundaries, and release guardrails.
+- Added regression guards for core package boundaries, broad toolset exports, and optional workflow imports.
+
+### Changed
+
+- Updated the package version to `0.8.0` for the architecture-clean stable release.
+- Made `qitos.workflow` a lazy optional facade so importing the workflow package no longer requires `qitos-dag` unless a workflow symbol is actually used.
+- Tightened broad toolset exports so security-audit builders are no longer part of the default `qitos.kit.toolset` or legacy flat builder `__all__` surfaces.
+- Stabilized the default test gate so optional qitos-zoo and workflow integration tests run only when matching external packages are explicitly enabled.
+- Cleaned stable-surface lint and mypy issues across `qitos.core`, `qitos.engine`, `qitos.models`, and trace/tracing modules.
+- Refreshed README and introduction docs around the v0.8.0 single-kernel governance release.
+
+### Fixed
+
+- Fixed cancellation checkpoint calls so immediate and after-step cancellation paths use the current checkpoint helper signature.
+- Fixed synchronous MCP tool bridging in `Engine.run()` so async MCP conversion is awaited before registry registration.
+
+### Deprecated
+
+- Broad imports of security audit builders from `qitos.kit.toolset` are no longer the recommended path. Use `qitos.kit.toolset.security_audit` or `qitos.kit.tool.experimental.security_research` explicitly.
+
 ## v0.7.0 (2026-05-28)
 
 ### Added

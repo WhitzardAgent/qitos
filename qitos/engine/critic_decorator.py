@@ -25,7 +25,6 @@ Quick return values:
 from __future__ import annotations
 
 import functools
-import inspect
 from typing import Any, Callable, Optional, TypeVar, overload
 
 from .critic import Critic
@@ -66,7 +65,7 @@ class _FunctionCritic(Critic):
         self._func = func
         self._name = name or getattr(func, "__name__", "critic")
         self._default_score = score
-        functools.update_wrapper(self, func, updated=())
+        functools.update_wrapper(self, func, updated=())  # type: ignore[arg-type]
 
     def evaluate(
         self, state: Any, decision: Any, results: list[Any]
@@ -83,11 +82,23 @@ class _FunctionCritic(Critic):
 
 
 @overload
-def critic(__func_or_none__: None = None, **kwargs: Any) -> Callable[[F], _FunctionCritic]: ...
+def critic(
+    __func_or_none__: None = None,
+    *,
+    name: Optional[str] = None,
+    score: float = 1.0,
+) -> Callable[[F], _FunctionCritic]:
+    ...
 
 
 @overload
-def critic(__func_or_none__: F, **kwargs: Any) -> _FunctionCritic: ...
+def critic(
+    __func_or_none__: F,
+    *,
+    name: Optional[str] = None,
+    score: float = 1.0,
+) -> _FunctionCritic:
+    ...
 
 
 def critic(

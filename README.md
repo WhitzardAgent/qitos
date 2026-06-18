@@ -16,14 +16,13 @@ QitOS core is the small framework. Product-grade applications and showcase agent
 
 [Quickstart](https://qitor.mintlify.app/quickstart) · [Tutorial Track](https://qitor.mintlify.app/tutorials) · [Benchmarks](https://qitor.mintlify.app/benchmarks/overview) · [CLI Reference](https://qitor.mintlify.app/reference/cli) · [Changelog](CHANGELOG.md) · [Chinese README](README.zh.md)
 
-## What's New in v0.5.0
+## What's New in v0.8.0
 
-- **12 method templates**: ReAct, PlanAct, SWE-Agent, Voyager, Debate, Manager-Worker, Planner-Executor, Self-Refine, Reflexion, LATS, MoA, and Magentic-One — each with paper.md, config.yaml, and recipe implementations.
-- **`qit new` CLI**: Scaffold a new agent project from built-in templates with `qit new --template <name>`.
-- **Export APIs**: `EngineConfig`, `ToolPermissionSpec`, `CriticTrace`, and `HandoffTrace` for programmatic access to engine configuration and trace data.
-- **Tracing integrations**: W&B (`WandbTraceProcessor`) and MLflow (`MlflowTraceProcessor`) for experiment tracking.
-- **FamilyPreset extensibility**: `override()`, `recommended_*` advisory fields, and `MaxTokensCriteria` stop criterion.
-- **qita cost panel**: Token usage and cost metrics in the run overview.
+- **Architecture-clean stable release**: v0.8.0 documents package ownership, large-file hotspots, optional dependency boundaries, and release guardrails for contributors.
+- **Cleaner public surfaces**: broad default exports remain focused on the `AgentModule + Engine` kernel and generic kit building blocks.
+- **Security tooling is explicit**: security-audit builders now live behind explicit module paths such as `qitos.kit.toolset.security_audit` and `qitos.kit.tool.experimental.security_research`.
+- **Optional workflow imports**: `qitos.workflow` is now a lazy optional facade, so the core install does not require `qitos-dag` unless workflow symbols are used.
+- **Boundary regression tests**: public API, kit/toolset exports, workflow optional imports, and core dependency direction are guarded by tests.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full list.
 

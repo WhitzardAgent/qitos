@@ -3,15 +3,14 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Generic, List, TypeVar
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 from .states import RuntimePhase
 
 if TYPE_CHECKING:
     from .engine import Engine
     from ..core.decision import Decision
-    from ..core.state import StateSchema
 
 StateT = TypeVar("StateT")
 ObservationT = TypeVar("ObservationT")
@@ -337,7 +336,10 @@ class _HandoffRuntime(Generic[StateT, ObservationT, ActionT]):
 
         # Grant the target agent read access to the source agent's namespace
         # if the spec declares shared_memory
-        spec = self.engine.agent_registry.resolve(target_name)
+        registry = self.engine.agent_registry
+        if registry is None:
+            return
+        spec = registry.resolve(target_name)
         if spec.shared_memory is not None:
             mgr.grant_read_access(target_name, old_agent_name)
 
@@ -378,7 +380,6 @@ class _HandoffRuntime(Generic[StateT, ObservationT, ActionT]):
 
         # Filter state fields if shared_state_fields is specified
         if hc.shared_state_fields:
-            from ..core.state import StateSchema
             base_fields = {"schema_version", "task", "current_step", "max_steps",
                            "final_result", "stop_reason", "metadata", "metrics"}
             allowed = base_fields | set(hc.shared_state_fields)
