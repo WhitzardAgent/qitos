@@ -3,8 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from examples._support import SequenceModel
-from qitos_zoo.qitos_coder.preset_agent import ClaudeCodeAgent, _resolve_runtime_config
 from qitos import HistoryPolicy
 from qitos.harness import (
     build_harness_policy,
@@ -12,6 +12,13 @@ from qitos.harness import (
     resolve_family_preset,
 )
 from qitos.models.profile_registry import infer_default_protocol, infer_model_profile
+
+
+def _coder_preset_agent():
+    return pytest.importorskip(
+        "qitos_zoo.qitos_coder.preset_agent",
+        reason="qitos-zoo coder package is not installed in the core CI environment",
+    )
 
 
 def test_resolve_family_preset_for_gold_families() -> None:
@@ -62,7 +69,8 @@ def test_build_model_for_preset_attaches_harness_metadata() -> None:
 
 
 def test_claude_code_runtime_config_prefers_cli_over_env() -> None:
-    config = _resolve_runtime_config(
+    preset_agent = _coder_preset_agent()
+    config = preset_agent._resolve_runtime_config(
         type(
             "_Args",
             (),
@@ -90,6 +98,8 @@ def test_claude_code_runtime_config_prefers_cli_over_env() -> None:
 
 
 def test_same_claude_code_agent_switches_across_gold_families(tmp_path: Path) -> None:
+    preset_agent = _coder_preset_agent()
+    ClaudeCodeAgent = preset_agent.ClaudeCodeAgent
     final_outputs = {
         "qwen": '{"thought":"done","final_answer":"ok"}',
         "kimi": '{"thought":"done","final_answer":"ok"}',
@@ -140,6 +150,8 @@ def test_same_claude_code_agent_switches_across_gold_families(tmp_path: Path) ->
 
 
 def test_harness_metadata_reaches_trace_manifest(tmp_path: Path) -> None:
+    preset_agent = _coder_preset_agent()
+    ClaudeCodeAgent = preset_agent.ClaudeCodeAgent
     harness = build_harness_policy(family_id="kimi")
     llm = SequenceModel(['{"thought":"done","final_answer":"ok"}'], model="moonshot-v1-128k")
     setattr(

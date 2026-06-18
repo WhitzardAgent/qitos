@@ -35,6 +35,8 @@ How to update:
 
 - Fixed cancellation checkpoint calls so immediate and after-step cancellation paths use the current checkpoint helper signature.
 - Fixed synchronous MCP tool bridging in `Engine.run()` so async MCP conversion is awaited before registry registration.
+- Fixed CI collection in minimal environments by making qitos-zoo and workflow integration imports explicitly optional.
+- Fixed stable-surface mypy checks for dataclass normalization and Anthropic streaming/request typing.
 
 ### Deprecated
 

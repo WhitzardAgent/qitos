@@ -78,6 +78,7 @@ setup(
             "build>=1.2.1",
             "twine>=5.1.1",
             "pytest>=7.0.0",
+            "pytest-asyncio>=0.23.0",
             "pytest-cov>=4.0.0",
             "black>=23.0.0",
             "flake8>=6.0.0",

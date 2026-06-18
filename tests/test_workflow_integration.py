@@ -7,8 +7,17 @@ and uses real qitos APIs.
 
 from __future__ import annotations
 
+import os
 import pytest
 from unittest.mock import MagicMock, AsyncMock, patch
+
+if os.getenv("QITOS_RUN_OPTIONAL_INTEGRATION_TESTS") != "1":
+    pytest.skip(
+        "optional workflow integration test; set QITOS_RUN_OPTIONAL_INTEGRATION_TESTS=1",
+        allow_module_level=True,
+    )
+
+qitos_dag = pytest.importorskip("qitos_dag", reason="qitos-dag is required for workflow integration tests")
 
 from qitos_dag.schema import EdgeSchema, NodeSchema, WorkflowSchema
 from qitos_dag.graph_engine import GraphEngine

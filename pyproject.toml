@@ -33,6 +33,5 @@ exclude = [
 module = [
   "qitos.kit.*",
   "qitos.render.*",
-  "qitos.benchmark.*",
 ]
 ignore_errors = true

@@ -214,7 +214,7 @@ def runtime_step_to_trace(step: Any) -> TraceStep:
 
 
 def _normalize(value: Any) -> Any:
-    if value is not None and dataclasses.is_dataclass(value):
+    if value is not None and dataclasses.is_dataclass(value) and not isinstance(value, type):
         return {k: _normalize(v) for k, v in asdict(value).items()}
     if isinstance(value, dict):
         return {str(k): _normalize(v) for k, v in value.items()}

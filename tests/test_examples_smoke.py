@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from examples._support import FakeTerminal, SequenceModel, local_html_server, write_minimal_epub
 from examples.benchmarks.cybench_eval import CyBenchReactAgent
 from examples.benchmarks.gaia_eval import OpenDeepResearchGaiaAgent
@@ -10,7 +11,6 @@ from examples.patterns.planact import PlanActAgent
 from examples.patterns.react import ReactAgent
 from examples.patterns.reflexion import ReflexionAgent
 from examples.patterns.tot import ToTAgent
-from qitos_zoo.qitos_coder.preset_agent import ClaudeCodeAgent
 from examples.real.code_security_audit_agent import CodeSecurityAuditAgent
 from examples.real.coding_agent import CodingMemoryReactAgent
 from examples.real.computer_use_agent import ComputerUseReActAgent
@@ -29,6 +29,14 @@ from qitos.demo.minimal import run_minimal_demo
 
 
 VERIFY_COMMAND = "python -c 'import buggy_module; assert buggy_module.add(20, 22) == 42'"
+
+
+def _claude_code_agent_cls():
+    module = pytest.importorskip(
+        "qitos_zoo.qitos_coder.preset_agent",
+        reason="qitos-zoo coder package is not installed in the core CI environment",
+    )
+    return module.ClaudeCodeAgent
 
 
 def _seed_buggy_module(root: Path) -> None:
@@ -208,6 +216,7 @@ def test_openai_cua_and_desktop_env_examples_smoke_runs(tmp_path: Path, monkeypa
 
 
 def test_swe_claude_security_and_skill_examples_smoke(tmp_path: Path) -> None:
+    ClaudeCodeAgent = _claude_code_agent_cls()
     workspace = tmp_path / "swe"
     _seed_buggy_module(workspace)
     swe = SWEDynamicPlanningAgent(

@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional
 
 
 def _sanitize(value: Any) -> Any:
-    if value is not None and dataclasses.is_dataclass(value):
+    if value is not None and dataclasses.is_dataclass(value) and not isinstance(value, type):
         return {str(k): _sanitize(v) for k, v in asdict(value).items()}
     if isinstance(value, dict):
         return {str(k): _sanitize(v) for k, v in value.items()}

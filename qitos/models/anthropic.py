@@ -44,7 +44,12 @@ class AnthropicModel(Model):
             max_tokens=max_tokens,
             context_window=context_window,
         )
-        self.api_key = api_key or os.getenv("ANTHROPIC_API_KEY")
+        api_key_value = api_key or os.getenv("ANTHROPIC_API_KEY")
+        if not api_key_value:
+            raise ValueError(
+                "ANTHROPIC_API_KEY not set. Please set it or pass api_key."
+            )
+        self.api_key = api_key_value
         resolved_base_url = base_url or os.getenv(
             "ANTHROPIC_BASE_URL", "https://api.anthropic.com"
         )
@@ -53,10 +58,6 @@ class AnthropicModel(Model):
             "ANTHROPIC_API_VERSION", "2023-06-01"
         )
         self.timeout = timeout
-        if not self.api_key:
-            raise ValueError(
-                "ANTHROPIC_API_KEY not set. Please set it or pass api_key."
-            )
 
     def _call_api(self, messages: List[Dict[str, Any]], **kwargs: Any) -> str:
         headers = {
@@ -202,6 +203,8 @@ class AnthropicModel(Model):
 
             usage_data = None
             for line in response.iter_lines(decode_unicode=True):
+                if isinstance(line, bytes):
+                    line = line.decode("utf-8")
                 if not line or not line.startswith("data: "):
                     continue
                 data_str = line[6:]
