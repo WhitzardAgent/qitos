@@ -18,6 +18,7 @@ QitOS core is the small framework. Product-grade applications and showcase agent
 
 ## Latest Updates
 
+- **MCP Streamable HTTP compatibility**: `MCPServerStreamableHttp` now follows gateway redirects and parses JSON-RPC responses wrapped in SSE `data:` frames.
 - **Native tool schema hardening**: OpenAI-compatible `tools=` payloads no longer export invalid `type: any` schemas for `Any` or `**kwargs` parameters.
 - **ReAct parser compatibility**: `ReActTextParser` now accepts common `Action Input`, XML-style action tags, and fenced JSON tool-call variants that some OpenAI-compatible models emit.
 
