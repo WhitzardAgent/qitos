@@ -27,6 +27,11 @@ _CONCURRENCY_SAFE_TOOLS = frozenset({
     "Glob", "Grep", "glob_v2", "grep_v2",
     "WebFetch", "web_fetch_v2",
     "task_list", "task_get",
+    # CyberGym read-only tools
+    "READ", "GREP", "FindSymbols", "CallsiteSearch", "RepoMap",
+    "FileInfo", "HexView", "StructProbe", "CorpusInspect",
+    # CyberGym submission (idempotent, safe to parallelize)
+    "submit_poc",
 })
 
 

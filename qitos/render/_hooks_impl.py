@@ -355,6 +355,8 @@ class ClaudeStyleHook(RenderStreamHook):
         self._memory_steps: set[int] = set()
         self._parser_steps: set[tuple[int, str]] = set()
         self._pending_state_stats: Dict[int, Dict[str, Any]] = {}
+        self._rendered_action_indices: set[tuple[int, int]] = set()
+        self._rendered_observation_indices: set[tuple[int, int]] = set()
 
     def _should_render_parser_diagnostic(self, diag: Dict[str, Any]) -> bool:
         severity = str(diag.get("severity") or "error").lower()
@@ -520,19 +522,43 @@ class ClaudeStyleHook(RenderStreamHook):
                 return
 
         if event.channel == "action":
-            if event.step_id in self._action_steps:
+            event_key = (event.step_id, id(event))
+            if event_key in self._rendered_action_indices:
                 return
             action = self._renderer.action_summary(event)
             if action:
+                action_count = action.get("action_count", 1)
+                sub_actions = action.get("actions")
                 status = action.get("status", "neutral")
                 bg = "blue" if status != "error" else "red"
-                badge = action.get("label", "ACTION")
-                detail = action.get("detail", "")
-                line = f"🚀 [bold white on {bg}] {badge} [/bold white on {bg}]"
-                if detail:
-                    line += f" [cyan]{detail}[/cyan]"
-                self._rail("blue", line)
+
+                # Multi-action: show parallel summary banner then individual actions
+                if action_count > 1 and sub_actions:
+                    self._rail(
+                        "bright_blue",
+                        f"🚀 [bold white on bright_blue] {action_count} ACTIONS IN PARALLEL [/bold white on bright_blue]",
+                    )
+                    for i, sub in enumerate(sub_actions):
+                        sub_label = sub.get("label", "?")
+                        sub_detail = sub.get("detail", "")
+                        idx_key = (event.step_id, i)
+                        if idx_key in self._rendered_action_indices:
+                            continue
+                        line = f"  ┌ [bold white on {bg}] {sub_label} [/bold white on {bg}]"
+                        if sub_detail:
+                            line += f" [cyan]{sub_detail}[/cyan]"
+                        self._rail("blue", line)
+                        self._rendered_action_indices.add(idx_key)
+                else:
+                    badge = action.get("label", "ACTION")
+                    detail = action.get("detail", "")
+                    line = f"🚀 [bold white on {bg}] {badge} [/bold white on {bg}]"
+                    if detail:
+                        line += f" [cyan]{detail}[/cyan]"
+                    self._rail("blue", line)
+
                 self._action_steps.add(event.step_id)
+                self._rendered_action_indices.add(event_key)
             return
 
         if event.channel == "observation":
@@ -541,66 +567,31 @@ class ClaudeStyleHook(RenderStreamHook):
                 if stats:
                     self._pending_state_stats[event.step_id] = dict(stats)
                 return
-            if event.step_id in self._observation_steps:
+            event_key = (event.step_id, id(event))
+            if event_key in self._rendered_observation_indices:
                 return
             obs = self._renderer.observation_summary(event)
             if obs:
-                status = str(obs.get("status", "neutral"))
-                color = (
-                    "green"
-                    if status == "success"
-                    else ("red" if status == "error" else "blue")
-                )
-                title = str(obs.get("title", "Observation"))
-                if status == "error":
-                    self._rail("red", f"[red][✘] Error: {title}[/red]")
-                    self._observation_steps.add(event.step_id)
-                    return
-                self._rail(
-                    color,
-                    f"🔎 [bold {color}]Observation[/bold {color}] [bold italic]Title:[/bold italic] {title}",
-                )
-                url = str(obs.get("url", "")).strip()
-                if url:
-                    self._rail(color, f"[dim]URL: {url}[/dim]")
-                body = str(obs.get("body", "")).strip()
-                if body:
+                obs_count = obs.get("observation_count", 0)
+                all_obs = obs.get("all_observations")
+
+                # Multi-observation: show all results with index labels
+                if obs_count > 1 and all_obs:
                     self._rail(
-                        color, body if status != "error" else f"[red]{body}[/red]"
+                        "bright_green",
+                        f"🔎 [bold white on bright_green] {obs_count} RESULTS [/bold white on bright_green]",
                     )
-                table = obs.get("table")
-                syntax = obs.get("syntax")
-                if table is not None:
-                    self.console.print(Text("┃", style=color), end=" ")
-                    self.console.print(table)
-                if isinstance(syntax, Syntax):
-                    self.console.print(Text("┃", style=color), end=" ")
-                    self.console.print(syntax)
-                secondary = obs.get("secondary")
-                if isinstance(secondary, dict):
-                    secondary_title = str(
-                        secondary.get("title", "Tool Observation")
-                    ).strip() or "Tool Observation"
-                    secondary_body = str(secondary.get("body", "")).strip()
-                    secondary_url = str(secondary.get("url", "")).strip()
-                    secondary_table = secondary.get("table")
-                    secondary_syntax = secondary.get("syntax")
-                    self._rail(
-                        "blue",
-                        "📎 [bold blue]Tool Observation[/bold blue] "
-                        f"[bold italic]Title:[/bold italic] {secondary_title}",
-                    )
-                    if secondary_url:
-                        self._rail("blue", f"[dim]URL: {secondary_url}[/dim]")
-                    if secondary_body:
-                        self._rail("blue", secondary_body)
-                    if secondary_table is not None:
-                        self.console.print(Text("┃", style="blue"), end=" ")
-                        self.console.print(secondary_table)
-                    if isinstance(secondary_syntax, Syntax):
-                        self.console.print(Text("┃", style="blue"), end=" ")
-                        self.console.print(secondary_syntax)
+                    for i, sub_obs in enumerate(all_obs):
+                        idx_key = (event.step_id, i)
+                        if idx_key in self._rendered_observation_indices:
+                            continue
+                        self._render_single_observation(sub_obs, index=i + 1)
+                        self._rendered_observation_indices.add(idx_key)
+                else:
+                    self._render_single_observation(obs)
+
                 self._observation_steps.add(event.step_id)
+                self._rendered_observation_indices.add(event_key)
             return
 
         if event.channel == "memory":
@@ -703,6 +694,66 @@ class ClaudeStyleHook(RenderStreamHook):
             Padding(Text.from_markup(f"[{color}]┃[/{color}] {line}"), (0, 0, 0, 0)),
         )
         self.console.print(grp)
+
+    def _render_single_observation(self, obs: Dict[str, Any], index: int | None = None) -> None:
+        """Render one observation block. *index* is 1-based for multi-observation display."""
+        status = str(obs.get("status", "neutral"))
+        color = (
+            "green"
+            if status == "success"
+            else ("red" if status == "error" else "blue")
+        )
+        title = str(obs.get("title", "Observation"))
+        prefix = f"  └[{index}]" if index is not None else "🔎"
+
+        if status == "error":
+            self._rail("red", f"{prefix} [red][✘] Error: {title}[/red]")
+            return
+
+        self._rail(
+            color,
+            f"{prefix} [bold {color}]Observation[/bold {color}] [bold italic]Title:[/bold italic] {title}",
+        )
+        url = str(obs.get("url", "")).strip()
+        if url:
+            self._rail(color, f"[dim]URL: {url}[/dim]")
+        body = str(obs.get("body", "")).strip()
+        if body:
+            self._rail(
+                color, body if status != "error" else f"[red]{body}[/red]"
+            )
+        table = obs.get("table")
+        syntax = obs.get("syntax")
+        if table is not None:
+            self.console.print(Text("┃", style=color), end=" ")
+            self.console.print(table)
+        if isinstance(syntax, Syntax):
+            self.console.print(Text("┃", style=color), end=" ")
+            self.console.print(syntax)
+        secondary = obs.get("secondary")
+        if isinstance(secondary, dict):
+            secondary_title = str(
+                secondary.get("title", "Tool Observation")
+            ).strip() or "Tool Observation"
+            secondary_body = str(secondary.get("body", "")).strip()
+            secondary_url = str(secondary.get("url", "")).strip()
+            secondary_table = secondary.get("table")
+            secondary_syntax = secondary.get("syntax")
+            self._rail(
+                "blue",
+                "📎 [bold blue]Tool Observation[/bold blue] "
+                f"[bold italic]Title:[/bold italic] {secondary_title}",
+            )
+            if secondary_url:
+                self._rail("blue", f"[dim]URL: {secondary_url}[/dim]")
+            if secondary_body:
+                self._rail("blue", secondary_body)
+            if secondary_table is not None:
+                self.console.print(Text("┃", style="blue"), end=" ")
+                self.console.print(secondary_table)
+            if isinstance(secondary_syntax, Syntax):
+                self.console.print(Text("┃", style="blue"), end=" ")
+                self.console.print(secondary_syntax)
 
     def _render_state_row(self, stats: Dict[str, Any]) -> str:
         order = [

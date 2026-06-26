@@ -62,6 +62,7 @@ class FamilyPreset:
     recommended_max_tokens: Optional[int] = None
     recommended_retry_budget: Optional[int] = None
     recommended_temperature: Optional[float] = None
+    recommended_request_kwargs: Optional[dict[str, Any]] = None
 
     def matches(self, value: str | None) -> bool:
         normalized = str(value or "").strip().lower()
@@ -90,6 +91,7 @@ class FamilyPreset:
             "recommended_max_tokens": self.recommended_max_tokens,
             "recommended_retry_budget": self.recommended_retry_budget,
             "recommended_temperature": self.recommended_temperature,
+            "recommended_request_kwargs": self.recommended_request_kwargs,
         }
 
     def override(self, **kwargs: Any) -> FamilyPreset:

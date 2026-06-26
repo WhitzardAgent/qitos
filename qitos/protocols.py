@@ -166,11 +166,32 @@ Action: tool_name(arg=value, ...)
 Final Answer: <answer>"""
 
 _JSON_CONTRACT = """Output contract:
-- Tool call:
+- Single tool call:
 {"thought":"...","action":{"name":"tool_name","args":{"key":"value"}}}
+
+- Multiple independent tool calls (use when actions have no data dependencies):
+{"thought":"...","actions":[{"name":"tool_name","args":{"key":"value"}},{"name":"tool_name","args":{"key":"value"}}]}
 
 - Final answer:
 {"thought":"...","final_answer":"..."}"""
+
+_JSON_MULTI_CONTRACT = """Output contract:
+- Single tool call:
+{"thought":"...","action":{"name":"tool_name","args":{"key":"value"}}}
+
+- Multiple independent tool calls (PREFERRED when actions have no dependencies):
+{"thought":"read two source files in parallel","actions":[{"name":"tool1","args":{"key":"value"}},{"name":"tool2","args":{"key":"value"}}]}
+
+- Final answer:
+{"thought":"...","final_answer":"..."}
+
+Rules for multiple tool calls:
+- Use the "actions" array when you need multiple independent operations in one step.
+- Only combine actions with NO data dependencies on each other.
+- Read-only tools (file reads, searches, inspections) can always be combined.
+- NEVER combine write actions (file writes, shell commands) with reads or with each other in the same step.
+- Limit each batch to at most 4 actions.
+- When you have only one tool to call, use the "action" object (not an array)."""
 
 _XML_CONTRACT = """Output contract:
 - Tool call:
@@ -373,6 +394,15 @@ def _json_prompt(base_prompt: str, tool_registry: Any) -> str:
     )
 
 
+def _json_multi_prompt(base_prompt: str, tool_registry: Any) -> str:
+    return _compose_prompt(
+        base_prompt,
+        tool_registry,
+        contract=_JSON_MULTI_CONTRACT,
+        renderer=render_json_tool_schema,
+    )
+
+
 def _xml_prompt(base_prompt: str, tool_registry: Any) -> str:
     return _compose_prompt(
         base_prompt,
@@ -461,6 +491,21 @@ def _protocol_table() -> Dict[str, ModelProtocol]:
             continuation_renderer=_render_continuation_message,
             tool_schema_delivery="hybrid",
             supports_native_tool_call_markup=True,
+            supports_multi_action=True,
+        ),
+        "json_decision_multi_v1": ModelProtocol(
+            id="json_decision_multi_v1",
+            display_name="JSON Decision (Multi-Action)",
+            parser_factory=JsonDecisionParser,
+            prompt_renderer=_json_multi_prompt,
+            contract_renderer=lambda _protocol: _render_simple_contract(_JSON_MULTI_CONTRACT),
+            tool_schema_renderer=render_json_tool_schema,
+            repair_renderer=_render_repair_message,
+            continuation_renderer=_render_continuation_message,
+            tool_schema_delivery="hybrid",
+            supports_native_tool_call_markup=True,
+            supports_multi_action=True,
+            fallback_protocols=("json_decision_v1", "xml_decision_v1", "react_text_v1"),
         ),
         "xml_decision_v1": ModelProtocol(
             id="xml_decision_v1",

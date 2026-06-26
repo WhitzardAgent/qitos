@@ -83,24 +83,52 @@ class ContentFirstRenderer:
             return None
         return self._truncate(" · ".join(parts), self.max_preview_chars)
 
-    def action_summary(self, event: RenderEvent) -> Optional[Dict[str, str]]:
+    def action_summary(self, event: RenderEvent) -> Optional[Dict[str, Any]]:
         payload = event.payload or {}
         if event.node == "planned_actions":
             actions = payload.get("actions")
             if isinstance(actions, list) and actions:
-                return self._action_from_dict(actions[0])
+                if len(actions) == 1:
+                    return self._action_from_dict(actions[0])
+                summaries = [self._action_from_dict(a) for a in actions]
+                labels = [s["label"] for s in summaries]
+                details = [s["detail"] for s in summaries if s.get("detail")]
+                has_error = any(s.get("status") == "error" for s in summaries)
+                return {
+                    "label": f"{len(actions)} ACTIONS",
+                    "detail": " | ".join(labels) if labels else "",
+                    "status": "error" if has_error else "neutral",
+                    "action_count": len(actions),
+                    "actions": summaries,
+                }
             return None
 
         if event.node == "tool_invocations":
             items = payload.get("tool_invocations")
             if isinstance(items, list) and items:
-                first = items[0] if isinstance(items[0], dict) else {}
-                name = str(first.get("tool_name") or first.get("name") or "tool")
-                status = str(first.get("status") or "").lower()
+                if len(items) == 1:
+                    first = items[0] if isinstance(items[0], dict) else {}
+                    name = str(first.get("tool_name") or first.get("name") or "tool")
+                    status = str(first.get("status") or "").lower()
+                    return {
+                        "label": name.upper().replace("_", " "),
+                        "detail": "",
+                        "status": "error" if status == "error" else "success",
+                    }
+                names = []
+                has_error = False
+                for item in items:
+                    d = item if isinstance(item, dict) else {}
+                    name = str(d.get("tool_name") or d.get("name") or "tool")
+                    names.append(name.upper().replace("_", " "))
+                    if str(d.get("status") or "").lower() == "error":
+                        has_error = True
                 return {
-                    "label": name.upper().replace("_", " "),
-                    "detail": "",
-                    "status": "error" if status == "error" else "success",
+                    "label": f"{len(items)} INVOCATIONS",
+                    "detail": " | ".join(names),
+                    "status": "error" if has_error else "success",
+                    "action_count": len(items),
+                    "actions": [{"label": n, "detail": "", "status": "neutral"} for n in names],
                 }
             return None
         return None
@@ -125,6 +153,18 @@ class ContentFirstRenderer:
         )
         if secondary:
             primary["secondary"] = secondary
+
+        # Attach multi-observation metadata when there are multiple results
+        if len(items) > 1:
+            all_summaries = []
+            for item in items:
+                summary = self._summarize_tool_observation(item) if isinstance(item, dict) else None
+                if summary:
+                    all_summaries.append(summary)
+            if all_summaries:
+                primary["all_observations"] = all_summaries
+                primary["observation_count"] = len(items)
+
         return primary
 
     def state_summary(self, event: RenderEvent) -> Optional[Dict[str, Any]]:
