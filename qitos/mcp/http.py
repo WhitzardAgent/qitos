@@ -70,6 +70,7 @@ class MCPServerStreamableHttp(MCPServer):
             base_url=self._url,
             headers={**self._headers, "Content-Type": "application/json"},
             timeout=httpx.Timeout(30.0),
+            follow_redirects=True,
         )
 
         # MCP initialization handshake
@@ -149,7 +150,7 @@ class MCPServerStreamableHttp(MCPServer):
         response = await self._client.post("", json=payload)
         response.raise_for_status()
 
-        data = response.json()
+        data = self._decode_response(response)
         logger.debug("MCP HTTP <- %s", json.dumps(data)[:500])
 
         if "error" in data:
@@ -159,6 +160,58 @@ class MCPServerStreamableHttp(MCPServer):
             )
 
         return data.get("result", {})
+
+    def _decode_response(self, response: Any) -> Dict[str, Any]:
+        content_type = str(response.headers.get("Content-Type", "")).lower()
+        if "text/event-stream" in content_type:
+            return self._decode_sse_response(response.text)
+        return response.json()
+
+    def _decode_sse_response(self, text: str) -> Dict[str, Any]:
+        data_lines: List[str] = []
+        last_error: Optional[json.JSONDecodeError] = None
+
+        for raw_line in text.splitlines():
+            line = raw_line.rstrip("\r")
+            if not line:
+                if data_lines:
+                    parsed = self._parse_sse_data(data_lines)
+                    if parsed is not None:
+                        return parsed
+                    try:
+                        json.loads("\n".join(data_lines))
+                    except json.JSONDecodeError as exc:
+                        last_error = exc
+                    data_lines = []
+                continue
+            if line.startswith(":"):
+                continue
+            if line.startswith("data:"):
+                data_lines.append(line[5:].lstrip())
+
+        if data_lines:
+            parsed = self._parse_sse_data(data_lines)
+            if parsed is not None:
+                return parsed
+            try:
+                json.loads("\n".join(data_lines))
+            except json.JSONDecodeError as exc:
+                last_error = exc
+
+        if last_error is not None:
+            raise ValueError(
+                "MCP HTTP SSE data frame did not contain valid JSON"
+            ) from last_error
+        raise ValueError("MCP HTTP SSE response did not include a data frame")
+
+    def _parse_sse_data(self, data_lines: List[str]) -> Optional[Dict[str, Any]]:
+        try:
+            data = json.loads("\n".join(data_lines))
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(data, dict):
+            raise ValueError("MCP HTTP SSE data frame did not contain a JSON object")
+        return data
 
     async def _send_notification(self, method: str, params: Optional[Dict[str, Any]] = None) -> None:
         """Send a JSON-RPC notification via HTTP POST."""

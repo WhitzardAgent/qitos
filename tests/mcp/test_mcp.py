@@ -22,6 +22,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from qitos.core.tool import FunctionTool, ToolSpec
+import qitos.mcp.http as http_transport
 from qitos.mcp import (
     MCPServer,
     MCPToolInfo,
@@ -603,6 +604,114 @@ class TestMCPServerStdio:
 
 
 class TestMCPServerStreamableHttp:
+    def _patch_http_client(self, monkeypatch, handler):
+        httpx = http_transport.httpx
+        if httpx is None:
+            pytest.skip("httpx not installed")
+
+        transport = httpx.MockTransport(handler)
+        real_async_client = httpx.AsyncClient
+
+        def make_client(*args, **kwargs):
+            kwargs["transport"] = transport
+            return real_async_client(*args, **kwargs)
+
+        monkeypatch.setattr(httpx, "AsyncClient", make_client)
+        return httpx
+
+    def _sse_response(self, httpx, request_id: int, result: Dict[str, Any]):
+        payload = {"jsonrpc": "2.0", "id": request_id, "result": result}
+        body = (
+            "event: message\n"
+            f"data: {json.dumps(payload)}\n\n"
+        )
+        return httpx.Response(
+            200,
+            headers={"Content-Type": "text/event-stream"},
+            text=body,
+        )
+
+    def test_streamable_http_parses_sse_json_rpc_responses(self, monkeypatch) -> None:
+        def handler(request):
+            payload = json.loads(request.content or b"{}")
+            request_id = payload.get("id")
+            if request_id is None:
+                return httpx.Response(202)
+            if payload.get("method") == "initialize":
+                result = {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {"tools": {}},
+                    "serverInfo": {"name": "sse-repro", "version": "0.0.1"},
+                }
+            elif payload.get("method") == "tools/list":
+                result = {
+                    "tools": [
+                        {
+                            "name": "nmap_scan",
+                            "description": "Run nmap",
+                            "inputSchema": {"type": "object"},
+                        }
+                    ]
+                }
+            else:
+                result = {}
+            return self._sse_response(httpx, request_id, result)
+
+        httpx = self._patch_http_client(monkeypatch, handler)
+        server = MCPServerStreamableHttp(url="http://localhost:8080/mcp")
+
+        async def exercise():
+            try:
+                await server.connect()
+                return await server.list_tools()
+            finally:
+                await server.cleanup()
+
+        tools = asyncio.run(exercise())
+        assert [tool.name for tool in tools] == ["nmap_scan"]
+
+    def test_streamable_http_follows_redirect_before_sse_response(
+        self, monkeypatch
+    ) -> None:
+        paths: List[str] = []
+
+        def handler(request):
+            paths.append(request.url.path)
+            if request.url.path == "/mcp/":
+                return httpx.Response(307, headers={"Location": "/mcp"})
+            payload = json.loads(request.content or b"{}")
+            request_id = payload.get("id")
+            if request_id is None:
+                return httpx.Response(202)
+            if payload.get("method") == "initialize":
+                result = {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {"tools": {}},
+                    "serverInfo": {"name": "redirect-repro", "version": "0.0.1"},
+                }
+            elif payload.get("method") == "tools/list":
+                result = {"tools": []}
+            else:
+                result = {}
+            return self._sse_response(httpx, request_id, result)
+
+        httpx = self._patch_http_client(monkeypatch, handler)
+        server = MCPServerStreamableHttp(
+            url="http://localhost:8080/mcp",
+            headers={"Authorization": "Bearer reprotoken123"},
+        )
+
+        async def exercise():
+            try:
+                await server.connect()
+                return await server.list_tools()
+            finally:
+                await server.cleanup()
+
+        assert asyncio.run(exercise()) == []
+        assert "/mcp/" in paths
+        assert "/mcp" in paths
+
     def test_construction(self) -> None:
         try:
             server = MCPServerStreamableHttp(

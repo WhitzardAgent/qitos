@@ -31,6 +31,9 @@ server = MCPServerStreamableHttp(
 await server.connect()
 ```
 
+HTTP 传输会跟随 Docker MCP Gateway 等网关返回的重定向，并支持普通
+JSON 响应以及封装在 Server-Sent Events `data:` 帧中的 JSON-RPC 响应。
+
 两种传输都会在 `connect()` 期间自动完成 MCP 初始化握手。连接成功后，可以列出可用工具：
 
 ```python

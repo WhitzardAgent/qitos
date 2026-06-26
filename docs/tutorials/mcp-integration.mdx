@@ -31,6 +31,10 @@ server = MCPServerStreamableHttp(
 await server.connect()
 ```
 
+The HTTP transport follows redirects from gateways such as Docker MCP Gateway
+and accepts JSON-RPC responses returned either as plain JSON or as Server-Sent
+Events `data:` frames.
+
 Both transports perform the MCP initialization handshake automatically during `connect()`. After connecting, you can list available tools:
 
 ```python

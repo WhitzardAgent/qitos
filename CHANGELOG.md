@@ -19,6 +19,7 @@ How to update:
 
 ### Fixed
 
+- Fixed `MCPServerStreamableHttp` so Docker MCP Gateway style streaming endpoints that redirect `/mcp/` to `/mcp` and return JSON-RPC inside SSE `data:` frames can complete the HTTP handshake.
 - Fixed OpenAI-compatible tool schema export so `Any` and `**kwargs` no longer produce invalid `{"type": "any"}` entries in native `tools=` payloads.
 - Fixed `ReActTextParser` so common ReAct variants such as `Action Input` blocks, XML-style action tags, and fenced JSON tool calls no longer fall into parser repair loops.
 
