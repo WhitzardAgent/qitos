@@ -428,29 +428,58 @@ class ClaudeStyleHook(RenderStreamHook):
                     if stats:
                         fixed = self._render_state_row(stats)
                         self._rail("gray40", f"[dim]State[/dim] [dim]{fixed}[/dim]")
-                    # Render chain/gate summary if available
-                    chain_summary = stats.get("chain_summary")
-                    if isinstance(chain_summary, str) and chain_summary.strip():
-                        for line in chain_summary.strip().splitlines():
-                            if line.strip().startswith("Chain:"):
-                                self._rail("cyan", f"[bold cyan]{line.strip()}[/bold cyan]")
-                            elif "✗" in line:
-                                self._rail("red", f"[red]{line.strip()}[/red]")
-                            elif "?" in line and "✓" not in line:
-                                self._rail("yellow", f"[yellow]{line.strip()}[/yellow]")
+                    # Render Constraint Board — same text the LLM sees
+                    constraint_board = stats.get("constraint_board")
+                    if isinstance(constraint_board, str) and constraint_board.strip():
+                        self._rail("cyan", "[bold cyan]── Constraint Board ──[/bold cyan]")
+                        for line in constraint_board.strip().splitlines():
+                            stripped = line.strip()
+                            if not stripped:
+                                self.console.print("")
+                                continue
+                            # Color-code by semantics (matching LLM-facing format)
+                            if stripped.startswith("- FIRST BLOCKER"):
+                                self._rail("bold yellow", f"[bold yellow]{stripped}[/bold yellow]")
+                            elif "[refuted]" in stripped or "Refuted Gates" in stripped:
+                                self._rail("red", f"[red]{stripped}[/red]")
+                            elif "repair:" in stripped:
+                                self._rail("bright_red", f"[bright_red]{stripped}[/bright_red]")
+                            elif "[confirmed]" in stripped or "Confirmed Gates" in stripped:
+                                self._rail("green", f"[green]{stripped}[/green]")
+                            elif "[inferred" in stripped or "[unknown" in stripped or "Open Gates" in stripped:
+                                self._rail("yellow", f"[yellow]{stripped}[/yellow]")
+                            elif stripped.startswith("- [") and "] entry" in stripped:
+                                self._rail("bright_cyan", f"[bright_cyan]{stripped}[/bright_cyan]")
+                            elif stripped.startswith("- [") and "] sink" in stripped:
+                                self._rail("bright_magenta", f"[bright_magenta]{stripped}[/bright_magenta]")
+                            elif stripped.startswith("- [") and "] parser" in stripped:
+                                self._rail("cyan", f"[cyan]{stripped}[/cyan]")
+                            elif stripped.startswith("- [") and "] guard" in stripped:
+                                self._rail("bright_yellow", f"[bright_yellow]{stripped}[/bright_yellow]")
+                            elif stripped.startswith("- [") and "] dispatch" in stripped:
+                                self._rail("blue", f"[blue]{stripped}[/blue]")
+                            elif "Chain Gates:" in stripped:
+                                self._rail("bold cyan", f"[bold cyan]{stripped}[/bold cyan]")
                             else:
-                                self._rail("cyan", f"[cyan]{line.strip()}[/cyan]")
-                    # Render task-persistent memory
-                    hyp = stats.get("current_hypothesis")
-                    if isinstance(hyp, str) and hyp.strip():
-                        self._rail("magenta", f"[bold magenta]Hypothesis:[/bold magenta] {hyp[:200]}")
-                    va = stats.get("vulnerability_analysis")
-                    if isinstance(va, str) and va.strip():
-                        self._rail("blue", f"[blue]Analysis:[/blue] {va[:200]}")
-                    path_trace = stats.get("path_trace")
-                    if isinstance(path_trace, list) and path_trace:
-                        trace_str = " → ".join(path_trace[:6])
-                        self._rail("cyan", f"[cyan]Path:[/cyan] {trace_str}")
+                                self._rail("gray70", f"[dim]{stripped}[/dim]")
+                    # Render Task Memory — same text the LLM sees
+                    task_memory = stats.get("task_memory")
+                    if isinstance(task_memory, str) and task_memory.strip():
+                        self._rail("magenta", "[bold magenta]── Task Memory ──[/bold magenta]")
+                        for line in task_memory.strip().splitlines():
+                            stripped = line.strip()
+                            if not stripped:
+                                continue
+                            if stripped.startswith("- Analysis:"):
+                                self._rail("blue", f"[blue]{stripped}[/blue]")
+                            elif stripped.startswith("- Hypothesis:"):
+                                self._rail("magenta", f"[bold magenta]{stripped}[/bold magenta]")
+                            elif stripped.startswith("- Path:"):
+                                self._rail("cyan", f"[cyan]{stripped}[/cyan]")
+                            elif stripped.startswith("- Attempt:"):
+                                self._rail("gray70", f"[dim]{stripped}[/dim]")
+                            else:
+                                self._rail("gray70", stripped)
                     self._state_steps.add(event.step_id)
                 return
             if event.step_id in self._thought_steps:

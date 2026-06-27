@@ -782,72 +782,94 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
         ):
             if key in context:
                 stats[key] = context.get(key)
-        # Extract chain/gate/memory info from state for TUI rendering.
-        # Uses duck-typing so non-CyberGym agents are unaffected.
+        # Extract chain/gate/memory text from agent state for TUI.
+        # The agent's observation packet already contains the canonical
+        # rendering — we reuse it so TUI shows exactly what the LLM sees.
         state_obj = getattr(observation, "state", None)
         if state_obj is None and isinstance(observation, dict):
             state_obj = observation.get("state")
         if state_obj is not None:
-            chain_nodes = getattr(state_obj, "call_chain_nodes", None)
-            chain_gates = getattr(state_obj, "call_chain_gates", None)
-            if chain_nodes or chain_gates:
-                chain_summary = self._render_chain_summary(state_obj)
-                if chain_summary:
-                    stats["chain_summary"] = chain_summary
-            # Task-persistent memory for TUI
-            for field_name in ("vulnerability_analysis", "current_hypothesis"):
-                val = getattr(state_obj, field_name, "")
-                if isinstance(val, str) and val.strip():
-                    stats[field_name] = val.strip()[:300]
-            path_trace = getattr(state_obj, "path_trace", None)
-            if isinstance(path_trace, list) and path_trace:
-                stats["path_trace"] = path_trace[:8]
-            attempt_compact = getattr(state_obj, "attempt_history_compact", None)
-            if isinstance(attempt_compact, list) and attempt_compact:
-                stats["attempt_history_compact"] = attempt_compact[-5:]
+            # Use the agent's own rendering methods if available
+            constraint_lines = self._extract_constraint_board_text(state_obj)
+            if constraint_lines:
+                stats["constraint_board"] = constraint_lines
+            task_memory_text = self._extract_task_memory_text(state_obj)
+            if task_memory_text:
+                stats["task_memory"] = task_memory_text
         return stats
 
     @staticmethod
-    def _render_chain_summary(state_obj: Any) -> str:
-        """Render a compact chain+gate summary for TUI display."""
+    def _extract_constraint_board_text(state_obj: Any) -> str:
+        """Extract the Constraint Board section text from agent state.
+
+        The agent stores the exact same text in state.metadata that the LLM
+        sees in the observation packet.  This ensures TUI and LLM always
+        see identical content.
+        """
+        # Primary: use the pre-rendered text from the agent's prepare()
+        metadata = getattr(state_obj, "metadata", None)
+        if isinstance(metadata, dict):
+            cached = metadata.get("_tui_constraint_board")
+            if isinstance(cached, str) and cached.strip():
+                return cached
+        # Fallback: build from state fields directly (for agents that
+        # don't store the cached text, or before first prepare())
         nodes = list(getattr(state_obj, "call_chain_nodes", []) or [])
         gates = list(getattr(state_obj, "call_chain_gates", []) or [])
         if not nodes and not gates:
             return ""
+        lines: List[str] = []
         confirmed = sum(1 for g in gates if getattr(g, "status", "") == "confirmed")
         open_g = sum(1 for g in gates if getattr(g, "status", "") in ("inferred", "unknown"))
         refuted = sum(1 for g in gates if getattr(g, "status", "") == "refuted")
-        lines = [f"Chain: {len(nodes)} nodes | Gates: {confirmed}✓ {open_g}? {refuted}✗"]
-        # Render nodes ordered
+        lines.append(f"Chain Gates: {confirmed} confirmed / {open_g} open / {refuted} refuted")
         if nodes:
             sorted_nodes = sorted(nodes, key=lambda n: getattr(n, "order", 0))
-            for n in sorted_nodes[:6]:
+            for n in sorted_nodes[:10]:
                 role = getattr(n, "role", "?")
                 func = getattr(n, "function", "?")
                 loc = getattr(n, "location", "")
-                loc_short = loc.split(":")[0] if ":" in loc else loc
                 status = getattr(n, "status", "?")
-                badge = "✓" if status == "confirmed" else "?"
-                lines.append(f"  [{getattr(n, 'order', 0)}] {badge} {role:8s} {func} ({loc_short})")
-        # Render refuted gates (learning)
+                lines.append(f"  [{getattr(n, 'order', 0)}] [{status}] {role} {func} ({loc})")
         for g in gates:
-            if getattr(g, "status", "") == "refuted":
-                desc = getattr(g, "description", "")[:80]
-                hint = getattr(g, "repair_hint", "")[:60]
-                line = f"  ✗ {desc}"
-                if hint:
-                    line += f" → {hint}"
-                lines.append(line)
-        # Render open gates (blockers)
-        for g in gates:
-            if getattr(g, "status", "") in ("inferred", "unknown"):
-                desc = getattr(g, "description", "")[:80]
-                cond = getattr(g, "required_condition", "")[:60]
-                line = f"  ? {desc}"
-                if cond:
-                    line += f" → {cond}"
-                lines.append(line)
+            status = getattr(g, "status", "")
+            desc = getattr(g, "description", "")
+            cond = getattr(g, "required_condition", "")
+            hint = getattr(g, "repair_hint", "")
+            ev = getattr(g, "evidence", "")
+            parts = [f"  [{status}/{getattr(g, 'gate_type', '')}] {desc}"]
+            if cond:
+                parts.append(f"    required: {cond}")
+            if hint:
+                parts.append(f"    repair: {hint}")
+            if ev:
+                parts.append(f"    evidence: {ev}")
+            lines.extend(parts)
         return "\n".join(lines)
+
+    @staticmethod
+    def _extract_task_memory_text(state_obj: Any) -> str:
+        """Extract Task Memory section text from agent state.
+
+        Same text the LLM sees in the observation packet.
+        """
+        metadata = getattr(state_obj, "metadata", None)
+        if isinstance(metadata, dict):
+            cached = metadata.get("_tui_task_memory")
+            if isinstance(cached, str) and cached.strip():
+                return cached
+        # Fallback
+        parts: List[str] = []
+        va = getattr(state_obj, "vulnerability_analysis", "")
+        if isinstance(va, str) and va.strip():
+            parts.append(f"Analysis: {va.strip()}")
+        ch = getattr(state_obj, "current_hypothesis", "")
+        if isinstance(ch, str) and ch.strip():
+            parts.append(f"Hypothesis: {ch.strip()}")
+        pt = getattr(state_obj, "path_trace", None)
+        if isinstance(pt, list) and pt:
+            parts.append("Path: " + " → ".join(pt[:8]))
+        return "\n".join(parts)
 
     def select_branch(
         self,
