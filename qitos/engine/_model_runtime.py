@@ -328,7 +328,7 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
                 "history_messages_meta": history_metadata,
                 "messages": messages,
                 "context": dict(record.context),
-                "state_stats": self._state_stats(observation, record.context),
+                "state_stats": self._state_stats(observation, record.context, state=state),
                 "prompt": dict(record.prompt_metadata),
             },
         )
@@ -752,7 +752,8 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
         return None
 
     def _state_stats(
-        self, observation: ObservationT, context: Dict[str, Any]
+        self, observation: ObservationT, context: Dict[str, Any],
+        state: Any = None,
     ) -> Dict[str, Any]:
         stats: Dict[str, Any] = {}
         if isinstance(observation, Observation):
@@ -783,11 +784,14 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
             if key in context:
                 stats[key] = context.get(key)
         # Extract chain/gate/memory text from agent state for TUI.
-        # The agent's observation packet already contains the canonical
-        # rendering — we reuse it so TUI shows exactly what the LLM sees.
-        state_obj = getattr(observation, "state", None)
-        if state_obj is None and isinstance(observation, dict):
-            state_obj = observation.get("state")
+        # Prefer the live state object (passed from run_decide) over the
+        # serialised observation.state dict, since the live object has
+        # ChainNode/ChainGate dataclass instances and metadata.
+        state_obj = state
+        if state_obj is None:
+            state_obj = getattr(observation, "state", None)
+            if state_obj is None and isinstance(observation, dict):
+                state_obj = observation.get("state")
         if state_obj is not None:
             # Use the agent's own rendering methods if available
             constraint_lines = self._extract_constraint_board_text(state_obj)
