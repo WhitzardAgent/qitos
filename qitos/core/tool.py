@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import re
 from dataclasses import asdict, dataclass, field
 from typing import Any, Callable, Dict, List, Optional, cast, get_type_hints
 
@@ -502,6 +503,69 @@ def get_tool_meta(func: Callable[..., Any]) -> Optional[ToolMeta]:
     return None
 
 
+def _parse_param_descriptions(docstring: str) -> Dict[str, str]:
+    """Extract :param name: description pairs from a docstring.
+
+    Supports both Sphinx style (``:param name: desc``) and Google style
+    (``Args:\\n    name: desc``) formats.
+    """
+    param_descs: Dict[str, str] = {}
+    if not docstring:
+        return param_descs
+    # Sphinx / Epydoc style: :param name: description
+    for m in re.finditer(
+        r":param\s+(\w+)\s*:\s*(.*?)(?=\n\s*:param|\n\s*:type|\n\s*:return|\n\s*:raises|\Z)",
+        docstring,
+        re.DOTALL,
+    ):
+        name = m.group(1)
+        desc = " ".join(m.group(2).split()).strip()
+        if desc:
+            param_descs[name] = desc
+    # Google style: under "Args:" section, "    name: description"
+    if not param_descs:
+        args_match = re.search(
+            r"(?:Args|Arguments|Parameters)\s*:\s*\n((?:\s+\w+.*\n?)+)",
+            docstring,
+        )
+        if args_match:
+            for line in args_match.group(1).splitlines():
+                m = re.match(r"\s+(\w+)\s*:\s*(.*)", line)
+                if m:
+                    param_descs[m.group(1)] = m.group(2).strip()
+    return param_descs
+
+
+def _strip_param_docs(docstring: str) -> str:
+    """Remove :param / :type / :return / :raises lines from a docstring.
+
+    These belong in parameter descriptions, not in the top-level tool
+    description.  Keeps the summary and usage text clean.
+    """
+    if not docstring:
+        return docstring
+    lines = docstring.splitlines()
+    cleaned: List[str] = []
+    skip = False
+    for line in lines:
+        stripped = line.lstrip()
+        if stripped.startswith(":param ") or stripped.startswith(":type ") or stripped.startswith(":return") or stripped.startswith(":raises "):
+            skip = True
+            continue
+        if skip and stripped.startswith(":"):
+            # Could be a new :param — don't skip, let next iteration handle
+            skip = False
+        if skip and stripped and not stripped.startswith(":"):
+            # Continuation line of a :param block
+            continue
+        skip = False
+        cleaned.append(line)
+    # Remove trailing blank lines
+    while cleaned and not cleaned[-1].strip():
+        cleaned.pop()
+    return "\n".join(cleaned)
+
+
 def build_tool_spec(func: Callable[..., Any], meta: ToolMeta) -> ToolSpec:
     sig = inspect.signature(func)
     target = getattr(func, "__func__", func)
@@ -521,6 +585,9 @@ def build_tool_spec(func: Callable[..., Any], meta: ToolMeta) -> ToolSpec:
     params = {}
     required = []
 
+    raw_doc = inspect.getdoc(func) or ""
+    param_descs = _parse_param_descriptions(raw_doc)
+
     for name, p in sig.parameters.items():
         if name in {
             "self",
@@ -533,11 +600,16 @@ def build_tool_spec(func: Callable[..., Any], meta: ToolMeta) -> ToolSpec:
         }:
             continue
         annotation = resolved_hints.get(name, p.annotation)
-        params[name] = {"type": _type_to_json(annotation), "description": ""}
+        params[name] = {
+            "type": _type_to_json(annotation),
+            "description": param_descs.get(name, ""),
+        }
         if p.default is inspect.Parameter.empty:
             required.append(name)
 
-    desc = inspect.getdoc(func) or meta.description or ""
+    # Strip :param lines from the top-level description so they don't
+    # duplicate the per-parameter descriptions the model already sees.
+    desc = _strip_param_docs(raw_doc) or meta.description or ""
     tool_name = str(meta.name or getattr(func, "__name__", "tool") or "tool")
 
     return ToolSpec(
