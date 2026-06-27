@@ -782,7 +782,72 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
         ):
             if key in context:
                 stats[key] = context.get(key)
+        # Extract chain/gate/memory info from state for TUI rendering.
+        # Uses duck-typing so non-CyberGym agents are unaffected.
+        state_obj = getattr(observation, "state", None)
+        if state_obj is None and isinstance(observation, dict):
+            state_obj = observation.get("state")
+        if state_obj is not None:
+            chain_nodes = getattr(state_obj, "call_chain_nodes", None)
+            chain_gates = getattr(state_obj, "call_chain_gates", None)
+            if chain_nodes or chain_gates:
+                chain_summary = self._render_chain_summary(state_obj)
+                if chain_summary:
+                    stats["chain_summary"] = chain_summary
+            # Task-persistent memory for TUI
+            for field_name in ("vulnerability_analysis", "current_hypothesis"):
+                val = getattr(state_obj, field_name, "")
+                if isinstance(val, str) and val.strip():
+                    stats[field_name] = val.strip()[:300]
+            path_trace = getattr(state_obj, "path_trace", None)
+            if isinstance(path_trace, list) and path_trace:
+                stats["path_trace"] = path_trace[:8]
+            attempt_compact = getattr(state_obj, "attempt_history_compact", None)
+            if isinstance(attempt_compact, list) and attempt_compact:
+                stats["attempt_history_compact"] = attempt_compact[-5:]
         return stats
+
+    @staticmethod
+    def _render_chain_summary(state_obj: Any) -> str:
+        """Render a compact chain+gate summary for TUI display."""
+        nodes = list(getattr(state_obj, "call_chain_nodes", []) or [])
+        gates = list(getattr(state_obj, "call_chain_gates", []) or [])
+        if not nodes and not gates:
+            return ""
+        confirmed = sum(1 for g in gates if getattr(g, "status", "") == "confirmed")
+        open_g = sum(1 for g in gates if getattr(g, "status", "") in ("inferred", "unknown"))
+        refuted = sum(1 for g in gates if getattr(g, "status", "") == "refuted")
+        lines = [f"Chain: {len(nodes)} nodes | Gates: {confirmed}✓ {open_g}? {refuted}✗"]
+        # Render nodes ordered
+        if nodes:
+            sorted_nodes = sorted(nodes, key=lambda n: getattr(n, "order", 0))
+            for n in sorted_nodes[:6]:
+                role = getattr(n, "role", "?")
+                func = getattr(n, "function", "?")
+                loc = getattr(n, "location", "")
+                loc_short = loc.split(":")[0] if ":" in loc else loc
+                status = getattr(n, "status", "?")
+                badge = "✓" if status == "confirmed" else "?"
+                lines.append(f"  [{getattr(n, 'order', 0)}] {badge} {role:8s} {func} ({loc_short})")
+        # Render refuted gates (learning)
+        for g in gates:
+            if getattr(g, "status", "") == "refuted":
+                desc = getattr(g, "description", "")[:80]
+                hint = getattr(g, "repair_hint", "")[:60]
+                line = f"  ✗ {desc}"
+                if hint:
+                    line += f" → {hint}"
+                lines.append(line)
+        # Render open gates (blockers)
+        for g in gates:
+            if getattr(g, "status", "") in ("inferred", "unknown"):
+                desc = getattr(g, "description", "")[:80]
+                cond = getattr(g, "required_condition", "")[:60]
+                line = f"  ? {desc}"
+                if cond:
+                    line += f" → {cond}"
+                lines.append(line)
+        return "\n".join(lines)
 
     def select_branch(
         self,

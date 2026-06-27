@@ -428,6 +428,29 @@ class ClaudeStyleHook(RenderStreamHook):
                     if stats:
                         fixed = self._render_state_row(stats)
                         self._rail("gray40", f"[dim]State[/dim] [dim]{fixed}[/dim]")
+                    # Render chain/gate summary if available
+                    chain_summary = stats.get("chain_summary")
+                    if isinstance(chain_summary, str) and chain_summary.strip():
+                        for line in chain_summary.strip().splitlines():
+                            if line.strip().startswith("Chain:"):
+                                self._rail("cyan", f"[bold cyan]{line.strip()}[/bold cyan]")
+                            elif "✗" in line:
+                                self._rail("red", f"[red]{line.strip()}[/red]")
+                            elif "?" in line and "✓" not in line:
+                                self._rail("yellow", f"[yellow]{line.strip()}[/yellow]")
+                            else:
+                                self._rail("cyan", f"[cyan]{line.strip()}[/cyan]")
+                    # Render task-persistent memory
+                    hyp = stats.get("current_hypothesis")
+                    if isinstance(hyp, str) and hyp.strip():
+                        self._rail("magenta", f"[bold magenta]Hypothesis:[/bold magenta] {hyp[:200]}")
+                    va = stats.get("vulnerability_analysis")
+                    if isinstance(va, str) and va.strip():
+                        self._rail("blue", f"[blue]Analysis:[/blue] {va[:200]}")
+                    path_trace = stats.get("path_trace")
+                    if isinstance(path_trace, list) and path_trace:
+                        trace_str = " → ".join(path_trace[:6])
+                        self._rail("cyan", f"[cyan]Path:[/cyan] {trace_str}")
                     self._state_steps.add(event.step_id)
                 return
             if event.step_id in self._thought_steps:
