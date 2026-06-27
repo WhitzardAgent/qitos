@@ -1316,6 +1316,13 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
         return not remainder
 
     def _extract_response_text(self, raw_output: Any) -> str:
+        """Extract text content from a model response.
+
+        Returns the ``content`` field even when ``tool_calls`` are present,
+        because the model may produce both (e.g. a brief explanation
+        alongside tool calls).  ``reasoning_content`` is extracted
+        separately by ``_extract_reasoning_content``.
+        """
         if raw_output is None:
             return ""
         if isinstance(raw_output, str):
@@ -1325,9 +1332,7 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
                 value = raw_output.get(key)
                 if isinstance(value, str):
                     return value
-            tool_calls = raw_output.get("tool_calls")
-            if isinstance(tool_calls, list) and tool_calls:
-                return ""
+            # tool_calls no longer short-circuits: content may coexist
             choices = raw_output.get("choices")
             if isinstance(choices, list) and choices:
                 return self._extract_response_text(choices[0])
@@ -1340,9 +1345,7 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
             return self._extract_response_text(choices[0])
         message = getattr(raw_output, "message", None)
         if message is not None:
-            tool_calls = getattr(message, "tool_calls", None)
-            if isinstance(tool_calls, list) and tool_calls:
-                return ""
+            # tool_calls no longer short-circuits: content may coexist
             content = getattr(message, "content", None)
             if isinstance(content, str):
                 return content

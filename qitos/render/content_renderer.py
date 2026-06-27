@@ -51,6 +51,13 @@ class ContentFirstRenderer:
         return f"{task} [max_steps={max_steps}]"
 
     def thought_text(self, event: RenderEvent) -> Optional[str]:
+        """Return the model's reasoning / non-tool-call text for display.
+
+        For ``model_output`` events this combines ``reasoning_content``
+        (API-level, e.g. DeepSeek/QwQ) and ``raw_output`` (content text
+        that is not a tool call).  Both are shown when present so the
+        operator sees everything the model "thought" before acting.
+        """
         payload = event.payload or {}
         if event.node == "decision":
             rationale = payload.get("rationale")
@@ -58,18 +65,24 @@ class ContentFirstRenderer:
                 return self._truncate(rationale.strip(), self.max_preview_chars)
             return None
         if event.node == "model_output":
-            # Prefer API-level reasoning_content (DeepSeek, QwQ, etc.)
+            segments: List[str] = []
+            # API-level reasoning_content (DeepSeek, QwQ, etc.)
             reasoning = payload.get("reasoning_content")
             if isinstance(reasoning, str) and reasoning.strip():
-                return self._truncate(reasoning.strip(), self.max_preview_chars)
-            # Fallback: ReAct-style "Thought: ..." in raw text
+                segments.append(reasoning.strip())
+            # Content text (non-tool-call output the model produced)
             raw = payload.get("raw_output")
-            if not isinstance(raw, str):
+            if isinstance(raw, str) and raw.strip():
+                # Try ReAct-style "Thought: ..." extraction first
+                m = _THOUGHT_RE.search(raw)
+                if m:
+                    segments.append(m.group(1).strip())
+                else:
+                    segments.append(raw.strip())
+            if not segments:
                 return None
-            m = _THOUGHT_RE.search(raw)
-            if m:
-                return self._truncate(m.group(1).strip(), self.max_preview_chars)
-            return self._truncate(raw.strip(), self.max_preview_chars)
+            combined = "\n---\n".join(segments)
+            return self._truncate(combined, self.max_preview_chars)
         return None
 
     def model_response_summary(self, event: RenderEvent) -> Optional[str]:
