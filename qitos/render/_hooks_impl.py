@@ -398,6 +398,10 @@ class ClaudeStyleHook(RenderStreamHook):
         if event.node == "run_start":
             self._print_banner()
             self.console.print(Rule("[dim]RUN[/dim]", style="gray23"))
+            task = (event.payload or {}).get("task", "")
+            if task:
+                preview = (task[:500] + "...") if len(task) > 500 else task
+                self._rail("cyan", f"[bold cyan]TASK[/bold cyan] {preview}")
             return
 
         if event.node == "step_start":
