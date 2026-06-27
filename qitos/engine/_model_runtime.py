@@ -360,6 +360,7 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
             payload={
                 "stage": "model_output",
                 "raw_output": response.text,
+                "reasoning_content": response.reasoning_content,
                 "model_response": dict(record.model_response),
                 "context": dict(record.context),
                 "prompt": prompt_metadata,
@@ -1162,6 +1163,41 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
             )
             record.decision_source = "parser"
 
+    def _extract_reasoning_content(self, raw_output: Any) -> Optional[str]:
+        """Extract reasoning_content from API response if present.
+
+        Some providers (DeepSeek, QwQ, etc.) return a separate
+        ``reasoning_content`` field alongside ``content`` and ``tool_calls``.
+        This field carries the model's chain-of-thought and should be
+        displayed in the TUI as the agent's "thought".
+        """
+        # Navigate to the message object
+        message = None
+        if isinstance(raw_output, dict):
+            choices = raw_output.get("choices")
+            if isinstance(choices, list) and choices:
+                msg = choices[0].get("message") if isinstance(choices[0], dict) else None
+                if isinstance(msg, dict):
+                    message = msg
+        if message is None:
+            choices = getattr(raw_output, "choices", None)
+            if isinstance(choices, list) and choices:
+                message = getattr(choices[0], "message", None)
+        if message is None:
+            message = getattr(raw_output, "message", None)
+
+        if message is not None:
+            # dict-style message
+            if isinstance(message, dict):
+                rc = message.get("reasoning_content")
+                if isinstance(rc, str) and rc.strip():
+                    return rc
+            # object-style message
+            rc = getattr(message, "reasoning_content", None)
+            if isinstance(rc, str) and rc.strip():
+                return rc
+        return None
+
     def _normalize_model_response(self, raw_output: Any) -> ModelResponse:
         if isinstance(raw_output, ModelResponse):
             response = raw_output
@@ -1175,6 +1211,7 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
                 model_name=self._extract_model_name(raw_output),
                 provider=self._extract_provider(raw_output),
                 metadata=self._extract_response_metadata(raw_output),
+                reasoning_content=self._extract_reasoning_content(raw_output),
             )
         llm = getattr(self.engine.agent, "llm", None)
         usage = response.usage
@@ -1219,6 +1256,7 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
             model_name=str(model_name) if model_name is not None else None,
             provider=str(provider) if provider is not None else None,
             metadata=metadata,
+            reasoning_content=response.reasoning_content,
         )
 
     def _extract_text_tool_call_markup(self, text: str) -> List[Dict[str, Any]] | None:

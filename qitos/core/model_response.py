@@ -29,9 +29,10 @@ class ModelResponse:
     model_name: Optional[str] = None
     provider: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
+    reasoning_content: Optional[str] = None
 
     def to_summary_dict(self) -> Dict[str, Any]:
-        return {
+        d: Dict[str, Any] = {
             "text": str(self.text or ""),
             "usage": _sanitize(self.usage) if isinstance(self.usage, dict) else None,
             "finish_reason": (
@@ -48,6 +49,9 @@ class ModelResponse:
                 _sanitize(self.metadata) if isinstance(self.metadata, dict) else {}
             ),
         }
+        if self.reasoning_content:
+            d["reasoning_content"] = self.reasoning_content
+        return d
 
 
 __all__ = ["ModelResponse"]

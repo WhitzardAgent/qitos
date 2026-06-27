@@ -275,6 +275,7 @@ class RenderStreamHook(RenderHook):
                     step_id=event.step_id,
                     payload={
                         "raw_output": event.payload.get("raw_output"),
+                        "reasoning_content": event.payload.get("reasoning_content"),
                         "model_response": event.payload.get("model_response"),
                         "context": event.payload.get("context"),
                     },

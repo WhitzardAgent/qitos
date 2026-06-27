@@ -13,6 +13,18 @@ from rich.table import Table
 
 from .events import RenderEvent
 
+
+def _is_env_result(result: Any) -> bool:
+    """Return True if this result is an environment step result (not a tool result)."""
+    if not isinstance(result, dict):
+        return False
+    metadata = result.get("metadata")
+    if isinstance(metadata, dict) and str(metadata.get("source") or "").lower() == "env":
+        return True
+    output = result.get("output")
+    return isinstance(output, dict) and set(output) == {"env"}
+
+
 _THOUGHT_RE = re.compile(
     r"Thought\s*:\s*(.*?)(?:\n[A-Za-z_ ]+\s*:|\Z)", re.IGNORECASE | re.DOTALL
 )
@@ -46,6 +58,11 @@ class ContentFirstRenderer:
                 return self._truncate(rationale.strip(), self.max_preview_chars)
             return None
         if event.node == "model_output":
+            # Prefer API-level reasoning_content (DeepSeek, QwQ, etc.)
+            reasoning = payload.get("reasoning_content")
+            if isinstance(reasoning, str) and reasoning.strip():
+                return self._truncate(reasoning.strip(), self.max_preview_chars)
+            # Fallback: ReAct-style "Thought: ..." in raw text
             raw = payload.get("raw_output")
             if not isinstance(raw, str):
                 return None
@@ -144,6 +161,9 @@ class ContentFirstRenderer:
             return None
 
         items = data if isinstance(data, list) else [data]
+        # Filter out environment results so the count matches actual tool
+        # actions (N actions should produce N results, not N+1).
+        items = [it for it in items if not _is_env_result(it)]
         primary = self._select_primary_observation(items)
         if primary is None:
             return None
