@@ -330,6 +330,33 @@ class RenderStreamHook(RenderHook):
         return None
 
 
+class _TeeConsole:
+    """Proxy that forwards every print/rule/log call to two Rich Consoles."""
+
+    def __init__(self, primary: Console, secondary: Console):
+        object.__setattr__(self, "_primary", primary)
+        object.__setattr__(self, "_secondary", secondary)
+
+    def __getattr__(self, name: str) -> Any:
+        attr = getattr(self._primary, name)
+        if callable(attr):
+            def wrapper(*args: Any, **kwargs: Any) -> Any:
+                try:
+                    self._secondary.__getattribute__(name)(*args, **kwargs)
+                except Exception:
+                    pass
+                return attr(*args, **kwargs)
+            return wrapper
+        return attr
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        setattr(self._primary, name, value)
+
+    @property
+    def is_terminal(self) -> bool:
+        return self._primary.is_terminal
+
+
 class ClaudeStyleHook(RenderStreamHook):
     """Content-first terminal output focused on task, thought, action, observation, memory."""
 
@@ -338,10 +365,23 @@ class ClaudeStyleHook(RenderStreamHook):
         output_jsonl: Optional[str] = None,
         max_preview_chars: int = 50000,
         theme: str = "research",
+        log_file: Optional[str] = None,
     ):
         super().__init__(output_jsonl=output_jsonl)
-        self.console = Console()
         self.max_preview_chars = max_preview_chars
+        # Per-task TUI log file: Rich Console writes the same rendered output
+        # to both the terminal and a plain-text log file, preserving the
+        # STEP / finish / tool_calls / ctx_used format for offline analysis.
+        self._log_file = None
+        self._log_console = None
+        if log_file:
+            log_path = Path(log_file)
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            self._log_file = open(log_path, "w", encoding="utf-8")
+            self._log_console = Console(file=self._log_file, width=200, no_color=True, legacy_windows=False)
+            self.console = _TeeConsole(Console(), self._log_console)
+        else:
+            self.console = Console()
         self._last_step: Optional[int] = None
         self._last_agent_id: Optional[str] = None
         self._status: Any = None
@@ -393,6 +433,13 @@ class ClaudeStyleHook(RenderStreamHook):
     def on_run_end(self, result: "EngineResult", engine: "Engine") -> None:
         self._stop_status()
         super().on_run_end(result, engine)
+        if self._log_file is not None:
+            try:
+                self._log_file.close()
+            except Exception:
+                pass
+            self._log_file = None
+            self._log_console = None
 
     def on_render_event(self, event: RenderEvent) -> None:
         if event.node == "run_start":

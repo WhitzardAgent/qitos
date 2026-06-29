@@ -12,12 +12,22 @@ from qitos.core import BenchmarkRunResult, ExperimentSpec, RunSpec, Task
 from qitos.engine.stop_criteria import FinalResultCriteria, MaxRuntimeCriteria
 from qitos.engine.states import ContextConfig, RuntimeBudget
 from qitos.kit.env.host_env import HostEnv
+from qitos.render import ClaudeStyleHook
 from qitos.trace import TraceWriter
 
 from .adapter import task_slug
 from .evaluator import CyberGymEvaluator
 from .runtime import CyberGymRuntimeHook, prepare_task_dir
 from .scorer import CyberGymScorer
+
+
+def _make_tui_log_hook(log_file: str, theme: str = "research") -> ClaudeStyleHook:
+    """Create a ClaudeStyleHook that writes TUI output to a per-task log file.
+
+    The hook's console is a _TeeConsole that writes to both the terminal
+    (for live monitoring) and a plain-text log file (for offline analysis).
+    """
+    return ClaudeStyleHook(log_file=log_file, theme=theme)
 
 
 def make_trace_writer(
@@ -107,6 +117,10 @@ def run_cybergym_agent_task(
         model_id=model_name,
     )
 
+    # Per-task TUI log: saves the same STEP/finish/tool_calls/ctx_used output
+    # that appears in the terminal, for offline trajectory analysis.
+    tui_log_file = str(Path(str(trace_writer.run_dir)) / "tui.log")
+
     result = agent.run(
         task=task,
         return_state=True,
@@ -121,6 +135,7 @@ def run_cybergym_agent_task(
         workspace=workspace_root,
         context_config=context_config,
         trace=trace_writer,
+        render_hooks=[_make_tui_log_hook(tui_log_file, theme="research")],
         run_spec=run_spec,
         experiment_spec=experiment_spec,
         description=task.inputs.get("description", ""),
