@@ -14,6 +14,7 @@ from qitos.qita.cli import (
     _render_run_html,
     main,
 )
+from qitos.qita.data import _load_run_payload
 
 
 def _make_run(root: Path, run_id: str) -> Path:
@@ -213,6 +214,230 @@ def test_discover_runs_and_export(tmp_path: Path):
     assert "r1" in content
 
 
+def test_run_payload_includes_diagnostic_insights(tmp_path: Path):
+    run = _make_run(tmp_path, "diag1")
+    payload = _load_run_payload(run)
+
+    assert "insights" in payload
+    assert "step_summaries" in payload
+    assert "tool_stats" in payload
+    assert "phase_stats" in payload
+    assert "run_focus" in payload
+    assert "step_focus" in payload
+    assert "cybergym_focus" in payload
+    assert "step_interactions" in payload
+    assert payload["insights"]["next_inspect_step"] == 0
+    assert payload["run_focus"]["next_actionable_step"] == 0
+    assert "parser_error" in payload["insights"]["risk_flags"]
+    assert payload["step_summaries"][0]["parser"]["is_error"] is True
+    assert payload["step_focus"][0]["attention_level"] == "critical"
+    assert payload["step_summaries"][0]["has_visual"] is True
+
+
+def test_successful_step_outcome_uses_observation_summary(tmp_path: Path):
+    run = _make_run(tmp_path, "result-summary")
+    step_data = json.loads((run / "steps.jsonl").read_text(encoding="utf-8").strip())
+    step_data["parser_diagnostics"] = {}
+    step_data["actions"] = [{"name": "READ", "args": {"path": "magick/attribute.c"}}]
+    step_data["action_results"] = [
+        {
+            "status": "success",
+            "output": {
+                "status": "success",
+                "path": "magick/attribute.c",
+                "offset": 2060,
+                "total_lines": 3266,
+                "content": "EXIF: Offset out of address range!",
+            },
+            "error": None,
+        }
+    ]
+    (run / "steps.jsonl").write_text(
+        json.dumps(step_data, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+    payload = _load_run_payload(run)
+
+    assert payload["step_summaries"][0]["observation"]
+    assert "magick/attribute.c" in payload["step_focus"][0]["outcome_label"]
+    assert payload["step_focus"][0]["outcome_label"] != "recorded"
+
+
+def test_step_interactions_pair_calls_and_separate_environment(tmp_path: Path):
+    run = _make_run(tmp_path, "paired-calls")
+    step = json.loads((run / "steps.jsonl").read_text(encoding="utf-8").strip())
+    step["actions"] = [
+        {"name": "READ", "args": {"path": "README.md"}, "action_id": "call-read"},
+        {"name": "RepoMap", "args": {"path": "."}, "action_id": "call-map"},
+    ]
+    step["tool_invocations"] = [
+        {"tool_name": "READ", "status": "success", "latency_ms": 0.5, "attempts": 1},
+        {"tool_name": "RepoMap", "status": "success", "latency_ms": 852.6, "attempts": 1},
+    ]
+    step["action_results"] = [
+        {"status": "error", "output": {"message": "File not found: README.md"}, "error": "File not found: README.md", "metadata": {"tool_name": "READ"}},
+        {"status": "success", "output": {"path": ".", "summary": "raw repo map"}, "error": None, "metadata": {"tool_name": "RepoMap"}},
+        {"status": "success", "output": {"env": {"done": False}}, "error": None, "metadata": {"source": "env"}},
+    ]
+    (run / "steps.jsonl").write_text(json.dumps(step) + "\n", encoding="utf-8")
+    events = [
+        json.loads(line)
+        for line in (run / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    events.append(
+        {
+            "step_id": 0,
+            "phase": "ACT",
+            "ok": True,
+            "payload": {
+                "stage": "observation_ready",
+                "observation": {
+                    "action_results": [
+                        {"status": "error", "output": {"message": "VISIBLE_READ_ERROR"}, "error": "VISIBLE_READ_ERROR", "metadata": {"tool_name": "READ"}},
+                        {"status": "success", "output": {"path": ".", "summary": "VISIBLE_REPO_MAP"}, "error": None, "metadata": {"tool_name": "RepoMap"}},
+                        {"status": "success", "output": {"env": {"done": False}}, "error": None, "metadata": {"source": "env"}},
+                    ]
+                },
+            },
+        }
+    )
+    (run / "events.jsonl").write_text(
+        "\n".join(json.dumps(event) for event in events) + "\n", encoding="utf-8"
+    )
+
+    interaction = _load_run_payload(run)["step_interactions"][0]
+
+    assert [call["tool_name"] for call in interaction["calls"]] == ["READ", "RepoMap"]
+    assert interaction["calls"][0]["status"] == "error"
+    assert interaction["calls"][0]["result"]["error"] == "VISIBLE_READ_ERROR"
+    assert interaction["calls"][0]["raw_result"]["error"] == "File not found: README.md"
+    assert interaction["calls"][0]["result_source"] == "model_visible"
+    assert interaction["calls"][1]["latency_ms"] == 852.6
+    assert interaction["calls"][1]["args"] == {"path": "."}
+    assert len(interaction["environment_results"]) == 1
+    assert interaction["unmatched_actions"] == []
+    assert interaction["unmatched_results"] == []
+
+
+def test_step_interactions_use_ids_and_keep_unmatched_results(tmp_path: Path):
+    run = _make_run(tmp_path, "paired-ids")
+    step = json.loads((run / "steps.jsonl").read_text(encoding="utf-8").strip())
+    step["actions"] = [
+        {"name": "submit_poc", "args": {"poc_path": "pocs/a.bin"}, "action_id": "call-a"},
+        {"name": "submit_poc", "args": {"poc_path": "pocs/b.bin"}, "action_id": "call-b"},
+    ]
+    step["tool_invocations"] = [{"latency_ms": 12}, {"latency_ms": 18}]
+    step["action_results"] = [
+        {"status": "success", "output": {"accepted": True}, "metadata": {"action_id": "call-b", "tool_name": "submit_poc"}},
+        {"status": "success", "output": {"accepted": False}, "metadata": {"action_id": "call-a", "tool_name": "submit_poc"}},
+        {"status": "success", "output": {"message": "EXTRA_RESULT"}, "metadata": {"tool_name": "submit_poc"}},
+    ]
+    (run / "steps.jsonl").write_text(json.dumps(step) + "\n", encoding="utf-8")
+
+    interaction = _load_run_payload(run)["step_interactions"][0]
+
+    assert interaction["calls"][0]["pairing_method"] == "action_id"
+    assert interaction["calls"][0]["status"] == "no_trigger"
+    assert interaction["calls"][0]["result_summary"].startswith("no_trigger")
+    assert interaction["calls"][1]["status"] == "verified"
+    assert interaction["calls"][0]["args"]["poc_path"] == "pocs/a.bin"
+    assert interaction["calls"][1]["args"]["poc_path"] == "pocs/b.bin"
+    assert len(interaction["unmatched_results"]) == 1
+
+
+def test_step_interactions_mark_missing_and_blocked_evidence(tmp_path: Path):
+    run = _make_run(tmp_path, "paired-partial")
+    step = json.loads((run / "steps.jsonl").read_text(encoding="utf-8").strip())
+    step["actions"] = [
+        {"name": "BASH", "args": {"command": "make poc"}},
+        {"name": "submit_poc", "args": {"poc_path": "pocs/a.bin"}},
+    ]
+    step["tool_invocations"] = [
+        {"tool_name": "BASH", "status": "blocked", "error": "Policy blocked command"}
+    ]
+    step["action_results"] = []
+    (run / "steps.jsonl").write_text(json.dumps(step) + "\n", encoding="utf-8")
+
+    interaction = _load_run_payload(run)["step_interactions"][0]
+
+    assert interaction["calls"][0]["status"] == "blocked"
+    assert interaction["calls"][0]["invocation"]["status"] == "blocked"
+    assert interaction["calls"][1]["invocation"] == {}
+    assert interaction["calls"][1]["pairing_method"] == "unmatched"
+    assert interaction["calls"][1]["result"] is None
+    assert [row["index"] for row in interaction["unmatched_actions"]] == [0, 1]
+
+
+def test_budgeted_cybergym_run_surfaces_verification_failure(tmp_path: Path):
+    run = _make_run(tmp_path, "cyberdiag")
+    manifest = json.loads((run / "manifest.json").read_text(encoding="utf-8"))
+    manifest["summary"]["stop_reason"] = "budget_steps"
+    manifest["summary"]["final_result"] = None
+    manifest["summary"]["task_result"] = {"success": False}
+    manifest["step_count"] = 2
+    (run / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    base_step = json.loads((run / "steps.jsonl").read_text(encoding="utf-8").strip())
+    read_error = dict(base_step)
+    read_error["step_id"] = 0
+    read_error["parser_diagnostics"] = {}
+    read_error["actions"] = [{"name": "READ", "args": {"path": "README.md"}}]
+    read_error["action_results"] = [
+        {"status": "error", "error": "File not found: README.md"}
+    ]
+    read_error["state_diff"] = {}
+
+    submit_failure = dict(base_step)
+    submit_failure["step_id"] = 5
+    submit_failure["parser_diagnostics"] = {}
+    submit_failure["actions"] = [
+        {"name": "submit_poc", "args": {"poc_path": "pocs/candidate.bin"}}
+    ]
+    submit_failure["action_results"] = [
+        {
+            "status": "error",
+            "error": "Could not connect to verification server: [Errno 61] Connection refused",
+        }
+    ]
+    submit_failure["state_diff"] = {
+        "poc_attempts": {"before": 2, "after": 3},
+        "failure_history": {
+            "before": [],
+            "after": [
+                {
+                    "failure_type": "SUBMISSION_ERROR",
+                    "summary": "SUBMISSION_ERROR",
+                    "evidence_excerpt": "Could not connect to verification server: [Errno 61] Connection refused",
+                }
+            ],
+        },
+    }
+    (run / "steps.jsonl").write_text(
+        json.dumps(read_error, ensure_ascii=False)
+        + "\n"
+        + json.dumps(submit_failure, ensure_ascii=False)
+        + "\n",
+        encoding="utf-8",
+    )
+
+    payload = _load_run_payload(run)
+
+    assert payload["insights"]["outcome"] == "needs_review"
+    assert payload["insights"]["next_inspect_step"] == 5
+    assert payload["run_focus"]["outcome"] == "needs_review"
+    assert payload["run_focus"]["next_actionable_step"] == 5
+    assert "server_connectivity" in payload["run_focus"]["primary_failure"]
+    assert payload["cybergym_focus"]["failure_category"] == "server_connectivity"
+    assert payload["cybergym_focus"]["server_connectivity_failure"] is True
+    assert payload["cybergym_focus"]["poc_attempts"] == 3
+    assert "cybergym_verification_failure" in payload["insights"]["risk_flags"]
+    assert "Connection refused" in payload["insights"]["likely_failure"]
+    assert payload["step_summaries"][1]["cybergym"]["submit_action"] is True
+    assert payload["step_focus"][1]["step_role"] == "verification_failure"
+
+
 def test_critic_timeline_section(tmp_path: Path):
     """Critic timeline section is rendered in the run detail page."""
     run = _make_run(tmp_path, "rc1")
@@ -395,6 +620,20 @@ def test_render_pages(tmp_path: Path):
     assert "qita board" in board
     assert "export raw" in view
     assert "QitOS Replay" in replay
+    assert 'data-theme="light"' in view
+    assert "qitaToggleTheme" in board
+    assert "qitaToggleTheme" in view
+    assert "qitaToggleTheme" in replay
+    assert "theme-toggle" in board
+    assert "theme-toggle" in view
+    assert "theme-toggle" in replay
+    assert "Diagnosis Strip" in view
+    assert "Primary Failure" in view
+    assert "Next Inspect" in view
+    assert "Focus Navigator" in view
+    assert "Inspector" in view
+    assert "Agent Behavior Story" in view
+    assert "Run Metadata" in view
     assert "context timeline" in view
     assert "visual timeline" in view
     assert "parser timeline" in view
@@ -415,6 +654,9 @@ def test_render_pages(tmp_path: Path):
     assert "critic retries" in view
     assert "model input images" in view
     assert "screen.png" in view
+    assert "sectionHtml('Prompt'" not in view
+    assert "sectionHtml('Memory Update'" not in view
+    assert "sectionHtml('Trace Events'" not in view
     assert "replay screenshot" in replay
     marker = '<script id="payload" type="application/json">'
     start = view.index(marker) + len(marker)
@@ -423,6 +665,94 @@ def test_render_pages(tmp_path: Path):
     assert '"run_id": "r2"' in payload_block
     assert '"finish_reason": "stop"' in payload_block
     assert "&quot;" not in payload_block
+
+
+def test_run_page_preserves_long_content_in_expandable_details(tmp_path: Path):
+    run = _make_run(tmp_path, "long1")
+    long_thought = "LONG_THOUGHT_START " + ("reasoning detail " * 80) + " LONG_THOUGHT_END"
+    long_raw = "Thought: " + long_thought + "\nAction: inspect"
+    long_terminal = "LONG_TERMINAL_START\n" + ("terminal line\n" * 120) + "LONG_TERMINAL_END"
+    long_observation = {
+        "title": "long observation",
+        "content": "LONG_OBSERVATION_START " + ("observation detail " * 90) + " LONG_OBSERVATION_END",
+    }
+    event_lines = [
+        json.loads(line)
+        for line in (run / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    event_lines[-1]["payload"]["raw_output"] = long_raw
+    event_lines[-1]["payload"]["model_response"]["text"] = long_raw
+    (run / "events.jsonl").write_text(
+        "\n".join(json.dumps(line, ensure_ascii=False) for line in event_lines) + "\n",
+        encoding="utf-8",
+    )
+    step_data = json.loads((run / "steps.jsonl").read_text(encoding="utf-8").strip())
+    step_data["decision"] = {"rationale": long_thought}
+    step_data["actions"] = [
+        {
+            "name": "inspect",
+            "args": {
+                "prompt": "LONG_ACTION_PROMPT_START " + ("prompt detail " * 70) + " LONG_ACTION_PROMPT_END"
+            },
+        },
+        {
+            "name": "submit_candidate",
+            "args": {
+                "path": "pocs/candidate.bin",
+                "note": "LONG_SECOND_ACTION_START " + ("second action detail " * 50) + " LONG_SECOND_ACTION_END",
+            },
+        },
+    ]
+    step_data["action_results"] = [
+        {
+            "status": "error",
+            "output": {"terminal": {"output": "New Terminal Output:\n" + long_terminal}},
+            "error": "terminal command failed after complete output",
+        },
+        {"status": "success", "output": long_observation},
+    ]
+    step_data["critic_outputs"] = [
+        {"action": "retry", "reason": "LONG_CRITIC_START " + ("critic reason " * 60) + " LONG_CRITIC_END"}
+    ]
+    (run / "steps.jsonl").write_text(
+        json.dumps(step_data, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+    payload = _load_run_payload(run)
+    view = _render_run_html(payload, embedded=False)
+    interaction = payload["step_interactions"][0]
+
+    assert len(interaction["calls"]) == 2
+    assert interaction["calls"][0]["status"] == "error"
+    assert interaction["calls"][1]["status"] == "success"
+    assert "LONG_TERMINAL_END" in json.dumps(interaction, ensure_ascii=False)
+    assert "LONG_OBSERVATION_END" in json.dumps(interaction, ensure_ascii=False)
+    assert "Action Calls" in view
+    assert "Environment Observation" in view
+    assert "Complete parameters" in view
+    assert "Agent-visible result · observation_ready.action_results" in view
+    assert "Recorded result fallback · step.action_results" in view
+    assert "Canonical raw result" in view
+    assert "function selectCall" in view
+    assert "const open = isAbnormalCall(call)" in view
+    assert "renderOutcomeBlock" not in view
+    assert "full observation" in view
+    assert "full critic output" in view
+    assert 'class="evidence-code"' in view
+    assert "white-space:pre-wrap" in view
+    assert "Agent-visible input · prepared_full" in view
+    assert "Recorded step observation fallback" in view
+    assert "Agent-visible input at Step" not in view
+    assert "nextModelInputOutcome" not in view
+    assert "firstLine(outcome, 260)" not in view
+    assert "LONG_THOUGHT_END" in view
+    assert "LONG_TERMINAL_END" in view
+    assert "LONG_OBSERVATION_END" in view
+    assert "LONG_ACTION_PROMPT_END" in view
+    assert "LONG_SECOND_ACTION_END" in view
+    assert "LONG_CRITIC_END" in view
 
 
 def test_handler_routes(tmp_path: Path):
@@ -658,6 +988,9 @@ def test_board_trend_chart_section():
     assert '<option value="steps">steps</option>' in html
     assert '<option value="runtime">runtime (s)</option>' in html
     assert '<option value="cost">cost ($)</option>' in html
+    assert "Failure Cause" in html
+    assert "Next Inspect Step" in html
+    assert "riskChip" in html
 
 
 def test_screenshot_strip_in_run_page(tmp_path: Path):

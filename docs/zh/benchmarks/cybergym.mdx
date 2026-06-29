@@ -171,11 +171,28 @@ python scripts/verify_batch_results.py \
 qita board --logdir runs/cybergym/traces
 ```
 
+批量脚本 `scripts/run_cybergym_batch.py` 会把每个任务的 trace 写到
+`<out-root>/traces/<run_id>/`，因此 `qita board --logdir` 应该指向
+`<out-root>/traces`，而不是 JSONL 结果文件或 batch 根目录。如果你直接运行 QitOS
+同级目录里的 `../cybergym_agent` 本地入口，它也可能把 trace 写到
+`../cybergym_agent/runs/<run_id>/`；这种情况下把 `--logdir` 指向
+`../cybergym_agent/runs` 即可。
+
 QitOS 追踪记录会写出：
 
 - `manifest.json`
 - `events.jsonl`
 - `steps.jsonl`
+
+qita 会按这三份标准文件派生运行诊断。对于 CyberGym PoC 轨迹，详情页默认进入失败诊断视图：
+
+- `budget_steps`、`budget_time` 会显示为需要复盘，而不是成功。
+- `submit_poc`、`verification_history`、`failure_history` 会生成 PoC attempt ladder。
+- `no_trigger`、`submission_error`、`connection refused`、server connectivity 失败会显示为不同 failure category。
+- Focus Navigator 默认只列关键步骤、提交步骤、错误步骤与阶段变化；完整 step、prompt metadata、trace events、raw JSON 仍可在 Inspector 中展开。
+- 每步按照 `Input -> Thought -> Action Calls -> Environment Observation` 展示。Input 优先读取 `model_input.prepared_full`；每个 Action Call 以 `action_id` 或 Engine 原始顺序配对自己的完整参数、状态、耗时和 model-visible `observation_ready.action_results`，canonical `step.action_results` 留在 Inspector Raw 中。
+- 多个同名 `submit_poc` 仍以序号区分并分别对应各自 PoC path 与验证结果；环境专属 result 单独展示，无法可靠配对的 action/result 明确进入 Unmatched evidence，不会猜测关系。
+- 异常调用默认展开，成功调用、Input 和 Environment Observation 默认折叠。参数、terminal output、observation 与 raw JSON 全部自动折行、可复制并保留完整正文，不做不可恢复的截断。
 
 ## 当前状态
 
