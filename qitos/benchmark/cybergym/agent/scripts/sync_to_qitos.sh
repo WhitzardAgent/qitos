@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-QITOS_ROOT="${QITOS_ROOT:-/data/pxd-team/workspace-149/zwq/qitos-cybergym}"
+QITOS_ROOT="${QITOS_ROOT:-$ROOT_DIR/qitos}"
 DEST_DIR="${DEST_DIR:-$QITOS_ROOT/qitos/benchmark/cybergym/agent}"
 
 if [[ ! -d "$QITOS_ROOT" ]]; then
@@ -18,6 +18,7 @@ rsync -a \
   --exclude '.pytest_cache' \
   --exclude '__pycache__' \
   --exclude '.cybergym' \
+  --exclude 'qitos' \
   --exclude 'docs' \
   --exclude 'tests' \
   "$ROOT_DIR"/ \

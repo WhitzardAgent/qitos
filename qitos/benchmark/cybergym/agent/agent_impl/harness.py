@@ -2,15 +2,83 @@
 
 from __future__ import annotations
 
+import os
+import re as _re
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, List, Optional
 
 if TYPE_CHECKING:
     from ..state import CyberGymState, InputFormatModel
 
 
+# Mapping from fuzzer binary name patterns to (format_type, magic_bytes).
+# Covers the most common oss-fuzz naming conventions.
+_FUZZER_NAME_FORMAT_MAP: List[tuple] = [
+    (r'(?i)(?:coder_|codec_)?(?:jpg|jpeg)[_]fuzzer', "jpeg", "FF D8 FF"),
+    (r'(?i)(?:coder_|codec_)?png[_]fuzzer', "png", "89 50 4E 47"),
+    (r'(?i)(?:coder_|codec_)?gif[_]fuzzer', "gif", "47 49 46 38"),
+    (r'(?i)(?:coder_|codec_)?bmp[_]fuzzer', "bmp", "42 4D"),
+    (r'(?i)(?:coder_|codec_)?pdf[_]fuzzer', "pdf", "25 50 44 46"),
+    (r'(?i)(?:coder_|codec_)?(?:wav|audio)[_]fuzzer', "wav", "52 49 46 46"),
+    (r'(?i)(?:coder_|codec_)?(?:sfnt|font|ttf|otf)[_]fuzzer', "font", "00 01 00 00"),
+    (r'(?i)(?:coder_|codec_)?(?:zip|archive)[_]fuzzer', "zip", "50 4B 03 04"),
+    (r'(?i)(?:coder_|codec_)?pcap[_]fuzzer', "pcap", "D4 C3 B2 A1"),
+    (r'(?i)(?:coder_|codec_)?(?:heic|heif)[_]fuzzer', "heic", ""),
+    (r'(?i)(?:coder_|codec_)?webp[_]fuzzer', "webp", "52 49 46 46"),
+    (r'(?i)(?:coder_|codec_)?(?:avi|mkv|mp4|video)[_]fuzzer', "video", ""),
+    (r'(?i)(?:coder_|codec_)?xml[_]fuzzer', "xml", ""),
+    (r'(?i)(?:coder_|codec_)?elf[_]fuzzer', "elf", "7F 45 4C 46"),
+]
+
+
 class HarnessMixin:
     """Static methods for detecting PoC strategy, input format, and corpus usage."""
+
+    @staticmethod
+    def _discover_fuzzer_target(repo_dir: str) -> str:
+        """Scan repo build scripts for fuzzer binary target names.
+
+        Searches oss-fuzz build scripts, Makefiles, and CMakeLists for
+        fuzzer binary names like 'coder_JPG_fuzzer', 'png_fuzzer', etc.
+        Returns the first matching fuzzer name, or empty string.
+        """
+        if not repo_dir or not os.path.isdir(repo_dir):
+            return ""
+        repo_path = Path(repo_dir)
+
+        # Files most likely to contain fuzzer target names
+        search_files: List[Path] = []
+        for pattern in [
+            "**/oss-fuzz-build.sh", "**/*build*.sh", "**/Makefile*",
+            "**/CMakeLists.txt", "**/fuzzing/*.cc", "**/fuzzing/*.cpp",
+        ]:
+            try:
+                search_files.extend(repo_path.glob(pattern))
+            except (OSError, ValueError):
+                continue
+
+        # Limit search to first 10 files to bound I/O
+        fuzzer_names: List[str] = []
+        for fpath in search_files[:10]:
+            try:
+                content = fpath.read_text(errors="replace")[:10000]
+            except (OSError, ValueError):
+                continue
+            # Match fuzzer binary names: word_fuzzer patterns
+            for m in _re.finditer(r'(\w{3,}_fuzzer)\b', content):
+                name = m.group(1)
+                if name not in fuzzer_names:
+                    fuzzer_names.append(name)
+            if len(fuzzer_names) >= 10:
+                break
+
+        # Return the first name that matches a known format pattern
+        for name in fuzzer_names:
+            for pattern, fmt_type, magic in _FUZZER_NAME_FORMAT_MAP:
+                if _re.search(pattern, name):
+                    return name
+        # Return the first generic fuzzer name if no format match
+        return fuzzer_names[0] if fuzzer_names else ""
 
     @staticmethod
     def _detect_poc_strategy(state: CyberGymState) -> str:
@@ -83,6 +151,21 @@ class HarnessMixin:
             if any(kw in desc_lower for kw in keywords):
                 fmt.format_type = fmt_type
                 break
+
+        # Detect format from fuzzer binary name (stronger signal than description)
+        # The fuzzer name is extracted from repo build scripts during state_init
+        fuzzer_target = str(
+            state.metadata.get("fuzzer_target", "")
+            if hasattr(state, "metadata") else ""
+        )
+        if fuzzer_target:
+            for pattern, fmt_type, magic in _FUZZER_NAME_FORMAT_MAP:
+                if _re.search(pattern, fuzzer_target):
+                    fmt.format_type = fmt_type
+                    if magic:
+                        fmt.magic_bytes = magic
+                    fmt.mutation_strategy = "corpus_mutate"
+                    break
 
         # Detect input path from harness_info
         harness_lower = str(state.harness_info or "").lower()

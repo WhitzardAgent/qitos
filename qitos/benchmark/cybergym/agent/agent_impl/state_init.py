@@ -116,6 +116,16 @@ class StateInitMixin:
                 state.metadata["repo_sample_count"] = len(repo_samples)
 
         self._ensure_family_bootstrap(state)
+
+        # Discover fuzzer target name from build scripts (used by format detection)
+        if state.repo_dir and os.path.isdir(state.repo_dir):
+            try:
+                fuzzer_target = self._discover_fuzzer_target(state.repo_dir)
+                if fuzzer_target:
+                    state.metadata["fuzzer_target"] = fuzzer_target
+            except Exception:
+                pass
+
         state.poc_strategy = self._detect_poc_strategy(state)
         state.input_format = self._build_input_format_model(state)
 

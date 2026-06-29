@@ -16,8 +16,116 @@ from .constants import (
     POC_OUTPUT_DIR,
     CANDIDATE_REQUIRED_REMINDER_TEXT,
 )
-from .utils import clip as _clip
 from .validation import ValidationMixin
+
+
+def _gate_to_instruction(gate) -> str:
+    """Convert a ChainGate into a natural language PoC instruction.
+
+    Uses the gate's internal type only for routing to the right
+    instruction template — the LLM never sees the type label.
+    """
+    desc = str(gate.description or "")
+    cond = str(gate.required_condition or "")
+
+    if gate.gate_type == "format_gate":
+        if cond:
+            return f"Input must satisfy: {cond}"
+        return desc
+
+    if gate.gate_type == "bounds_gate":
+        if cond:
+            return f"Set field values so that: {cond}"
+        return desc
+
+    if gate.gate_type == "dispatch_gate":
+        if cond:
+            return f"Route input through: {cond}"
+        return desc
+
+    if gate.gate_type == "path_gate":
+        if cond:
+            return f"Satisfy branch condition: {cond}"
+        return desc
+
+    if gate.gate_type == "value_gate":
+        if cond:
+            return f"Set specific value: {cond}"
+        return desc
+
+    return desc if desc else cond
+
+
+def _build_blueprint(state, confirmed_gates, _re) -> List[str]:
+    """Build a byte-level PoC layout from gate conditions + attempt history.
+
+    Parses hex byte sequences from format_gate required_conditions and
+    lays them out in an offset table. Falls back to field_specs when
+    no concrete hex bytes are available.
+    """
+    lines: List[str] = []
+
+    hex_specs = []   # (hex_string, purpose)
+    field_specs = []  # (description, condition_text)
+
+    for g in confirmed_gates:
+        cond = str(g.required_condition or "")
+        desc = str(g.description or "")
+
+        if g.gate_type == "format_gate":
+            # Pattern 1: space-separated hex bytes without 0x prefix
+            # e.g., "Profile data starts with 45 78 69 66 00 00"
+            m = _re.search(r'([0-9A-Fa-f]{2}(?:\s+[0-9A-Fa-f]{2})+)', cond)
+            if m:
+                hex_specs.append((m.group(1), desc))
+            # Pattern 2: 0x-prefixed hex bytes
+            elif _re.search(r'0x[0-9A-Fa-f]{2}', cond):
+                hex_bytes = _re.findall(r'0x([0-9A-Fa-f]{2})', cond)
+                if hex_bytes:
+                    hex_specs.append((" ".join(hex_bytes), desc))
+
+        elif g.gate_type in ("bounds_gate", "value_gate", "path_gate", "dispatch_gate"):
+            if cond:
+                field_specs.append((desc, cond))
+
+    if not hex_specs and not field_specs:
+        return lines
+
+    lines.append("```")
+    lines.append("Offset   Bytes              Purpose")
+    lines.append("------   -----              -------")
+
+    offset = 0
+    for hex_str, purpose in hex_specs:
+        byte_count = len(hex_str.split())
+        short_purpose = purpose.split(".")[0] if purpose else ""
+        lines.append(f"0x{offset:04X}   {hex_str:<19s}{short_purpose}")
+        offset += byte_count
+
+    if field_specs:
+        if hex_specs:
+            lines.append("------   Fixed bytes above; variable fields below ------")
+        for desc, cond in field_specs:
+            short_desc = desc.split(".")[0] if desc else "Field constraint"
+            lines.append(f"         {short_desc}")
+            lines.append(f"           Condition: {cond}")
+
+    lines.append("```")
+
+    # Exploit status from attempt history
+    if state.vul_crashed():
+        crash_info = []
+        if state.crash_type:
+            crash_info.append(state.crash_type)
+        if state.crash_location:
+            crash_info.append(f"at {state.crash_location}")
+        if crash_info:
+            lines.append(f"Working trigger: {', '.join(crash_info)}")
+        hyp = str(state.current_hypothesis or "").strip()
+        if hyp and "VUL-ONLY" in hyp:
+            lines.append("Next step: reduce overflow to minimal bytes for precision")
+
+    return lines
 
 
 class ObservationMixin:
@@ -38,18 +146,18 @@ class ObservationMixin:
                 return f"- submit_poc: result=submitted vul_exit={vul_exit}"
             if name.upper() == "BASH":
                 rc = output.get("returncode")
-                command = _clip(str(output.get("command") or ""), 140)
+                command = str(output.get("command") or "")
                 return f"- BASH: rc={rc} {command}".rstrip()
             if name in ("FindSymbols", "CALLSITE_SEARCH"):
                 query = str(output.get("query") or output.get("symbol") or "")
                 count = output.get("result_count") or output.get("callsite_count") or 0
                 results = output.get("results", [])
                 preview_lines = []
-                for r in results[:4]:
+                for r in results:
                     kind = str(r.get("kind", ""))
                     path_r = str(r.get("path", ""))
                     ln = r.get("line_number", "")
-                    sig = str(r.get("signature") or r.get("preview", ""))[:60]
+                    sig = str(r.get("signature") or r.get("preview", ""))
                     preview_lines.append(f"{kind}:{path_r}:{ln} {sig}")
                 preview = " | ".join(preview_lines)
                 return f"- {name}: query={query} count={count} top=[{preview}]"
@@ -70,7 +178,7 @@ class ObservationMixin:
                 mode = str(output.get("mode") or "")
                 count = output.get("match_count") or output.get("file_count") or 0
                 if mode == "files_with_matches":
-                    filenames = output.get("filenames", [])[:5]
+                    filenames = output.get("filenames", [])
                     files_preview = ", ".join(filenames)
                     return f"- GREP: pattern={pattern} mode=files count={count} files=[{files_preview}]"
                 else:
@@ -90,7 +198,7 @@ class ObservationMixin:
             if path:
                 return f"- {name}: {path}"
         if output:
-            return f"- {name}: {_clip(str(output), 160)}"
+            return f"- {name}: {str(output)}"
         return ""
 
     def _task_spec_summary_lines(self, state: CyberGymState) -> List[str]:
@@ -98,9 +206,9 @@ class ObservationMixin:
         if state.expected_signal and state.expected_signal != "unknown":
             lines.append(f"- Expected Signal: `{state.expected_signal}`")
         if state.input_vector_hints:
-            lines.append(f"- Input Hints: {', '.join(state.input_vector_hints[:4])}")
+            lines.append(f"- Input Hints: {', '.join(state.input_vector_hints)}")
         if state.likely_entrypoints:
-            lines.append(f"- Likely Entrypoints: {', '.join(state.likely_entrypoints[:4])}")
+            lines.append(f"- Likely Entrypoints: {', '.join(state.likely_entrypoints)}")
         if state.task_spec_confidence and state.task_spec_confidence < 0.5:
             lines.append(f"- Task-Spec Confidence: {state.task_spec_confidence:.2f}")
         return lines
@@ -139,14 +247,14 @@ class ObservationMixin:
             if state.repo_dir:
                 context_lines.append(f"- Source Root: `{self._display_path(state.repo_dir, state=state)}`")
             if state.corpus_files:
-                context_lines.append(f"- Corpus: {', '.join(state.corpus_files[:5])}")
+                context_lines.append(f"- Corpus: {', '.join(state.corpus_files)}")
         if state.harness_entry_confirmed or state.metadata.get("harness_entry_confirmed"):
             context_lines.append("- Harness entry: **confirmed** (LLVMFuzzerTestOneInput found in source)")
         if context_lines:
             sections.extend(["## Task Context", *context_lines])
         patch_diff = (state.patch_diff or str(state.metadata.get("patch_diff", "") or "")).strip()
         if patch_diff:
-            sections.extend(["## Patch Diff", self._clip(patch_diff, 2000)])
+            sections.extend(["## Patch Diff", patch_diff])
         task_spec_lines = self._task_spec_summary_lines(state)
         if task_spec_lines:
             sections.extend(["## Task Spec", *task_spec_lines])
@@ -329,9 +437,8 @@ class ObservationMixin:
     def _working_memory_lines(self, state: CyberGymState) -> List[str]:
         lines: List[str] = []
         # Code facts (from READ hits on parser/field/seed paths)
-        # P22: raised cap from 6 to 12 — early facts (harness entry, data
-        # structure layouts) are critical and were being evicted too eagerly.
-        code_facts = list(state.durable_code_facts or [])[:12]
+        # No truncation — first entry into LLM context must be complete.
+        code_facts = list(state.durable_code_facts or [])
         if code_facts:
             lines.append("### Code Facts")
             for fact in code_facts:
@@ -342,8 +449,8 @@ class ObservationMixin:
                 else:
                     lines.append(f"- {fact}")
         # Feedback facts (from submit results)
-        # P22: raised cap from 6 to 10
-        fb_facts = list(state.durable_feedback_facts or [])[:10]
+        # No truncation — first entry into LLM context must be complete.
+        fb_facts = list(state.durable_feedback_facts or [])
         if fb_facts:
             lines.append("### Feedback Facts")
             for fact in fb_facts:
@@ -357,7 +464,7 @@ class ObservationMixin:
         # Read coverage — which files have been read
         if state.read_coverage:
             cov_lines = ["### Read Coverage"]
-            for path, ranges in list(state.read_coverage.items())[:6]:
+            for path, ranges in list(state.read_coverage.items()):
                 range_str = ", ".join(f"L{a}-{b}" for a, b in ranges[-3:])
                 cov_lines.append(f"- `{path}`: {range_str}")
             lines.extend(cov_lines)
@@ -392,7 +499,7 @@ class ObservationMixin:
         lines: List[str] = []
         repo_summary = str(memory.get("repo_summary") or "").strip()
         if repo_summary:
-            lines.append(f"- Repo Summary: {self._clip(repo_summary, 260)}")
+            lines.append(f"- Repo Summary: {repo_summary}")
         for label, key in (
             ("Parser Paths", "parser_paths"),
             ("Seed Paths", "seed_paths"),
@@ -400,24 +507,21 @@ class ObservationMixin:
         ):
             values = [str(item).strip() for item in list(memory.get(key) or []) if str(item).strip()]
             if values:
-                rendered = ", ".join(f"`{value}`" for value in values[:4])
+                rendered = ", ".join(f"`{value}`" for value in values)
                 lines.append(f"- {label}: {rendered}")
         return lines
 
     @staticmethod
     def _constraint_board_lines(state: CyberGymState) -> List[str]:
-        """Render the ordered call chain with all gates — full detail for LLM reasoning.
+        """Render vulnerability context as a PoC Construction Blueprint.
 
-        This is the single source of truth for chain/gate information.
-        Every gate (confirmed, inferred, refuted, bypassed) is shown with
-        its full description, required_condition, evidence, and repair_hint.
-        No truncation — the LLM needs complete information to reason about
-        PoC construction.
-
+        Three narrative sections that read like a security researcher's notes,
+        using natural language instead of internal gate-type taxonomy.
         Falls back to legacy path_constraints when no chain data exists.
         """
+        import re as _re
         lines: List[str] = []
-        # P25: show last 6 harness signals (was 4)
+        # Harness signals (kept as-is, already natural language)
         signals = list(getattr(state, "harness_signals", []) or [])[-6:]
         if signals:
             rendered = []
@@ -436,74 +540,118 @@ class ObservationMixin:
         gates = list(getattr(state, "call_chain_gates", []) or [])
 
         if nodes or gates:
-            # Summary counts
             confirmed_g = [g for g in gates if g.status == "confirmed"]
             open_g = [g for g in gates if g.status in ("inferred", "unknown")]
             refuted_g = [g for g in gates if g.status == "refuted"]
-            bypassed_g = [g for g in gates if g.status == "bypassed"]
-            lines.append(
-                f"- Chain Gates: {len(confirmed_g)} confirmed / "
-                f"{len(open_g)} open / {len(refuted_g)} refuted / "
-                f"{len(bypassed_g)} bypassed"
-            )
 
-            # Render chain nodes — ordered by position, full detail
+            # ── Section 1: Vulnerability Summary ──
             if nodes:
                 sorted_nodes = sorted(nodes, key=lambda n: n.order)
+                chain_names = " → ".join(n.function for n in sorted_nodes)
+                lines.append("## Vulnerability")
+                sink = next(
+                    (n for n in sorted_nodes if n.role == "sink"),
+                    sorted_nodes[-1],
+                )
+                if sink.description:
+                    lines.append(sink.description)
+                lines.append(f"Call path: {chain_names}")
                 lines.append("")
+
+            # ── Section 2: PoC Requirements ──
+            if confirmed_g:
+                lines.append("## PoC Requirements")
+                for g in confirmed_g:
+                    lines.append(f"- {_gate_to_instruction(g)}")
+                lines.append("")
+
+            # ── Section 3: PoC Byte Layout ──
+            blueprint = _build_blueprint(state, confirmed_g, _re)
+            if blueprint:
+                lines.append("## PoC Byte Layout")
+                lines.extend(blueprint)
+                lines.append("")
+
+            # ── Section 4: Failed Approaches ──
+            if refuted_g:
+                lines.append("## Failed Approaches")
+                for g in refuted_g[-5:]:
+                    desc = g.description
+                    if g.repair_hint:
+                        desc += f" → {g.repair_hint}"
+                    lines.append(f"- {desc}")
+                lines.append("")
+
+            # ── Section 5: Constraint Coverage ──
+            if nodes:
+                sorted_nodes = sorted(nodes, key=lambda n: n.order)
+                uncovered = []
+                coverage_lines = []
                 for node in sorted_nodes:
-                    status_badge = node.status
-                    lines.append(
-                        f"- [{node.order}] {node.role:8s} [{status_badge}] "
-                        f"{node.function} @ {node.location}"
-                    )
-                    if node.description and node.description != f"Function {node.function} in {node.location}":
-                        lines.append(f"  {node.description}")
-                    if node.evidence:
-                        lines.append(f"  evidence: {node.evidence}")
+                    node_gates = [g for g in gates if g.node_order == node.order]
+                    confirmed_count = sum(1 for g in node_gates if g.status == "confirmed")
+                    total_count = len(node_gates)
+                    loc_short = node.location.split("/")[-1] if "/" in node.location else node.location
+                    if confirmed_count > 0:
+                        coverage_lines.append(
+                            f"  [{node.role}] {node.function} @ {loc_short} — "
+                            f"{confirmed_count}/{total_count} gate(s) confirmed"
+                        )
+                    elif total_count > 0:
+                        coverage_lines.append(
+                            f"  [{node.role}] {node.function} @ {loc_short} — "
+                            f"0/{total_count} gate(s) confirmed (all inferred)"
+                        )
+                        uncovered.append(node)
+                    else:
+                        coverage_lines.append(
+                            f"  [{node.role}] {node.function} @ {loc_short} — "
+                            f"NO gates discovered"
+                        )
+                        uncovered.append(node)
 
-            # Render ALL gates grouped by status — full detail, no truncation
-            if gates:
-                # Confirmed gates — the conditions the PoC MUST satisfy
-                if confirmed_g:
+                if coverage_lines:
+                    lines.append("## Constraint Coverage")
+                    lines.extend(coverage_lines)
+                    if uncovered:
+                        names = [n.function for n in uncovered[:3]]
+                        lines.append(
+                            f"WARNING: Nodes with no confirmed constraints: {', '.join(names)}. "
+                            "READ their code to discover hidden conditions before constructing PoC."
+                        )
                     lines.append("")
-                    lines.append("- Confirmed Gates (PoC must satisfy ALL):")
-                    for g in confirmed_g:
-                        lines.append(f"  [{g.gate_type}] {g.description}")
-                        if g.required_condition:
-                            lines.append(f"    required: {g.required_condition}")
-                        if g.evidence:
-                            lines.append(f"    evidence: {g.evidence}")
 
-                # Refuted gates — learning from failures
-                if refuted_g:
-                    lines.append("")
-                    lines.append("- Refuted Gates (these approaches FAILED):")
-                    for g in refuted_g:
-                        lines.append(f"  [{g.gate_type}] {g.description}")
-                        if g.repair_hint:
-                            lines.append(f"    repair: {g.repair_hint}")
-                        if g.evidence:
-                            lines.append(f"    evidence: {g.evidence}")
+            # ── Section 6: Suggested Constraints (auto-extracted, LLM judges) ──
+            suggestions = list(getattr(state, "suggested_constraints", []) or [])
+            if suggestions:
+                lines.append("## Suggested Constraints")
+                lines.append(
+                    "These conditions were auto-detected from code but may include "
+                    "false positives. Judge each one: if it is a real constraint on "
+                    "the path from input to the vulnerability, use record_gate to confirm it."
+                )
+                for s in suggestions[-8:]:
+                    gtype = s.get("gate_type", "unknown")
+                    desc = s.get("description", "")
+                    cond = s.get("required_condition", "")
+                    # Show gate type as natural language label
+                    type_label = {
+                        "bounds_gate": "BOUNDS",
+                        "dispatch_gate": "DISPATCH",
+                        "path_gate": "GUARD",
+                    }.get(gtype, gtype)
+                    lines.append(f"- [{type_label}] {desc}")
+                    if cond:
+                        lines.append(f"  Condition: {cond}")
+                lines.append("")
 
-                # Open gates — what still needs confirmation
-                if open_g:
-                    lines.append("")
-                    lines.append("- Open Gates (need confirmation before PoC construction):")
-                    for g in open_g:
-                        lines.append(f"  [{g.status}/{g.gate_type}] {g.description}")
-                        if g.required_condition:
-                            lines.append(f"    required: {g.required_condition}")
-                        if g.evidence:
-                            lines.append(f"    evidence: {g.evidence}")
-
-                # First blocker
-                if open_g:
-                    first = open_g[0]
-                    blocker_line = f"- FIRST BLOCKER: {first.description}"
-                    if first.required_condition:
-                        blocker_line += f" — must satisfy: {first.required_condition}"
-                    lines.append(blocker_line)
+            # ── Section 7: Unresolved Questions ──
+            if open_g:
+                lines.append("## Unresolved Questions")
+                for g in open_g:
+                    lines.append(f"- {g.description}")
+                    if g.required_condition:
+                        lines.append(f"  Need to confirm: {g.required_condition}")
         else:
             # Fallback: legacy path_constraints
             constraints = list(getattr(state, "path_constraints", []) or [])
@@ -556,7 +704,7 @@ class ObservationMixin:
         if ready_paths:
             if self._candidate_ready_file_missing(state):
                 missing = self._missing_ready_poc_paths(state)
-                return f"Regenerate missing ready PoC file(s): {', '.join(missing[:3])}."
+                return f"Regenerate missing ready PoC file(s): {', '.join(missing)}."
             if len(ready_paths) <= 1:
                 return f"Submit the complete ready PoC list now: `{ready_paths[0]}`."
             return f"Submit the complete ready PoC list now ({len(ready_paths)} paths)."
@@ -600,11 +748,11 @@ class ObservationMixin:
         latest_reflection = ""
         if reflections:
             latest = reflections[-1]
-            summary = _clip(str(latest.get("summary") or ""), 150)
-            next_step = _clip(str(latest.get("next_step") or ""), 130)
+            summary = str(latest.get("summary") or "")
+            next_step = str(latest.get("next_step") or "")
             latest_reflection = f"{summary} Next: {next_step}".strip()
         elif state.reflection_note:
-            latest_reflection = _clip(str(state.reflection_note or ""), 260)
+            latest_reflection = str(state.reflection_note or "")
 
         if not attempts and not latest_reflection:
             return []
@@ -630,25 +778,25 @@ class ObservationMixin:
         for family, record in list(grouped.items())[-4:]:
             # P23: increased truncation limits so diagnostic details that
             # distinguish one failure from another survive the render.
-            result = _clip(record["result"], 150)
-            feedback = _clip(record["feedback"], 200)
-            next_hypothesis = _clip(record["next"], 200)
+            result = record["result"]
+            feedback = record["feedback"]
+            next_hypothesis = record["next"]
             suffix = f"; feedback={feedback}" if feedback else ""
             if next_hypothesis:
                 suffix += f"; next={next_hypothesis}"
             lines.append(f"- Tried `{family}` {record['count']}x: {result}{suffix}")
 
         if latest_reflection:
-            lines.append(f"- Latest reflection: {_clip(latest_reflection, 260)}")
+            lines.append(f"- Latest reflection: {latest_reflection}")
         lines.append(f"- Full ledger: `{(PROJECT_ARTIFACT_ROOT / 'strategy' / 'LEDGER.md').as_posix()}`")
-        return lines[:8]
+        return lines
 
     @staticmethod
     def _task_bootstrap_line(state: CyberGymState) -> str:
         task = str(state.task or "").strip().replace("\n", " ")
         if not task:
             return ""
-        return _clip(task, 320)
+        return task
 
     @staticmethod
     def _is_default_task_objective(task: str) -> bool:
@@ -828,7 +976,7 @@ class ObservationMixin:
                     "- NOTE hypothesis"
                     f" family={str(item.get('strategy_family') or '?')}"
                     f" target={str(item.get('target_surface') or '?')}"
-                    f" reason={_clip(str(item.get('reason') or ''), 100)}"
+                    f" reason={str(item.get('reason') or '')}"
                 )
             elif note_type == "submission":
                 lines.append(
@@ -836,12 +984,12 @@ class ObservationMixin:
                     f" family={str(item.get('strategy_family') or '?')}"
                     f" path={str(item.get('poc_path') or '?')}"
                     f" result={str(item.get('observed_result') or '?')}"
-                    f" feedback={_clip(str(item.get('stable_feedback') or ''), 80)}"
+                    f" feedback={str(item.get('stable_feedback') or '')}"
                 )
             elif note_type == "reflection":
                 lines.append(
                     "- NOTE reflection "
-                    + _clip(str(item.get("summary") or ""), 120)
+                    + str(item.get("summary") or "")
                 )
         return lines
 

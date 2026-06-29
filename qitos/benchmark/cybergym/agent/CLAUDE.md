@@ -7,6 +7,32 @@ The active runtime is QitOS, but benchmark runs import the synced bundled copy:
 /data/pxd-team/workspace-149/zwq/qitos-cybergym/qitos/benchmark/cybergym/agent
 ```
 
+## Vendored QitOS Dependency
+
+The `qitos/` directory contains a vendored copy of the QitOS framework
+(`github.com/WhitzardAgent/qitos`, branch `qitos_cybergym`). It is NOT a git
+submodule — the source is committed directly into this repo.
+
+Setup:
+
+```bash
+pip install -e ./qitos
+```
+
+To update the vendored copy from the upstream qitos repo:
+
+```bash
+rsync -a --exclude '.git' --exclude 'qitos_zoo' --exclude '__pycache__' \
+  --exclude '*.egg-info' --exclude '*.pyc' --exclude 'runs' \
+  /path/to/upstream/qitos/ ./qitos/
+```
+
+To sync the agent source into the bundled copy inside qitos for deployment:
+
+```bash
+bash scripts/sync_to_qitos.sh
+```
+
 ## Current Architecture
 
 The active class is `CyberGymAgent` in `agent.py`.
@@ -62,8 +88,7 @@ runtime evidence store, not source documentation.
 After source changes:
 
 ```bash
-PYTHONPATH=/data/pxd-team/workspace-149/zwq/qitos-cybergym \
-  python3 -m pytest tests -q
+python3 -m pytest tests -q
 
 bash scripts/sync_to_qitos.sh
 ```
@@ -71,9 +96,7 @@ bash scripts/sync_to_qitos.sh
 If the change affects import/runtime behavior, also verify the bundled copy:
 
 ```bash
-cd /data/pxd-team/workspace-149/zwq/qitos-cybergym
-PYTHONPATH=/data/pxd-team/workspace-149/zwq/qitos-cybergym \
-  python3 -m py_compile qitos/benchmark/cybergym/agent/agent.py
+python3 -m py_compile qitos/qitos/benchmark/cybergym/agent/agent.py
 ```
 
 ## Current Design Biases

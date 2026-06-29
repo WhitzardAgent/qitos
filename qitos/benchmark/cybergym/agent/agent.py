@@ -80,7 +80,6 @@ from .agent_impl.constants import (
     DELEGATE_EXPLORATION_REPORT_SEEN_KEY, DELEGATE_TOOL_AGENT_NAMES,
 )
 from .agent_impl.utils import (
-    clip as _clip,
     sanitize_model_text as _sanitize_model_text,
 )
 from .agent_impl.phase import cybergym_phase_engine, phase_local_steps
@@ -268,7 +267,7 @@ class CyberGymAgent(StateInitMixin, TaskAnalysisMixin, RepoAnalysisMixin, CrashP
         hot_feedback_sig = self._hot_feedback_signature(state)
         budget_forced = self._read_budget_exhausted(state)
         poc_sig = "|".join(self._ready_poc_paths(state))
-        reflection_sig = self._clip(str(state.reflection_note or ""), 260)
+        reflection_sig = str(state.reflection_note or "")
         attempt_sig = self._attempt_signature(state)
         note_sig = self._exploration_note_signature(state)
 
@@ -412,16 +411,17 @@ class CyberGymAgent(StateInitMixin, TaskAnalysisMixin, RepoAnalysisMixin, CrashP
                 continue
             if line.startswith(("//", "#", "/*", "*", "*/")):
                 continue
-            return _clip(line, limit)
-        return _clip(" ".join(str(content or "").split()), limit)
+            return line
+        return " ".join(str(content or "").split())
 
     @staticmethod
     def _extract_structured_facts_from_content(content: str, path: str) -> List[str]:
         """Deterministically extract structured facts from READ content.
 
         Extracts #define constants with numeric values, buffer size
-        declarations, and function signatures — the facts most likely
-        to be lost in LLM-based context compaction.
+        declarations, struct field offsets, variable types, and function
+        signatures — the facts most likely to be lost in LLM-based
+        context compaction or needed for PoC byte-level construction.
         """
         if not content or not path:
             return []
@@ -432,12 +432,23 @@ class CyberGymAgent(StateInitMixin, TaskAnalysisMixin, RepoAnalysisMixin, CrashP
         # Buffer/size declarations: type name[SIZE]
         for m in re.finditer(r'(?:char|uint\d+_t|int|size_t|unsigned)\s+\w+\[(\d+)\]', content):
             facts.append(f"buffer_size: {m.group(1)} (in {path})")
+        # Struct field access patterns: pde+8, tiffp+4
+        seen_offsets = set()
+        for m in re.finditer(r'(\w+)\+(\d+)\)', content):
+            var, off = m.group(1), m.group(2)
+            key = f"{var}+{off}"
+            if int(off) > 0 and int(off) < 1000 and key not in seen_offsets:
+                seen_offsets.add(key)
+                facts.append(f"field_offset: {var}+{off} = {off} (in {path})")
+        # Key variable types for overflow analysis: unsigned long oval, size_t n
+        for m in re.finditer(r'(unsigned\s+(?:long|int|short|char))\s+(\w+)', content):
+            facts.append(f"var_type: {m.group(2)} = {m.group(1)} (in {path})")
         # Function signatures (simplified)
         for m in re.finditer(r'(?:static\s+)?(?:inline\s+)?(?:\w+\s+)+(\w+)\s*\([^)]*\)\s*\{', content):
             fname = m.group(1)
             if fname not in ("if", "for", "while", "switch", "return", "sizeof"):
                 facts.append(f"func: {fname} (in {path})")
-        return facts[:8]
+        return facts[:12]
 
     @staticmethod
     def _extract_poc_paths_from_bash(command: str, state: CyberGymState) -> List[str]:
@@ -571,14 +582,31 @@ class CyberGymAgent(StateInitMixin, TaskAnalysisMixin, RepoAnalysisMixin, CrashP
                 gate.evidence = f"Confirmed by READ {read_path}"
 
     @staticmethod
-    def _extract_path_constraints_from_read(state: CyberGymState, output: Any) -> None:
-        """P36: Auto-extract ONLY format_gate constraints from READ content
-        (memcmp/strcmp magic-byte comparisons).  These are high-confidence
-        and rarely false-positive.
+    def _is_chain_node_content(read_path: str, call_chain_nodes) -> bool:
+        """Check if the read_path matches any node on the call chain."""
+        for node in call_chain_nodes:
+            loc = str(getattr(node, "location", "") or "")
+            loc_file = loc.split(":")[0] if ":" in loc else loc
+            if loc_file and (read_path.endswith(loc_file) or loc_file in read_path):
+                return True
+        return False
 
-        path_gate and dispatch_gate constraints are NOT auto-extracted —
-        they have too many false positives.  The LLM records them via
-        the `record_gate` tool after understanding the code context.
+    @staticmethod
+    def _extract_path_constraints_from_read(state: CyberGymState, output: Any) -> None:
+        """Auto-extract constraints from READ content.
+
+        Pattern 1: format_gate — memcmp/strcmp magic-byte comparisons.
+            High confidence → directly creates ChainGate (status="inferred").
+
+        Patterns 2-4: bounds/dispatch/path — extracted as **suggested constraints**
+            and stored in state.suggested_constraints (NOT call_chain_gates).
+            These are presented to the LLM as candidates for judgment.  The LLM
+            decides which ones are real path constraints and uses record_gate to
+            promote them to call_chain_gates.
+
+            This two-tier design avoids false positives: regex cannot distinguish
+            "if (length < 16)" (input-related) from "if (debug_mode)" (internal
+            state), but the LLM can.
 
         Legacy path_constraints list is still populated for backward compat.
         """
@@ -596,14 +624,17 @@ class CyberGymAgent(StateInitMixin, TaskAnalysisMixin, RepoAnalysisMixin, CrashP
 
         # Determine node_order for new gates
         node_order = 0
+        is_chain_node = False
         for node in state.call_chain_nodes:
             if read_path.endswith(node.location.split(":")[0]) or node.location.split(":")[0] in read_path:
                 node_order = node.order
+                is_chain_node = True
                 break
 
         new_gates: List[ChainGate] = []
+        new_suggestions: List[Dict[str, str]] = []
 
-        # ONLY Pattern 1: memcmp/strcmp format checks — high confidence
+        # Pattern 1: memcmp/strcmp format checks — high confidence, directly create gates
         for m in re.finditer(
             r'(?:if|assert)\s*\([^)]*(?:memcmp|strcmp|strncmp|strncasecmp)\s*\(\s*[^,]+,\s*"([^"]+)"',
             content,
@@ -630,7 +661,94 @@ class CyberGymAgent(StateInitMixin, TaskAnalysisMixin, RepoAnalysisMixin, CrashP
                     repair_hint="",
                 ))
 
-        # Add deduplicated ChainGate entries
+        # Patterns 2-4: only extract from chain-node functions, stored as suggestions
+        # (NOT gates) — LLM judges which are real constraints.
+        if is_chain_node:
+            content_lines = content.split("\n")
+            prologue = "\n".join(content_lines[:50])
+            full_content = content
+
+            # Existing suggestion descriptions for dedup
+            existing_suggestion_descs = {
+                s.get("description", "") for s in state.suggested_constraints
+            }
+            # Also dedup against already-confirmed gates
+            existing_gate_descs = {g.description for g in state.call_chain_gates}
+
+            _TRIVIAL_LOOP_VARS = {"i", "j", "k", "idx", "index", "n", "count"}
+
+            # Pattern 2: Numeric bounds checks
+            for m in re.finditer(
+                r'if\s*\(\s*(\w+)(?:\s*([+\-])\s*(\w+))?\s*([<>=!]+)\s*(0x[\da-fA-F]+|\d+)\s*\)',
+                prologue,
+            ):
+                var, op, offset_var, cmp_op, threshold = (
+                    m.group(1), m.group(2) or "", m.group(3) or "",
+                    m.group(4), m.group(5),
+                )
+                if var.lower() in _TRIVIAL_LOOP_VARS:
+                    continue
+                expr = f"{var}{op}{offset_var}" if offset_var else var
+                desc = f"Bounds check: {expr} {cmp_op} {threshold} at {read_path}"
+                if desc not in existing_suggestion_descs and desc not in existing_gate_descs:
+                    cond = f"{expr} must be {cmp_op} {threshold}"
+                    new_suggestions.append({
+                        "gate_type": "bounds_gate",
+                        "description": desc,
+                        "required_condition": cond,
+                        "source": read_path,
+                    })
+                    existing_suggestion_descs.add(desc)
+
+            # Pattern 3: Switch/case dispatch
+            for m in re.finditer(r'switch\s*\(\s*(\w+)\s*\)', prologue):
+                switch_var = m.group(1)
+                cases = re.findall(
+                    r'case\s+((?:0x[\da-fA-F]+|\d+))\s*:', full_content
+                )
+                if cases:
+                    case_str = ", ".join(cases[:6])
+                    desc = f"Dispatch on {switch_var}: cases {case_str} at {read_path}"
+                    if desc not in existing_suggestion_descs and desc not in existing_gate_descs:
+                        cond = f"{switch_var} must equal one of [{case_str}] to reach the target handler"
+                        new_suggestions.append({
+                            "gate_type": "dispatch_gate",
+                            "description": desc,
+                            "required_condition": cond,
+                            "source": read_path,
+                        })
+                        existing_suggestion_descs.add(desc)
+
+            # Pattern 4: Early-return / goto guards in function prologue
+            for m in re.finditer(
+                r'if\s*\(\s*!?(\w+)\s*\)\s*(?:return\s*[^;]*;|goto\s+(\w+)\s*;)',
+                prologue,
+            ):
+                guard_var = m.group(1)
+                goto_label = m.group(2) or ""
+                if guard_var.lower() in _TRIVIAL_LOOP_VARS | {"null", "nullptr", "0"}:
+                    continue
+                if goto_label:
+                    desc = f"Guard: must pass {guard_var} check (else goto {goto_label}) at {read_path}"
+                    cond = f"{guard_var} must be true/non-zero to continue (else jumps to {goto_label})"
+                else:
+                    desc = f"Guard: must pass {guard_var} check (else return) at {read_path}"
+                    cond = f"{guard_var} must be true/non-zero to continue (else returns early)"
+                if desc not in existing_suggestion_descs and desc not in existing_gate_descs:
+                    new_suggestions.append({
+                        "gate_type": "path_gate",
+                        "description": desc,
+                        "required_condition": cond,
+                        "source": read_path,
+                    })
+                    existing_suggestion_descs.add(desc)
+
+            # Append suggestions to state, cap at 15
+            state.suggested_constraints.extend(new_suggestions)
+            if len(state.suggested_constraints) > 15:
+                state.suggested_constraints = state.suggested_constraints[-15:]
+
+        # Add deduplicated ChainGate entries (only Pattern 1 goes here directly)
         existing_gate_descs = {g.description for g in state.call_chain_gates}
         for gate in new_gates:
             if gate.description not in existing_gate_descs:
@@ -765,14 +883,14 @@ class CyberGymAgent(StateInitMixin, TaskAnalysisMixin, RepoAnalysisMixin, CrashP
             if state.vulnerable_functions:
                 parts.append(f"Sink: {', '.join(state.vulnerable_functions[:3])}")
             if state.trigger_hypothesis:
-                parts.append(state.trigger_hypothesis[:300])
+                parts.append(state.trigger_hypothesis)
             # Include confirmed gate conditions
             confirmed = state.confirmed_gates() if hasattr(state, "confirmed_gates") else []
             for g in confirmed[:4]:
                 parts.append(f"[gate] {g.required_condition}")
             if parts:
                 analysis = ". ".join(parts)
-                state.vulnerability_analysis = analysis[:600]
+                state.vulnerability_analysis = analysis
 
         # 2. Path trace — updated from chain nodes
         nodes = list(getattr(state, "call_chain_nodes", []) or [])
@@ -788,8 +906,10 @@ class CyberGymAgent(StateInitMixin, TaskAnalysisMixin, RepoAnalysisMixin, CrashP
         if state.last_verification_result and state.last_submitted_poc_path:
             poc_path = state.last_submitted_poc_path
             vul_exit = state.last_verification_result.get("vul_exit_code")
+            fix_exit = state.last_verification_result.get("fix_exit_code")
             accepted = state.last_verification_result.get("accepted") is True
             gate = self._classify_failed_gate(state.last_verification_result)
+            scope = str(state.last_verification_result.get("verification_scope") or "")
             if accepted:
                 outcome = "SUCCESS"
             elif vul_exit and vul_exit != 0:
@@ -800,19 +920,31 @@ class CyberGymAgent(StateInitMixin, TaskAnalysisMixin, RepoAnalysisMixin, CrashP
             version = state.poc_attempts
             suffix = Path(poc_path).suffix  # preserve original: .pcap, .png, .b2frame, etc.
             archived_name = f"poc_v{version}{suffix}"
-            # Capture construction rationale from current_hypothesis
-            hypothesis_snippet = ""
-            if state.current_hypothesis:
-                hypothesis_snippet = state.current_hypothesis[:120]
-            entry = f"#{version} {archived_name}: {outcome}"
+            # Build structured failure analysis
+            parts = [f"#{version} {archived_name}: {outcome}"]
             if gate:
-                entry += f" [{gate}]"
-            if hypothesis_snippet:
-                entry += f" — {hypothesis_snippet}"
+                parts.append(f"[{gate}]")
+            # Add crash details if available
+            crash_info = []
+            if state.crash_type:
+                crash_info.append(state.crash_type)
+            if state.crash_location:
+                crash_info.append(f"@ {state.crash_location}")
+            if crash_info and outcome != "SUCCESS":
+                parts.append(f"crash={', '.join(crash_info)}")
+            # Add discriminant info if available
+            if fix_exit is not None and fix_exit != 0 and scope == "full":
+                parts.append("fix_also_crashed")
+            elif vul_exit and vul_exit != 0 and scope == "vul_only":
+                parts.append("precision_unverified")
+            # Add action hint (one-line from gate type)
+            action_hint = self._attempt_action_hint(gate)
+            if action_hint:
+                parts.append(action_hint)
+            entry = " ".join(parts)
             # Deduplicate by version number (#N at start of entry)
             existing_versions = set()
             for e in state.attempt_history_compact:
-                # Extract "#N" from start of entry (before space)
                 m = re.match(r'#(\d+)', e)
                 if m:
                     existing_versions.add(m.group(0))
@@ -820,27 +952,93 @@ class CyberGymAgent(StateInitMixin, TaskAnalysisMixin, RepoAnalysisMixin, CrashP
                 state.attempt_history_compact.append(entry)
             state.attempt_history_compact = state.attempt_history_compact[-10:]
 
-        # 4. Current hypothesis — updated after path_not_reached or post_submit_miss
+        # 4. Current hypothesis — updated after every non-accepted submit
         if state.last_verification_result and not state.is_verified():
             gate = self._classify_failed_gate(state.last_verification_result)
-            if gate == "path_not_reached":
-                first_open = state.first_open_gate() if hasattr(state, "first_open_gate") else None
-                if first_open:
-                    state.current_hypothesis = (
-                        f"Path not reached — first open gate: {first_open.description}. "
-                        f"Need to confirm: {first_open.required_condition}"
-                    )[:400]
-                else:
-                    state.current_hypothesis = (
-                        "Path not reached — identify and confirm the parser gate "
-                        "that blocks input from reaching the vulnerable code."
-                    )[:400]
-            elif gate == "trigger_wrong_signature":
-                state.current_hypothesis = (
+            vul_exit = state.last_verification_result.get("vul_exit_code")
+            ct = state.crash_type or ""
+            cl = state.crash_location or ""
+            hypothesis_map = {
+                "path_not_reached": self._hypothesis_path_not_reached(state),
+                "carrier_parse": (
+                    "Input format rejected at harness entry — fix carrier format. "
+                    "Check magic bytes, header structure, and minimum size. "
+                    "Use `file` and `xxd` on existing PoC to diagnose."
+                ),
+                "malformed_substructure": (
+                    f"Input parsed but sub-structure invalid — fix field layout. "
+                    f"Check struct sizes, alignment, and field offsets against source."
+                    + (f" Crash: {ct} at {cl}" if ct else "")
+                ),
+                "trigger_wrong_signature": (
                     f"ASAN detected corruption but wrong crash type. "
-                    f"Crash: {state.crash_type} at {state.crash_location}. "
+                    f"Crash: {ct} at {cl}. "
                     "Refine overflow parameters (size/offset/field values)."
-                )[:400]
+                ),
+                "trigger_wrong_location": (
+                    f"Crash in wrong location: {cl}. "
+                    "The overflow hits an unexpected code path — adjust the target "
+                    "field/offset to hit the vulnerable function specifically."
+                ),
+                "wrong_trigger": (
+                    "PoC crashes but trigger condition is wrong. "
+                    "Read the comparison/guard in the vulnerable function to find "
+                    "the exact trigger value needed."
+                ),
+                "timeout_not_crash": (
+                    "PoC causes timeout but no crash — execution is stuck. "
+                    "Simplify: reduce nesting/depth, aim for shortest path to vulnerability."
+                ),
+                "discriminant_failed": (
+                    f"Both vul and fix binaries crash — PoC is too aggressive. "
+                    f"Crash: {ct} at {cl}. "
+                    "Reduce overflow to MINIMAL (1-4 bytes past boundary). "
+                    "The fix must distinguish the overflow; if both crash, it's not precise."
+                ),
+                "vul_only_triggered": (
+                    f"VUL-ONLY TRIGGER: binary crashed (exit={vul_exit}). "
+                    + (f"Crash: {ct} at {cl}. " if ct else "")
+                    + "PARTIAL success — refine for precision. "
+                    "Reduce overflow to minimal bytes, target exact offset, study patch diff."
+                ),
+                "duplicate_candidate": (
+                    "Same PoC content already submitted — change the PoC before resubmitting."
+                ),
+            }
+            new_hypothesis = hypothesis_map.get(gate)
+            if new_hypothesis:
+                state.current_hypothesis = new_hypothesis
+
+    @staticmethod
+    def _hypothesis_path_not_reached(state: CyberGymState) -> str:
+        """Generate hypothesis text for path_not_reached gate."""
+        first_open = state.first_open_gate() if hasattr(state, "first_open_gate") else None
+        if first_open:
+            return (
+                f"Path not reached — first open gate: {first_open.description}. "
+                f"Need to confirm: {first_open.required_condition}"
+            )
+        return (
+            "Path not reached — identify and confirm the parser gate "
+            "that blocks input from reaching the vulnerable code."
+        )
+
+    @staticmethod
+    def _attempt_action_hint(gate: str) -> str:
+        """Return a one-line action hint for the attempt history entry."""
+        hints = {
+            "carrier_parse": "→ fix magic bytes/headers",
+            "path_not_reached": "→ route input to vulnerable function",
+            "malformed_substructure": "→ fix field sizes/offsets",
+            "trigger_wrong_signature": "→ adjust overflow size/offset",
+            "trigger_wrong_location": "→ target exact vulnerable field",
+            "wrong_trigger": "→ match exact trigger value",
+            "timeout_not_crash": "→ simplify PoC",
+            "discriminant_failed": "→ reduce overflow to minimal",
+            "vul_only_triggered": "→ refine for precision",
+            "duplicate_candidate": "→ change PoC content",
+        }
+        return hints.get(gate, "")
 
     @staticmethod
     def _update_chain_from_read(state: CyberGymState, output: Any) -> None:
@@ -949,7 +1147,7 @@ class CyberGymAgent(StateInitMixin, TaskAnalysisMixin, RepoAnalysisMixin, CrashP
         if crash_location:
             facts.append(f"crash_location: {crash_location}")
         for hint in hints[:2]:
-            facts.append(f"feedback_hint: {self._clip(hint, 180)}")
+            facts.append(f"feedback_hint: {hint}")
         raw_output = str(result.get("raw_output") or result.get("output") or "").strip()
         if raw_output:
             facts.append(
@@ -1280,6 +1478,22 @@ class CyberGymAgent(StateInitMixin, TaskAnalysisMixin, RepoAnalysisMixin, CrashP
 
         # Handle submit_poc result
         if short_name == SUBMIT_POC_TOOL:
+            # Pre-submit validation: check PoC against known format requirements
+            if isinstance(output, dict):
+                poc_path = str(
+                    (result.metadata or {}).get("poc_path", "")
+                    if hasattr(result, "metadata") and isinstance(result.metadata, dict)
+                    else ""
+                )
+                if poc_path:
+                    validation_msg = self._pre_submit_validate(state, poc_path)
+                    if validation_msg:
+                        # Append diagnostic to error trace (soft warning, don't block)
+                        existing_trace = str(state.last_error_trace or "")
+                        state.last_error_trace = (
+                            f"{validation_msg}\n{existing_trace}"
+                            if existing_trace else validation_msg
+                        )
             # Mark submit_poc results as critical for compaction priority
             if hasattr(result, "metadata") and isinstance(result.metadata, dict):
                 result.metadata["compaction_priority"] = "critical"
@@ -1404,7 +1618,7 @@ class CyberGymAgent(StateInitMixin, TaskAnalysisMixin, RepoAnalysisMixin, CrashP
                             "prevent the crash — if both binaries crash, the PoC is too aggressive."
                         )
                         if state.patch_diff:
-                            patch_excerpt = state.patch_diff[:500].strip()
+                            patch_excerpt = state.patch_diff.strip()
                             state.last_error_trace += (
                                 f"\n\nPatch diff shows the fix:\n{patch_excerpt}\n"
                                 "The PoC must trigger the bug BEFORE this fix takes effect. "
@@ -1440,7 +1654,7 @@ class CyberGymAgent(StateInitMixin, TaskAnalysisMixin, RepoAnalysisMixin, CrashP
                     feedback_hints = self._extract_verification_hints(output)
                     raw_excerpt = "\n".join(feedback_hints).strip()
                     if not raw_excerpt:
-                        raw_excerpt = raw_output[:1200].strip()
+                        raw_excerpt = raw_output.strip()
                     state.last_error_trace = (
                         f"PoC did not trigger the vulnerability. "
                         f"vul_exit={vul_code}"
@@ -1482,7 +1696,7 @@ class CyberGymAgent(StateInitMixin, TaskAnalysisMixin, RepoAnalysisMixin, CrashP
                 rc = output.get("returncode", 0)
                 stderr = output.get("stderr", "")
                 if rc != 0 and stderr:
-                    state.last_error_trace = stderr[:2000]
+                    state.last_error_trace = stderr
                 elif rc != 0:
                     state.last_error_trace = f"Exit code: {rc}"
                 # Register newly-created PoC files from BASH commands.
@@ -1509,6 +1723,14 @@ class CyberGymAgent(StateInitMixin, TaskAnalysisMixin, RepoAnalysisMixin, CrashP
             if getattr(state, "pending_gates_checkpoint", False):
                 if state.call_chain_gates:
                     state.pending_gates_checkpoint = False
+            # When a gate is recorded, remove matching suggestions (LLM confirmed it)
+            if short_name == "record_gate" and isinstance(output, dict):
+                gate_desc = str(output.get("description") or "").strip()
+                if gate_desc and hasattr(state, "suggested_constraints"):
+                    state.suggested_constraints = [
+                        s for s in state.suggested_constraints
+                        if s.get("description", "") != gate_desc
+                    ]
 
         # Track file reads that reveal vulnerable code
         elif normalized_name == self.READ_TOOL or short_name in ("read_file", "view", "file_read_v2", "read_file_range"):
@@ -1882,13 +2104,13 @@ class CyberGymAgent(StateInitMixin, TaskAnalysisMixin, RepoAnalysisMixin, CrashP
     def _record_subagent_error(state: CyberGymState, role: str, exc: Exception) -> None:
         message = f"{role} subagent error: {exc}"
         state.last_error_trace = message
-        state.recent_tool_observations.append(f"- {role}_subagent_error: {_clip(str(exc), 160)}")
+        state.recent_tool_observations.append(f"- {role}_subagent_error: {str(exc)}")
         state.recent_tool_observations = state.recent_tool_observations[-6:]
 
     @staticmethod
     def _record_subagent_activity(state: CyberGymState, event: str, detail: str) -> None:
         state.recent_tool_observations.append(
-            f"- {event}: {_clip(detail, 160)}"
+            f"- {event}: {detail}"
         )
         state.recent_tool_observations = state.recent_tool_observations[-6:]
 
@@ -1896,10 +2118,6 @@ class CyberGymAgent(StateInitMixin, TaskAnalysisMixin, RepoAnalysisMixin, CrashP
     def _subagent_output_preview(text: str) -> str:
         preview = str(text or "").strip().replace("\n", "\\n")
         return preview
-
-    @staticmethod
-    def _clip(text: str, limit: int) -> str:
-        return _clip(text, limit)
 
 
     # ------------------------------------------------------------------

@@ -79,7 +79,7 @@ def _call_header(tool: str, **params: Any) -> str:
         if v == 0 and k not in ("offset",):
             continue
         if isinstance(v, str):
-            display = v if len(v) <= 60 else v[:57] + "..."
+            display = v
             parts.append(f'{k}={display}')
         elif isinstance(v, bool):
             parts.append(f"{k}={v}")
@@ -253,23 +253,13 @@ def render_GREP(payload: Dict[str, Any]) -> str:
     result_parts.append(f"  {match_count} match{('es' if match_count != 1 else '')}{file_str}")
 
     # Matches — show file:line with preview
-    for item in matches[:30]:
+    for item in matches:
         path = str(item.get("path") or "")
         line_number = int(item.get("line_number") or 0)
         preview = str(item.get("preview") or item.get("line") or "")
 
         loc = f"{path}:{line_number}" if line_number else path
         result_parts.append(f"  {loc}  | {preview}")
-
-    if len(matches) > 30:
-        result_parts.append(f"  ... ({len(matches) - 30} more matches)")
-
-    # Truncation footer
-    if truncated:
-        next_offset = applied_offset + 30 if applied_offset else 30
-        result_parts.append(
-            f"--- truncated. Use GREP with offset={next_offset} ---"
-        )
 
     return "\n".join(result_parts)
 
@@ -299,7 +289,7 @@ def render_GLOB(payload: Dict[str, Any]) -> str:
         if len(p) > max_path_len:
             max_path_len = min(len(p), 60)
 
-    for item in matches[:50]:
+    for item in matches:
         path = str(item.get("path") or "")
         kind = str(item.get("kind") or "file")
         size = item.get("size")
@@ -310,12 +300,6 @@ def render_GLOB(payload: Dict[str, Any]) -> str:
             result_parts.append(f"  {path:<{max_path_len}}  {_format_size(int(size))}")
         else:
             result_parts.append(f"  {path}")
-
-    if len(matches) > 50:
-        result_parts.append(f"  ... ({len(matches) - 50} more)")
-
-    if truncated:
-        result_parts.append("--- truncated. Use GLOB with max_results=N ---")
 
     return "\n".join(result_parts)
 
@@ -384,7 +368,7 @@ def render_FindSymbols(payload: Dict[str, Any]) -> str:
     # Separate definitions from references for clarity
     definitions = []
     references = []
-    for item in results[:50]:
+    for item in results:
         kind = str(item.get("kind") or "")
         if kind in ("function", "macro", "struct", "enum", "constant", "definition", "file"):
             definitions.append(item)
@@ -427,10 +411,10 @@ def render_FindSymbols(payload: Dict[str, Any]) -> str:
                     display += f"  [{', '.join(str(v) for v in enum_values[:8])}]"
                 macro_value = str(item.get("macro_value") or "")
                 if macro_value and kind == "macro":
-                    display += f"  = {macro_value[:60]}"
+                    display += f"  = {macro_value}"
                 typedef_target = str(item.get("typedef_target") or "")
                 if typedef_target and kind == "typedef":
-                    display += f"  -> {typedef_target[:60]}"
+                    display += f"  -> {typedef_target}"
 
                 # match_id enables instant READ jump
                 id_str = f" [id={match_id}]" if match_id else ""
@@ -439,7 +423,7 @@ def render_FindSymbols(payload: Dict[str, Any]) -> str:
     # -- References section --
     if references:
         result_parts.append("  References:")
-        for item in references[:15]:
+        for item in references:
             kind = str(item.get("kind") or "")
             tag = _kind_tag(kind)
             path = str(item.get("path") or "")
@@ -451,10 +435,7 @@ def render_FindSymbols(payload: Dict[str, Any]) -> str:
             result_parts.append(f"  {tag}  {loc}{id_str}  | {preview}")
 
     if len(results) > 50:
-        result_parts.append(f"  ... ({len(results) - 50} more)")
-
-    if truncated:
-        result_parts.append("--- truncated. Use FindSymbols with max_results=N ---")
+        result_parts.append(f"  Note: {len(results)} total results. Use FindSymbols with max_results=N for more.")
 
     return "\n".join(result_parts)
 
@@ -491,7 +472,7 @@ def render_CallsiteSearch(payload: Dict[str, Any]) -> str:
     # -- Definitions: where the symbol is implemented --
     if definitions:
         result_parts.append("  Defs:")
-        for item in definitions[:10]:
+        for item in definitions:
             path = str(item.get("path") or "")
             line_number = int(item.get("line_number") or 0)
             loc = f"{path}:{line_number}" if line_number else path
@@ -507,7 +488,7 @@ def render_CallsiteSearch(payload: Dict[str, Any]) -> str:
         result_parts.append("  Calls:")
         # Group by file to show call concentration
         by_file: Dict[str, list] = {}
-        for item in callsites[:30]:
+        for item in callsites:
             fpath = str(item.get("path") or "")
             by_file.setdefault(fpath, []).append(item)
 
@@ -523,10 +504,7 @@ def render_CallsiteSearch(payload: Dict[str, Any]) -> str:
         result_parts.append("  Calls: (no callers found)")
 
     if len(callsites) > 30:
-        result_parts.append(f"  ... ({len(callsites) - 30} more callsites)")
-
-    if truncated:
-        result_parts.append("--- truncated. Use CallsiteSearch with max_results=N ---")
+        result_parts.append(f"  Note: {len(callsites)} total callsites. Use CallsiteSearch with max_results=N for more.")
 
     # -- Suggested next reads: pre-computed best offsets to jump to --
     if suggestions:
@@ -564,10 +542,10 @@ def render_CallsiteSearch(payload: Dict[str, Any]) -> str:
     indirect = payload.get("indirect_callsites") or []
     if indirect:
         result_parts.append("  Indirect dispatch:")
-        for ic in indirect[:5]:
+        for ic in indirect:
             dvar = ic.get("dispatch_var", "")
             iloc = f"{ic.get('path', '')}:{ic.get('line', 0)}"
-            ctx = ic.get("context", "")[:80]
+            ctx = ic.get("context", "")
             result_parts.append(f"    {dvar} @ {iloc}  | {ctx}")
 
     return "\n".join(result_parts)
@@ -769,7 +747,7 @@ def render_StructProbe(payload: Dict[str, Any]) -> str:
 
     result_parts = [_call_header("StructProbe", path=path, offset=offset, endian=endian)]
 
-    for field in fields[:32]:
+    for field in fields:
         name = str(field.get("name") or "field")
         raw_hex = str(field.get("raw_hex") or "")
         decoded = str(field.get("decoded") or "")
@@ -791,7 +769,7 @@ def render_StructProbe(payload: Dict[str, Any]) -> str:
         result_parts.append(" ".join(parts))
 
     if len(fields) > 32:
-        result_parts.append(f"  ... ({len(fields) - 32} more fields)")
+        result_parts.append(f"  Note: {len(fields)} total fields.")
 
     return "\n".join(result_parts)
 
@@ -870,28 +848,14 @@ def render_BASH(payload: Dict[str, Any]) -> str:
 
     # Stdout
     if stdout:
-        # Trim very long stdout
-        stdout_lines = stdout.splitlines()
-        if len(stdout_lines) > 60:
-            shown = "\n".join(stdout_lines[:50])
-            result_parts.append(shown)
-            result_parts.append(f"  ... ({len(stdout_lines) - 50} more lines)")
-        else:
-            result_parts.append(stdout)
+        result_parts.append(stdout)
 
     # Stderr — shown last for emphasis (especially ASAN traces)
     if stderr:
         is_sanitizer = bool(_SANITIZER_RE.search(stderr))
         label = "SANITIZER TRACE:" if is_sanitizer else "STDERR:"
-        stderr_lines = stderr.splitlines()
-        if len(stderr_lines) > 40:
-            shown = "\n".join(stderr_lines[:30])
-            result_parts.append(f"  {label}")
-            result_parts.append(shown)
-            result_parts.append(f"  ... ({len(stderr_lines) - 30} more lines)")
-        else:
-            result_parts.append(f"  {label}")
-            result_parts.append(stderr)
+        result_parts.append(f"  {label}")
+        result_parts.append(stderr)
 
     return "\n".join(result_parts)
 
@@ -948,14 +912,9 @@ def render_submit_poc(payload: Dict[str, Any]) -> str:
         if crash_summ:
             result_parts.append(f"  {crash_summ}")
 
-    # Server output (abbreviated)
+    # Server output
     if raw_output:
-        output_lines = raw_output.splitlines()
-        if len(output_lines) > 10:
-            shown = "\n".join(output_lines[:8])
-            result_parts.append(f"  Server output:\n  {shown}")
-            result_parts.append(f"  ... ({len(output_lines) - 8} more lines)")
-        elif raw_output.strip():
+        if raw_output.strip():
             result_parts.append(f"  Server output: {raw_output.strip()}")
 
     # Stdout

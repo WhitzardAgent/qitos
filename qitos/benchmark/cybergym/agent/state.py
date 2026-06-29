@@ -217,6 +217,10 @@ class CyberGymState(StateSchema):
     # Ordered entry-to-sink call chain (replaces flat path_constraints)
     call_chain_nodes: List[ChainNode] = field(default_factory=list)
     call_chain_gates: List[ChainGate] = field(default_factory=list)
+    # Candidate constraints auto-extracted from code but NOT yet confirmed by LLM.
+    # Presented as "Suggested Constraints" in the observation for LLM to judge.
+    # LLM should use record_gate to promote relevant ones to call_chain_gates.
+    suggested_constraints: List[Dict[str, str]] = field(default_factory=list)
     runtime_stage: str = "bootstrap"
     durable_project_memory: Dict[str, Any] = field(default_factory=dict)
     durable_code_facts: List[str] = field(default_factory=list)
@@ -318,6 +322,79 @@ class CyberGymState(StateSchema):
         """The earliest unresolved gate — the primary blocker."""
         open_gates = self.open_gates()
         return open_gates[0] if open_gates else None
+
+    def derive_numerical_constraints(self) -> List[str]:
+        """Derive concrete numeric constraints from code facts × gate conditions.
+
+        Scans durable_code_facts for numeric values (#define, buffer_size,
+        field_offset, etc.) and cross-references with confirmed bounds_gate
+        and value_gate conditions to produce concrete constraints the LLM
+        can use directly in PoC construction.
+        """
+        import re as _re
+        lines: List[str] = []
+        facts = list(self.durable_code_facts or [])
+        gates = self.confirmed_gates()
+
+        # Extract numeric values from code facts
+        numeric_values = {}
+        for fact in facts:
+            # const: NAME = VALUE
+            m = _re.match(
+                r'(?:const|buffer_size|array_size|struct_size)\s*:\s*(\w+)\s*=\s*(0x[\da-fA-F]+|\d+)',
+                fact,
+            )
+            if m:
+                name, val = m.group(1), m.group(2)
+                numeric_values[name] = int(val, 16) if val.startswith('0x') else int(val)
+                continue
+            # field_offset: NAME = VALUE
+            m = _re.match(r'field_offset\s*:\s*(\w+)\s*=\s*(0x[\da-fA-F]+|\d+)', fact)
+            if m:
+                name, val = m.group(1), m.group(2)
+                numeric_values[name] = int(val, 16) if val.startswith('0x') else int(val)
+                continue
+            # func_signature with numeric constants like "buffer[8192]"
+            m = _re.search(r'(\w+)\[(\d+)\]', fact)
+            if m:
+                numeric_values[f"{m.group(1)}_size"] = int(m.group(2))
+
+        if not numeric_values and not gates:
+            return lines
+
+        # List known numeric values (largest first for relevance)
+        for name, value in sorted(numeric_values.items(), key=lambda x: -x[1]):
+            lines.append(f"{name} = {value} (0x{value:x})")
+
+        # Cross-reference gates with numeric values
+        for g in gates:
+            cond = g.required_condition or ""
+            desc = g.description or ""
+            if g.gate_type == "bounds_gate":
+                # Look for variable references in the condition
+                matched = False
+                for var_name, var_val in numeric_values.items():
+                    base_name = var_name.replace("_size", "").replace("_len", "")
+                    if base_name in cond or var_name in cond:
+                        lines.append(
+                            f"→ bounds_gate: {cond} "
+                            f"⇒ {var_name}={var_val}, overflow starts at offset ≥ {var_val}"
+                        )
+                        matched = True
+                        break
+                if not matched and cond:
+                    lines.append(f"→ bounds_gate: {cond}")
+            elif g.gate_type == "format_gate":
+                if "0x" in cond or "bytes" in cond.lower() or "magic" in cond.lower():
+                    lines.append(f"→ format_gate: {cond}")
+            elif g.gate_type == "value_gate":
+                if cond:
+                    lines.append(f"→ value_gate: {cond}")
+            elif g.gate_type == "dispatch_gate":
+                if cond:
+                    lines.append(f"→ dispatch_gate: {cond}")
+
+        return lines[:12]
 
     def is_verified(self) -> bool:
         """Check if the PoC has been verified as successful by the server."""

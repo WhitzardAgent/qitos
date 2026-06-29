@@ -33,6 +33,14 @@ PROJECT_ARTIFACT_ROOT = Path(".agent") / "memory" / "project"
 #: tool outputs instead of head+tail truncation. Default: disabled.
 LLM_COMPACT_ENABLED = os.environ.get("CYBERGYM_LLM_COMPACT", "0") == "1"
 
+#: When set to "1" (default), aggressively snip old READ messages after
+#: only a few turns, freeing context for fresh tool outputs.  Normal-priority
+#: READs (exploratory) are snipped after 3 turns; high/critical-priority
+#: READs (parser/field/seed) are still protected.
+EARLY_READ_SNIP = os.environ.get(
+    "CYBERGYM_EARLY_READ_SNIP", "1"
+).strip().lower() not in {"0", "false", "no", "off"}
+
 #: Character threshold above which LLM summarization is attempted.
 LLM_SUMMARY_THRESHOLD = 8_000
 
@@ -145,6 +153,167 @@ class SnipCompactor:
                 },
             )
         return result
+
+    # ------------------------------------------------------------------
+    # READ-specific early snipping
+    # ------------------------------------------------------------------
+
+    def snip_reads_early(
+        self,
+        messages: List[HistoryMessage],
+        keep_recent: int = 3,
+        state: Any = None,
+    ) -> List[HistoryMessage]:
+        """Snip READ tool messages more aggressively than other tools.
+
+        Normal-priority READs beyond the most recent *keep_recent* are
+        replaced with fact-oriented previews.  High/critical priority READs
+        (parser/field/seed paths) are preserved — they are critical for
+        PoC construction.
+        """
+        read_indices = [
+            (i, msg)
+            for i, msg in enumerate(messages)
+            if msg.role in self.COMPRESSIBLE_ROLES
+            and not msg.metadata.get("summary")
+            and not msg.metadata.get("snipped")
+            and str(
+                getattr(msg, "name", None)
+                or msg.metadata.get("tool_name", "")
+            ).strip().upper() == "READ"
+        ]
+
+        # Skip the most recent N READ messages
+        if keep_recent <= 0:
+            to_snip = read_indices
+        elif len(read_indices) > keep_recent:
+            to_snip = read_indices[: -keep_recent]
+        else:
+            return messages  # All recent enough
+
+        result = list(messages)
+        for i, msg in to_snip:
+            # Skip high/critical priority READs (parser/field/seed paths)
+            priority = str(msg.metadata.get("compaction_priority", "normal")).lower()
+            if priority in ("high", "critical"):
+                continue
+
+            serialized = self._serialize_content(msg.content)
+            index_metadata = self._index_metadata_for_message(msg, serialized)
+            saved_path = self._persist_snip_payload(
+                content=serialized,
+                step_id=int(getattr(msg, "step_id", 0) or 0),
+                ordinal=i,
+                role=str(msg.role or "tool"),
+                state=state,
+                index_metadata=index_metadata,
+            )
+
+            # Fact-oriented preview for READ
+            compacted = self._render_read_snipped_message(
+                saved_path=saved_path,
+                original_chars=len(serialized),
+                content=serialized,
+                state=state,
+            )
+
+            result[i] = HistoryMessage(
+                role=msg.role,
+                content=compacted,
+                step_id=msg.step_id,
+                metadata={
+                    **msg.metadata,
+                    "snipped": True,
+                    "snip_reason": "early_read",
+                    "original_chars": len(serialized),
+                    "snip_saved_path": saved_path,
+                },
+            )
+        return result
+
+    @classmethod
+    def _render_read_snipped_message(
+        cls,
+        *,
+        saved_path: str,
+        original_chars: int,
+        content: str,
+        state: Any = None,
+    ) -> str:
+        """Render a snipped READ with fact-oriented preview.
+
+        Instead of raw head/tail (useless for source code), extract:
+        - First function signature / struct / #define
+        - Last significant line
+        - Line count
+        - Any durable_code_facts that reference this READ's path
+        """
+        lines = content.splitlines()
+
+        # Extract first function signature / struct definition / #define
+        first_sig = ""
+        for line in lines[:50]:
+            stripped = line.strip()
+            if any(
+                stripped.startswith(kw)
+                for kw in (
+                    "int ", "void ", "char ", "static ", "struct ",
+                    "#define ", "typedef ", "enum ", "unsigned ",
+                )
+            ):
+                first_sig = stripped[:140]
+                break
+
+        # Extract last significant line (not comment/blank)
+        last_sig = ""
+        for line in reversed(lines[-40:]):
+            stripped = line.strip()
+            if stripped and not stripped.startswith(("//", "/*", "*", "*/")):
+                last_sig = stripped[:140]
+                break
+
+        parts = [
+            f"[compact:start kind=read_snipped path={saved_path} "
+            f"original_chars={original_chars}]",
+        ]
+        if first_sig:
+            parts.append(f"  signature: {first_sig}")
+        if last_sig and last_sig != first_sig:
+            parts.append(f"  end: {last_sig}")
+        parts.append(f"  lines: {len(lines)}")
+
+        # Include extracted facts from durable_code_facts if available
+        if state is not None:
+            facts = list(getattr(state, "durable_code_facts", None) or [])
+            # Extract source path from the content header
+            # Format: [READ(path=src/foo.c, offset=0, limit=240)]
+            read_path = ""
+            for line in lines[:5]:
+                if "path=" in line:
+                    idx = line.index("path=")
+                    rest = line[idx + 5:].strip()
+                    # Strip leading quotes/parens, take first token
+                    rest = rest.lstrip('("\'')
+                    if rest:
+                        read_path = rest.split()[0].rstrip('")\',')
+                        break
+            if read_path and facts:
+                matching = [
+                    f for f in facts
+                    if read_path in f or any(
+                        seg in f
+                        for seg in read_path.replace("/", " ").split()
+                        if len(seg) > 4
+                    )
+                ]
+                if matching:
+                    parts.append("  extracted_facts:")
+                    for f in matching[:5]:
+                        parts.append(f"    - {f}")
+
+        parts.append("  [re-READ if original content needed]")
+        parts.append("[compact:end]")
+        return "\n".join(parts)
 
     @classmethod
     def _serialize_content(cls, content: Any) -> str:
@@ -777,6 +946,44 @@ class CyberGymContextHistory(CompactHistory):
                 )
                 current_tokens = after_snip_tokens
 
+        # --- Early READ snipping (Level 0.5) ---
+        # Aggressively snip old normal-priority READ messages even when
+        # below the regular snip threshold.  High/critical-priority READs
+        # (parser/field/seed paths) are protected and never snipped here.
+        if EARLY_READ_SNIP and not self.disable_snip and current_older:
+            read_snipped_older = self.snip_compactor.snip_reads_early(
+                current_older,
+                keep_recent=3,
+                state=effective_state,
+            )
+            if not self._same_message_contents(current_older, read_snipped_older):
+                current_items = self._merge_old_recent(
+                    original_items=current_items,
+                    older_replacements=read_snipped_older,
+                    recent_items=recent_items,
+                    keep_steps=keep_steps,
+                )
+                current_older = read_snipped_older
+                after_read_snip_tokens = self._count_messages_with_pending(
+                    current_items, pending
+                )[0]
+                events.append(
+                    self._runtime_event(
+                        stage="early_read_snip_applied",
+                        before_tokens=current_tokens,
+                        after_tokens=after_read_snip_tokens,
+                        budget=budget,
+                        pending_tokens=pending_tokens,
+                        messages_before=len(items),
+                        messages_after=len(current_items),
+                        reason="old_read_messages_snipped_early",
+                        extra={
+                            "early_read_keep_recent": 3,
+                        },
+                    )
+                )
+                current_tokens = after_read_snip_tokens
+
         if current_tokens < micro_threshold:
             reason = (
                 "below_microcompact_threshold_after_snip"
@@ -1093,6 +1300,10 @@ class CyberGymContextHistory(CompactHistory):
         ).strip().upper()
         line_count = text.count("\n") + 1
         if tool_name == "READ":
+            # Normal-priority (exploratory) READs become snippable much
+            # earlier than high-priority (parser/field/seed) READs.
+            if priority == "normal":
+                return chars >= 15_000 or line_count >= 300
             return chars >= 40_000 or line_count >= 800
         if tool_name == "BASH":
             return chars >= 40_000

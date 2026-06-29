@@ -44,3 +44,12 @@ htmlcov/
 
 # MyPy
 .mypy_cache/
+
+# Vendored qitos build/runtime artifacts (source is tracked)
+qitos/__pycache__/
+qitos/*.egg-info/
+qitos/qitos.egg-info/
+qitos/qitos_zoo/
+qitos/qitos/benchmark/cybergym/agent/runs/
+qitos/qitos/benchmark/cybergym/agent/.agent/
+qitos/qitos/benchmark/cybergym/agent/.cybergym/

@@ -214,6 +214,41 @@ class PromptsMixin:
                     f"- You have {len(confirmed_gates)} confirmed chain gate(s). "
                     "Ensure your PoC satisfies all confirmed gates.\n"
                 )
+
+            # Constraint completeness check: warn if chain nodes have no gates
+            nodes = list(getattr(state, "call_chain_nodes", []) or [])
+            all_gates = list(getattr(state, "call_chain_gates", []) or [])
+            if nodes:
+                uncovered = []
+                for node in nodes:
+                    node_gates = [g for g in all_gates if g.node_order == node.order]
+                    if not any(g.status == "confirmed" for g in node_gates):
+                        uncovered.append(node)
+                if uncovered and not state.candidate_required:
+                    names = [n.function for n in uncovered[:3]]
+                    constraint_lines += (
+                        f"\nWARNING: Chain nodes with no confirmed constraints: {', '.join(names)}. "
+                        "These nodes likely have undiscovered conditions (format requirements, "
+                        "dispatch routing, bounds checks) that your PoC must satisfy. "
+                        "READ their code and use record_gate before constructing a PoC.\n"
+                    )
+                constraint_lines = (
+                    f"- You have {len(confirmed_gates)} confirmed chain gate(s). "
+                    "Ensure your PoC satisfies all confirmed gates.\n"
+                )
+            # Pre-Construction Derivation Checklist — forces LLM to derive
+            # concrete byte values before writing PoC code, reducing wasted
+            # reasoning tokens on vague gate conditions.
+            if confirmed_gates:
+                constraint_lines += (
+                    "\n## Pre-Construction Derivation Checklist\n"
+                    "Before writing PoC code, derive concrete values for EACH requirement in the PoC Byte Layout:\n"
+                    "1. For fixed-byte requirements: what exact bytes must appear at what offset?\n"
+                    "2. For field constraints: what value triggers the vulnerability? compute the exact number\n"
+                    "3. Compute: total PoC size = header bytes + field bytes + overflow data\n"
+                    "4. Verify: does the PoC satisfy every requirement listed in 'PoC Requirements'?\n"
+                    "Write these as Python comments BEFORE the PoC code.\n"
+                )
             return render_prompt_resource(
                 "phase/formulation.md",
                 constraint_lines=constraint_lines,

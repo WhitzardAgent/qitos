@@ -110,6 +110,78 @@ WHERE vul_exit_code IS NOT NULL AND vul_exit_code != 0 AND fix_exit_code = 0;  -
 (`crash both vul+fix` = the PoC isn't specific to this bug → **fails**. `vul_exit_code == 0` = no
 crash → **fails**, even if the agent kept submitting.)
 
+### Changelog: v07 → v08 (constraint_discovery branch)
+
+Key changes focused on **accelerating PoC construction** — reducing steps to first
+successful submit by improving constraint discovery and constraint solving.
+
+#### 1. Two-tier constraint extraction (LLM as judge)
+
+**Before:** `_extract_path_constraints_from_read()` only auto-extracted memcmp/strcmp
+format gates. Bounds checks, dispatch conditions, and path guards had to be discovered
+manually via `record_gate`, costing 3-5 steps per constraint.
+
+**After:** Regex extracts **candidate conditions** (bounds/dispatch/guard patterns) from
+chain-node functions and stores them in `suggested_constraints` — a separate list that is
+NOT directly promoted to the constraint board. The LLM sees them as "Suggested Constraints"
+and judges which are real path constraints, promoting relevant ones via `record_gate`. This
+avoids false positives (regex can't distinguish `if (length < 16)` from `if (debug_mode)`,
+but the LLM can).
+
+**Lesson:** Regex is for candidate generation, not decision-making. When you can't do data
+flow analysis, let the LLM be the judge — it already has the code context.
+
+#### 2. Carrier format auto-detection from fuzzer build scripts
+
+**Before:** The agent discovered the required input format (JPEG, PNG, etc.) by reading code
+or from description keywords — often wasting 3-6 steps on the wrong format.
+
+**After:** `_discover_fuzzer_target()` scans repo build scripts for fuzzer binary names
+(e.g., `coder_JPG_fuzzer`, `font_sfnt_fuzzer`) and maps them to format types + magic
+bytes. `_build_input_format_model()` uses this to set `format_type` and `magic_bytes`
+from step 1.
+
+**Lesson:** The fuzzer binary name is the strongest signal for input format — stronger than
+description keywords or corpus file inspection. Extract it early.
+
+#### 3. Diagnostic gate refutation (not circular hints)
+
+**Before:** When a submit failed with NO_TRIGGER, the repair hint was "READ the code at
+this point to understand the exact condition" — circular guidance that wasted steps.
+
+**After:** Refutation includes concrete diagnostics: PoC header hex bytes, expected magic
+bytes from `input_format`, and server output function names to identify the execution
+frontier. For `carrier_parse`, the hint now says "Expected magic bytes: FF D8 FF (JPEG).
+Use toolbox.formats.jpeg.minimal() to create a valid carrier."
+
+**Lesson:** Feedback must be diagnostic, not prescriptive. "Your PoC starts with [hex] but
+expected [magic]" is actionable. "READ the code" is not.
+
+#### 4. Constraint completeness awareness
+
+**Before:** The agent had no way to know if it had discovered all constraints on the path.
+It would record 2-3 gates and start constructing, only to fail and discover more.
+
+**After:** The constraint board now includes a "Constraint Coverage" section showing each
+chain node's gate count. Nodes with zero confirmed gates are flagged with a warning:
+"READ their code to discover hidden conditions before constructing PoC." The formulation
+phase prompt also warns when chain nodes have no constraints.
+
+**Lesson:** Make constraint completeness visible. The agent shouldn't construct a PoC
+when the entry node has zero constraints — it's guaranteed to fail.
+
+#### 5. Pre-submission carrier format validation
+
+**Before:** The agent submitted invalid carriers (wrong magic bytes, too small) and waited
+for a server round-trip to learn they failed.
+
+**After:** `_pre_submit_validate()` checks PoC magic bytes against `input_format.magic_bytes`
+and runs toolbox format inspect before submission. Failures append a diagnostic to
+`last_error_trace` (soft warning, not hard block).
+
+**Lesson:** A cheap local check before an expensive remote call. Particularly valuable for
+carrier-format tasks where hand-crafted binaries often have wrong headers.
+
 ### Changelog: v06 → v07 (para_action branch)
 
 Key changes from the previous version, distilled as reusable engineering lessons.
@@ -453,6 +525,63 @@ WHERE vul_exit_code IS NOT NULL AND vul_exit_code != 0 AND fix_exit_code = 0;  -
 ```
 
 (`vul、fix 都崩` = PoC 不专属于这个洞 → **失败**;`vul_exit_code == 0` = 没崩 → **失败**,哪怕 agent 一直在提交。)
+
+### 变更记录: v07 → v08 (constraint_discovery 分支)
+
+聚焦**加速 PoC 构建**——通过改进约束发现与约束求解减少首次成功提交的步数。
+
+#### 1. 两层约束提取(LLM 当裁判)
+
+**之前:** `_extract_path_constraints_from_read()` 仅自动提取 memcmp/strcmp 格式门。
+边界检查、分派条件、路径守卫需手动 `record_gate`,每条约束浪费 3-5 步。
+
+**之后:** 正则从 chain-node 函数中提取**候选条件**(bounds/dispatch/guard),存入
+`suggested_constraints`——一个不直接进入约束板的独立列表。LLM 在"Suggested Constraints"
+中判断哪些是真正的路径约束,通过 `record_gate` 确认。这避免了误报(正则分不清
+`if (length < 16)` 和 `if (debug_mode)`,但 LLM 能)。
+
+**经验:** 正则负责候选生成,不做决策。做不了数据流分析时,让 LLM 当裁判——它已有代码上下文。
+
+#### 2. 载体格式自动检测(从 fuzzer 构建脚本)
+
+**之前:** Agent 通过读代码或描述关键词发现输入格式(JPEG/PNG 等),常浪费 3-6 步。
+
+**之后:** `_discover_fuzzer_target()` 扫描仓库构建脚本中的 fuzzer 二进制名(如
+`coder_JPG_fuzzer`、`font_sfnt_fuzzer`),映射到格式类型 + 魔数。`_build_input_format_model()`
+从第 1 步就设置 `format_type` 和 `magic_bytes`。
+
+**经验:** fuzzer 二进制名是输入格式的最强信号——比描述关键词或语料文件检查更可靠。尽早提取。
+
+#### 3. 诊断式门反驳(非循环提示)
+
+**之前:** 提交失败收到 NO_TRIGGER 时,修复提示是"READ the code at this point to understand
+the exact condition"——循环指导,浪费步骤。
+
+**之后:** 反驳包含具体诊断:PoC 头部十六进制、`input_format` 预期魔数、服务器输出函数名
+定位执行前沿。`carrier_parse` 提示现为"Expected magic bytes: FF D8 FF (JPEG). Use
+toolbox.formats.jpeg.minimal() to create a valid carrier."
+
+**经验:** 反馈必须是诊断性的,而非规定性的。"Your PoC starts with [hex] but expected [magic]"
+是可操作的。"READ the code"不是。
+
+#### 4. 约束完整性感知
+
+**之前:** Agent 无法知道是否已发现路径上的所有约束。记录 2-3 个门就开始构造,失败后再发现更多。
+
+**之后:** 约束板新增"Constraint Coverage"节,展示每个链节点的门数。零确认门的节点被标记警告:
+"READ their code to discover hidden conditions before constructing PoC。"制定阶段 prompt
+也在链节点无约束时发出警告。
+
+**经验:** 让约束完整性可见。入口节点零约束时不应构造 PoC——必定失败。
+
+#### 5. 提交前载体格式验证
+
+**之前:** Agent 提交无效载体(错误魔数、过小),等待服务器往返才知道失败。
+
+**之后:** `_pre_submit_validate()` 在提交前检查 PoC 魔数是否匹配 `input_format.magic_bytes`,
+并运行 toolbox 格式检查。失败时将诊断追加到 `last_error_trace`(软警告,非硬阻止)。
+
+**经验:** 一次廉价本地检查,省一次昂贵远程调用。对手工构造二进制文件常常头部错误的场景尤其有价值。
 
 ### 变更记录: v06 → v07 (para_action 分支)
 
