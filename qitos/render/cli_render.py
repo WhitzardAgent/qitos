@@ -109,10 +109,10 @@ class RichRender:
                 panel_style = "white"
                 icon = "📝"
 
-            # Truncate content if too long
+            # Truncate content if too long (high limit for full debug visibility)
             content_str = str(content)
-            if len(content_str) > 20000:
-                content_str = content_str[:20000] + "\n... [truncated]"
+            if len(content_str) > 200000:
+                content_str = content_str[:200000] + "\n... [truncated]"
 
             # Format content with syntax highlighting if it's JSON
             if isinstance(content, dict):

@@ -42,7 +42,7 @@ _NOISE_KEYS = {
 class ContentFirstRenderer:
     """Extract concise thought/action/observation/memory blocks from events."""
 
-    def __init__(self, max_preview_chars: int = 500):
+    def __init__(self, max_preview_chars: int = 50000):
         self.max_preview_chars = max(120, int(max_preview_chars))
 
     def task_text(self, task: str, max_steps: Optional[int] = None) -> str:
@@ -75,10 +75,10 @@ class ContentFirstRenderer:
             if isinstance(raw, str) and raw.strip():
                 # Try ReAct-style "Thought: ..." extraction first
                 m = _THOUGHT_RE.search(raw)
-                if m:
-                    segments.append(m.group(1).strip())
-                else:
-                    segments.append(raw.strip())
+                extracted = m.group(1).strip() if m else raw.strip()
+                # Deduplicate: skip raw_output if it duplicates reasoning_content
+                if not any(s == extracted for s in segments):
+                    segments.append(extracted)
             if not segments:
                 return None
             combined = "\n---\n".join(segments)

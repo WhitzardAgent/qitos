@@ -336,7 +336,7 @@ class ClaudeStyleHook(RenderStreamHook):
     def __init__(
         self,
         output_jsonl: Optional[str] = None,
-        max_preview_chars: int = 800,
+        max_preview_chars: int = 50000,
         theme: str = "research",
     ):
         super().__init__(output_jsonl=output_jsonl)
