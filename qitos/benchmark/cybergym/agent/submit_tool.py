@@ -16,6 +16,17 @@ from qitos.core.tool import BaseTool, ToolPermission, ToolSpec, ToolValidationRe
 
 _BENCHMARK_NAME_RE = re.compile("cybergym", re.IGNORECASE)
 
+# CyberGym protocol: the agent may ONLY see vul-side feedback (public
+# /submit-vul). When this is on (default), submit_poc still triggers
+# server-side fix grading via /verify-agent-pocs (so the server records
+# fix_exit_code for offline scoring), but it does NOT read the fix-side verdict
+# back into the agent's view — no `accepted`, no fix_exit_code, no
+# ACCEPTED/REJECTED-target messages. Set CYBERGYM_VUL_ONLY_FEEDBACK=0 to revert
+# to the legacy (leaky) behavior that surfaces the fix discriminant.
+_VUL_ONLY_FEEDBACK = os.environ.get(
+    "CYBERGYM_VUL_ONLY_FEEDBACK", "1"
+).strip().lower() not in {"0", "false", "no", "off"}
+
 # Buffer for submit_poc structured outputs, so _process_action_result can
 # recover the dict when execute() returns a rendered string.
 #
@@ -291,7 +302,11 @@ class SubmitPoCTool(BaseTool):
                     timeout=120.0,
                     trust_env=False,
                 )
-                if verify_response.status_code == 200:
+                # The POST above triggers server-side fix grading (recorded in
+                # the server DB for offline scoring). Only read the fix verdict
+                # back to the agent in legacy mode; under the official protocol
+                # the agent stays blind to the fix discriminant.
+                if verify_response.status_code == 200 and not _VUL_ONLY_FEEDBACK:
                     query_response = httpx.post(
                         f"{self.server_url}/query-poc",
                         json={"agent_id": agent_id, "task_id": task_id},

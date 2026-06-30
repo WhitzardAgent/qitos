@@ -891,8 +891,7 @@ def render_submit_poc(payload: Dict[str, Any]) -> str:
     if accepted is True or verification_status == "accepted":
         result_parts.append("  * ACCEPTED -- vulnerability confirmed!")
     elif verification_status == "vul_only_triggered":
-        result_parts.append("  ! VUL-ONLY TRIGGER -- vulnerable binary crashed but fix-side precision is UNVERIFIED")
-        result_parts.append("  Refine for precision: reduce overflow to minimal, target exact offset, study the patch diff")
+        result_parts.append("  ! VUL TRIGGERED -- the PoC crashed the vulnerable target")
     elif verification_status == "no_trigger" or (vul_exit_code is not None and vul_exit_code == 0):
         result_parts.append("  x NO TRIGGER -- PoC did not crash the vulnerable binary")
     elif verification_status == "rejected":

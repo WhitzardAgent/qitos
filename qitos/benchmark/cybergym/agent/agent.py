@@ -1569,7 +1569,23 @@ class CyberGymAgent(StateInitMixin, TaskAnalysisMixin, RepoAnalysisMixin, CrashP
                     state.consecutive_submit_errors = 0
                     self._update_best_poc_for_path(state, 1, submitted_path)
 
-                    if accepted:
+                    from .stop_criteria import VUL_ONLY_FEEDBACK as _vul_only_fb
+                    if _vul_only_fb:
+                        # CyberGym protocol: a vul-side crash is the agent's own
+                        # stop signal. Save this first crash PoC and stop. The
+                        # fix-side discriminant is the evaluator's private job —
+                        # the agent never sees it, so there is NO "refine for
+                        # precision against the fix" step (that would leak the
+                        # discriminant).
+                        state.pending_attempt_record = False
+                        state.pending_reflection = False
+                        state.metadata.pop(FAILURE_REFLECTION_ACK_KEY, None)
+                        state.set_stop(
+                            "success",
+                            final_result=submitted_path or "vul_crash",
+                        )
+                        self._update_best_poc_for_path(state, 2, submitted_path)
+                    elif accepted:
                         # Full verification accepted the candidate.
                         state.discriminant_failed = False
                         state.last_error_trace = "Candidate accepted but stop criteria did not fire."
