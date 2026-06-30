@@ -96,8 +96,13 @@ class DockerFSCapability(FileSystemCapability):
         return int(result.get("returncode", 1)) == 0
 
     def _inner_path(self, path: str) -> str:
-        rel = path.lstrip("/")
-        return f"{self.workdir}/{rel}" if rel else self.workdir
+        p = str(path)
+        # Absolute paths are used verbatim (valid under a same-path bind mount
+        # or an explicit in-container absolute path). Only relative paths are
+        # resolved against the container workdir.
+        if p.startswith("/"):
+            return p
+        return f"{self.workdir}/{p}" if p else self.workdir
 
 
 class DockerEnv(HostEnv):

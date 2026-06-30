@@ -99,7 +99,30 @@ def run_cybergym_agent_task(
         llm_config={"api_key": api_key, "base_url": base_url},
     )
 
-    env = HostEnv(workspace_root=workspace_root)
+    if os.getenv("CYBERGYM_USE_DOCKER_ENV", "0") == "1":
+        # Per-task Docker isolation: the agent's file/command tools execute
+        # inside an ephemeral container, so it cannot wander outside the task
+        # workspace. We use a SAME-PATH bind mount (host workspace mounted at
+        # its own absolute path in-container) so host and container agree on
+        # every path. That keeps the host-side agent process (LLM calls and
+        # submit_poc, which reads the PoC file off the host fs) working
+        # unchanged, while the agent's bash/read/write tools run in-container.
+        from qitos.kit.env.docker_env import DockerEnv
+
+        _img = os.getenv("CYBERGYM_DOCKER_IMAGE", "cage/claude-code:cyberdebug")
+        _net = os.getenv("CYBERGYM_DOCKER_NETWORK", "host").strip() or None
+        _host_ws = str(Path(workspace_root).resolve())
+        env = DockerEnv(
+            workspace_root=_host_ws,          # container workdir == host path
+            image=_img,
+            host_workspace=_host_ws,          # bind-mount host_ws:host_ws
+            auto_create=True,
+            remove_on_close=True,
+            network=_net,
+        )
+        # container lifecycle (setup/teardown) is driven by the engine
+    else:
+        env = HostEnv(workspace_root=workspace_root)
     stop_criteria = [
         PoCVerificationCriteria(),
         FinalResultCriteria(),
