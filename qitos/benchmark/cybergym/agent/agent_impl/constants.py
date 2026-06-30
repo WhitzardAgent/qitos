@@ -105,6 +105,16 @@ POC_OUTPUT_DIR = "pocs"
 POC_PLACEHOLDER_CHARS = set("{}<>[]$*?")
 
 # ---------------------------------------------------------------------------
+# Suggested constraints (auto-extracted by tree-sitter)
+# ---------------------------------------------------------------------------
+
+SUGGESTED_CONSTRAINTS_ENABLED = os.environ.get(
+    "CYBERGYM_SUGGESTED_CONSTRAINTS", "1"
+).strip().lower() not in {"0", "false", "no", "off"}
+# Default ON — tree-sitter extractor produces useful suggestions.
+# Set to 0 to disable if quality regresses.
+
+# ---------------------------------------------------------------------------
 # Sanitisation
 # ---------------------------------------------------------------------------
 

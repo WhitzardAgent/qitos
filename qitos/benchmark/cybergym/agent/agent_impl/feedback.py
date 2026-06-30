@@ -265,6 +265,7 @@ class FeedbackMixin:
             is_asan_memory = any(kw in ct_lower for kw in (
                 "buffer", "overflow", "use-after-free", "stack-buffer",
                 "heap-buffer", "heap-use-after-free", "out-of-bounds",
+                "uninitialized",
             ))
             if is_asan_memory:
                 fix_exit = result.get("fix_exit_code")
@@ -537,22 +538,27 @@ class FeedbackMixin:
                 )
                 target_gate[1].evidence = f"Refuted by path_not_reached (frontier diagnosed)"
             elif open_gates:
-                # Fallback: refute earliest open gate, but with a better hint
+                # No crash trace to determine frontier. Use "questioned"
+                # instead of "refuted" — the gate might be correct, the
+                # agent just couldn't construct a PoC that satisfies it.
                 earliest = min(open_gates, key=lambda x: x[1].node_order)
-                earliest[1].status = "refuted"
+                earliest[1].status = "questioned"
                 cond = earliest[1].required_condition or ""
-                hint = "Path not reached — this condition was not satisfied."
+                hint = (
+                    "Path not reached but no crash trace to determine frontier. "
+                    "This gate may be correct — confirm or adjust."
+                )
                 if poc_hex:
                     hint += f" Your PoC starts with: {poc_hex}."
                 if cond:
-                    hint += f" Required: {cond}. Fix the corresponding field."
+                    hint += f" Required: {cond}. Consider if this condition is truly necessary."
                 else:
                     hint += (
                         " READ the code at this point to find the exact condition, "
                         "then use record_gate to capture it."
                     )
                 earliest[1].repair_hint = hint
-                earliest[1].evidence = f"Refuted by path_not_reached failure"
+                earliest[1].evidence = "Questioned by path_not_reached (no crash evidence)"
         elif gate == "trigger_wrong_signature":
             # ASAN corruption detected but wrong crash type — the path WAS
             # reached but the trigger is wrong.  Don't refute path gates;
@@ -572,6 +578,23 @@ class FeedbackMixin:
                     g.status = "refuted"
                     g.repair_hint = "Input routed to wrong code path — fix the dispatch field in PoC"
                     g.evidence = f"Refuted by trigger_wrong_location"
+        elif gate == "wrong_trigger":
+            # Non-ASAN crash or crash without type — input reached the code
+            # but didn't satisfy the trigger condition. Refute the first
+            # open value_gate or bounds_gate at the sink node.
+            sink_order = max(
+                (n.order for n in state.call_chain_nodes if n.role == "sink"),
+                default=0,
+            )
+            for i, g in open_gates:
+                if g.gate_type in ("value_gate", "bounds_gate") and g.node_order == sink_order:
+                    g.status = "refuted"
+                    g.repair_hint = (
+                        "Input reached vulnerable code but trigger condition not met — "
+                        "adjust the trigger value/field in the PoC"
+                    )
+                    g.evidence = "Refuted by wrong_trigger"
+                    break
 
     @staticmethod
     def _derive_failure_record(output: Dict[str, Any], submit_context: Dict[str, Any]) -> FailureRecord | None:

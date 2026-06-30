@@ -593,22 +593,16 @@ class CyberGymAgent(StateInitMixin, TaskAnalysisMixin, RepoAnalysisMixin, CrashP
 
     @staticmethod
     def _extract_path_constraints_from_read(state: CyberGymState, output: Any) -> None:
-        """Auto-extract constraints from READ content.
+        """Auto-extract constraints from READ content using tree-sitter AST.
 
-        Pattern 1: format_gate — memcmp/strcmp magic-byte comparisons.
-            High confidence → directly creates ChainGate (status="inferred").
+        Two-tier design:
+          - High-confidence constraints (format_gate from memcmp/strcmp)
+            → directly create ChainGate (status="inferred").
+          - Medium/low-confidence constraints (bounds/dispatch/path)
+            → stored as suggested_constraints for LLM judgment.
 
-        Patterns 2-4: bounds/dispatch/path — extracted as **suggested constraints**
-            and stored in state.suggested_constraints (NOT call_chain_gates).
-            These are presented to the LLM as candidates for judgment.  The LLM
-            decides which ones are real path constraints and uses record_gate to
-            promote them to call_chain_gates.
-
-            This two-tier design avoids false positives: regex cannot distinguish
-            "if (length < 16)" (input-related) from "if (debug_mode)" (internal
-            state), but the LLM can.
-
-        Legacy path_constraints list is still populated for backward compat.
+        Uses tree-sitter for AST-level extraction when available,
+        falling back to regex Pattern 1 (format_gate) otherwise.
         """
         if not isinstance(output, dict):
             return
@@ -631,134 +625,116 @@ class CyberGymAgent(StateInitMixin, TaskAnalysisMixin, RepoAnalysisMixin, CrashP
                 is_chain_node = True
                 break
 
+        # Existing suggestion/gate descriptions for dedup
+        existing_suggestion_descs = {
+            s.get("description", "") for s in state.suggested_constraints
+        }
+        existing_gate_descs = {g.description for g in state.call_chain_gates}
+        existing_gate_conditions = {g.required_condition for g in state.call_chain_gates}
+
+        # --- tree-sitter extraction ---
+        from .agent_impl.constraint_extractor import extract_path_constraints
+
+        # Determine file extension for C vs C++ parser selection
+        ext = ".c"
+        if read_path.endswith((".cpp", ".cc", ".cxx", ".hpp")):
+            ext = ".cpp"
+        elif read_path.endswith(".h"):
+            # .h could be C or C++; default to C which is more common in fuzz targets
+            ext = ".c"
+
+        known_funcs = set(state.vulnerable_functions or [])
+        candidates = extract_path_constraints(
+            content,
+            source_path=read_path,
+            known_functions=known_funcs if is_chain_node else set(),
+            file_extension=ext,
+        )
+
         new_gates: List[ChainGate] = []
         new_suggestions: List[Dict[str, str]] = []
 
-        # Pattern 1: memcmp/strcmp format checks — high confidence, directly create gates
-        for m in re.finditer(
-            r'(?:if|assert)\s*\([^)]*(?:memcmp|strcmp|strncmp|strncasecmp)\s*\(\s*[^,]+,\s*"([^"]+)"',
-            content,
-        ):
-            magic = m.group(1)
-            desc = f"Must match '{magic}' (comparison at {read_path})"
+        for cand in candidates:
+            desc = cand.description
+            if desc in existing_gate_descs or desc in existing_descriptions:
+                continue
+            # Also dedup by required_condition to avoid semantically duplicate gates
+            if cand.required_condition in existing_gate_conditions:
+                continue
+
+            # Legacy path_constraints for backward compat
             if desc not in existing_descriptions:
                 state.path_constraints.append(
                     PathConstraint(
                         description=desc,
                         source_location=read_path,
                         status="hypothesized",
-                        constraint_type="format_gate",
+                        constraint_type=cand.gate_type,
                     )
                 )
                 existing_descriptions.add(desc)
+
+            if cand.confidence == "high" and cand.polarity == "satisfy":
+                # High-confidence satisfy constraints → directly create ChainGate
+                brief = f"{cand.gate_type} at {read_path}: {cand.required_condition[:80]}"
+                state.gate_evidence_brief[desc] = brief
                 new_gates.append(ChainGate(
                     node_order=node_order,
-                    gate_type="format_gate",
+                    gate_type=cand.gate_type,
                     description=desc,
-                    required_condition=f"Input must contain '{magic}' at the comparison offset",
+                    required_condition=cand.required_condition,
                     status="inferred",
                     evidence=f"READ {read_path}",
                     repair_hint="",
                 ))
-
-        # Patterns 2-4: only extract from chain-node functions, stored as suggestions
-        # (NOT gates) — LLM judges which are real constraints.
-        if is_chain_node:
-            content_lines = content.split("\n")
-            prologue = "\n".join(content_lines[:50])
-            full_content = content
-
-            # Existing suggestion descriptions for dedup
-            existing_suggestion_descs = {
-                s.get("description", "") for s in state.suggested_constraints
-            }
-            # Also dedup against already-confirmed gates
-            existing_gate_descs = {g.description for g in state.call_chain_gates}
-
-            _TRIVIAL_LOOP_VARS = {"i", "j", "k", "idx", "index", "n", "count"}
-
-            # Pattern 2: Numeric bounds checks
-            for m in re.finditer(
-                r'if\s*\(\s*(\w+)(?:\s*([+\-])\s*(\w+))?\s*([<>=!]+)\s*(0x[\da-fA-F]+|\d+)\s*\)',
-                prologue,
-            ):
-                var, op, offset_var, cmp_op, threshold = (
-                    m.group(1), m.group(2) or "", m.group(3) or "",
-                    m.group(4), m.group(5),
-                )
-                if var.lower() in _TRIVIAL_LOOP_VARS:
-                    continue
-                expr = f"{var}{op}{offset_var}" if offset_var else var
-                desc = f"Bounds check: {expr} {cmp_op} {threshold} at {read_path}"
-                if desc not in existing_suggestion_descs and desc not in existing_gate_descs:
-                    cond = f"{expr} must be {cmp_op} {threshold}"
+            elif desc not in existing_suggestion_descs:
+                # Medium/low confidence → suggested constraints
+                # Only include satisfy-polarity with medium+ confidence
+                # to reduce noise from low-confidence avoid-exit suggestions.
+                if cand.polarity == "satisfy" and cand.confidence in ("medium", "high"):
                     new_suggestions.append({
-                        "gate_type": "bounds_gate",
+                        "gate_type": cand.gate_type,
                         "description": desc,
-                        "required_condition": cond,
+                        "required_condition": cand.required_condition,
                         "source": read_path,
+                        "polarity": cand.polarity,
                     })
                     existing_suggestion_descs.add(desc)
 
-            # Pattern 3: Switch/case dispatch
-            for m in re.finditer(r'switch\s*\(\s*(\w+)\s*\)', prologue):
-                switch_var = m.group(1)
-                cases = re.findall(
-                    r'case\s+((?:0x[\da-fA-F]+|\d+))\s*:', full_content
-                )
-                if cases:
-                    case_str = ", ".join(cases[:6])
-                    desc = f"Dispatch on {switch_var}: cases {case_str} at {read_path}"
-                    if desc not in existing_suggestion_descs and desc not in existing_gate_descs:
-                        cond = f"{switch_var} must equal one of [{case_str}] to reach the target handler"
-                        new_suggestions.append({
-                            "gate_type": "dispatch_gate",
-                            "description": desc,
-                            "required_condition": cond,
-                            "source": read_path,
-                        })
-                        existing_suggestion_descs.add(desc)
+        # Append suggestions to state, cap at 8
+        state.suggested_constraints.extend(new_suggestions)
+        if len(state.suggested_constraints) > 8:
+            state.suggested_constraints = state.suggested_constraints[-8:]
 
-            # Pattern 4: Early-return / goto guards in function prologue
-            for m in re.finditer(
-                r'if\s*\(\s*!?(\w+)\s*\)\s*(?:return\s*[^;]*;|goto\s+(\w+)\s*;)',
-                prologue,
-            ):
-                guard_var = m.group(1)
-                goto_label = m.group(2) or ""
-                if guard_var.lower() in _TRIVIAL_LOOP_VARS | {"null", "nullptr", "0"}:
-                    continue
-                if goto_label:
-                    desc = f"Guard: must pass {guard_var} check (else goto {goto_label}) at {read_path}"
-                    cond = f"{guard_var} must be true/non-zero to continue (else jumps to {goto_label})"
-                else:
-                    desc = f"Guard: must pass {guard_var} check (else return) at {read_path}"
-                    cond = f"{guard_var} must be true/non-zero to continue (else returns early)"
-                if desc not in existing_suggestion_descs and desc not in existing_gate_descs:
-                    new_suggestions.append({
-                        "gate_type": "path_gate",
-                        "description": desc,
-                        "required_condition": cond,
-                        "source": read_path,
-                    })
-                    existing_suggestion_descs.add(desc)
-
-            # Append suggestions to state, cap at 15
-            state.suggested_constraints.extend(new_suggestions)
-            if len(state.suggested_constraints) > 15:
-                state.suggested_constraints = state.suggested_constraints[-15:]
-
-        # Add deduplicated ChainGate entries (only Pattern 1 goes here directly)
+        # Add deduplicated ChainGate entries
         existing_gate_descs = {g.description for g in state.call_chain_gates}
+        added_any = False
         for gate in new_gates:
             if gate.description not in existing_gate_descs:
                 state.call_chain_gates.append(gate)
                 existing_gate_descs.add(gate.description)
+                added_any = True
+        if new_gates or new_suggestions:
+            state.gate_board_last_changed_step = getattr(state, "current_step", 0) or 0
         # Cap total constraints to prevent unbounded growth
         if len(state.path_constraints) > 30:
             state.path_constraints = state.path_constraints[-30:]
         if len(state.call_chain_gates) > 40:
             state.call_chain_gates = state.call_chain_gates[-40:]
+
+    @staticmethod
+    def _check_and_flag_contradictions(state: CyberGymState) -> None:
+        """Detect contradictions between chain gates and downgrade the latest
+        confirmed gate to 'questioned' if a contradiction is found."""
+        from .agent_impl.observations import _detect_gate_contradictions
+        contradictions = _detect_gate_contradictions(state.call_chain_gates)
+        if contradictions:
+            # Downgrade the latest confirmed gate to questioned
+            confirmed = [g for g in state.call_chain_gates if g.status == "confirmed"]
+            if confirmed:
+                latest = max(confirmed, key=lambda g: state.call_chain_gates.index(g))
+                latest.status = "questioned"
+                latest.evidence = f"Downgraded due to contradiction: {contradictions[0]}"
 
     @staticmethod
     def _infer_chain_from_search(
@@ -1448,9 +1424,17 @@ class CyberGymAgent(StateInitMixin, TaskAnalysisMixin, RepoAnalysisMixin, CrashP
                 self._last_structured_output = None
                 recovered = True
             if not recovered and short_name == SUBMIT_POC_TOOL:
-                from .submit_tool import _last_submit_structured_output
-                if _last_submit_structured_output is not None:
-                    output = _last_submit_structured_output
+                # Recover THIS submission's result, keyed by (agent_id, poc):
+                # agent_id stops cross-task leakage; the PoC path stops parallel
+                # submits in one step from being paired with each other's verdict.
+                from .submit_tool import get_last_submit_structured
+                _meta = result.metadata if isinstance(result.metadata, dict) else {}
+                recovered_submit = get_last_submit_structured(
+                    getattr(state, "agent_id", ""),
+                    poc_path=_meta.get("poc_path"),
+                )
+                if recovered_submit is not None:
+                    output = recovered_submit
 
         self._track_read_budget(state, short_name, output)
         observation_note = self._summarize_tool_observation(short_name, output)
@@ -1672,6 +1656,8 @@ class CyberGymAgent(StateInitMixin, TaskAnalysisMixin, RepoAnalysisMixin, CrashP
                     gate = self._classify_failed_gate(output)
                     if gate:
                         self._refute_matching_gates(state, gate)
+                        # Check for gate contradictions after refutation
+                        self._check_and_flag_contradictions(state)
                         # Budget reset on path_not_reached: the feedback
                         # explicitly says "you need to understand the path
                         # better," so allow more reads.
@@ -1679,6 +1665,36 @@ class CyberGymAgent(StateInitMixin, TaskAnalysisMixin, RepoAnalysisMixin, CrashP
                             state.phase_read_actions = max(
                                 0, state.phase_read_actions - 3
                             )
+                            # Track consecutive path_not_reached with no crash evidence
+                            raw_out = str(
+                                output.get("raw_output") or output.get("vul_stderr") or ""
+                            )
+                            has_crash_evidence = bool(raw_out.strip() and any(
+                                kw in raw_out for kw in ("ASAN", "MSAN", "signal", "Segmentation", "abort")
+                            ))
+                            no_ev_key = "_no_evidence_misses"
+                            if not has_crash_evidence:
+                                state.metadata[no_ev_key] = state.metadata.get(no_ev_key, 0) + 1
+                            else:
+                                state.metadata[no_ev_key] = 0
+                            if state.metadata.get(no_ev_key, 0) >= 3:
+                                state.pending_reminders.append(
+                                    "3+ consecutive path_not_reached with no crash evidence. "
+                                    "Your constraint board may have incorrect gates. "
+                                    "Re-READ the call chain and use record_gate to update."
+                                )
+
+                # Gate board stagnation check
+                stale_steps = (
+                    (getattr(state, "current_step", 0) or 0)
+                    - getattr(state, "gate_board_last_changed_step", 0)
+                )
+                if stale_steps >= 15 and getattr(state, "consecutive_misses", 0) >= 2:
+                    state.pending_reminders.append(
+                        f"Your constraint board has been unchanged for {stale_steps} steps "
+                        f"and {state.consecutive_misses} submissions failed. "
+                        "READ the code and use record_gate to update your gates."
+                    )
 
         # Track PoC file creation
         elif normalized_name == self.WRITE_TOOL or short_name in ("write_file", "create"):
@@ -1726,11 +1742,17 @@ class CyberGymAgent(StateInitMixin, TaskAnalysisMixin, RepoAnalysisMixin, CrashP
             # When a gate is recorded, remove matching suggestions (LLM confirmed it)
             if short_name == "record_gate" and isinstance(output, dict):
                 gate_desc = str(output.get("description") or "").strip()
+                gate_cond = str(output.get("required_condition") or "").strip()
                 if gate_desc and hasattr(state, "suggested_constraints"):
                     state.suggested_constraints = [
                         s for s in state.suggested_constraints
                         if s.get("description", "") != gate_desc
                     ]
+                state.gate_board_last_changed_step = getattr(state, "current_step", 0) or 0
+                # Store evidence brief for context-loss resilience
+                if gate_desc and hasattr(state, "gate_evidence_brief"):
+                    brief = gate_cond[:80] if gate_cond else gate_desc[:80]
+                    state.gate_evidence_brief[gate_desc] = brief
 
         # Track file reads that reveal vulnerable code
         elif normalized_name == self.READ_TOOL or short_name in ("read_file", "view", "file_read_v2", "read_file_range"):

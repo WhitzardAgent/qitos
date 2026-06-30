@@ -6,6 +6,7 @@ import json
 import os
 import re
 import hashlib
+import threading
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -15,10 +16,57 @@ from qitos.core.tool import BaseTool, ToolPermission, ToolSpec, ToolValidationRe
 
 _BENCHMARK_NAME_RE = re.compile("cybergym", re.IGNORECASE)
 
-# Module-level buffer for the last submit_poc structured output, so
-# _process_action_result can recover the dict when execute() returns a
-# rendered string.
-_last_submit_structured_output: Optional[Dict[str, Any]] = None
+# Buffer for submit_poc structured outputs, so _process_action_result can
+# recover the dict when execute() returns a rendered string.
+#
+# Two reasons this must be carefully keyed (batch runner = many tasks as
+# threads in one process; one step may fire several submit_poc IN PARALLEL):
+#   1. cross-task: a single global slot let task A's verdict leak into task B
+#      (false is_verified -> premature success, wrong PoC reported).
+#   2. within-task parallel: N parallel submits in one step would all read the
+#      last-written verdict, mis-pairing each PoC with another's result.
+# So we key by (agent_id, poc-basename): agent_id (one per task) isolates
+# tasks, the PoC basename isolates parallel submissions. A per-agent "last"
+# entry is kept as a fallback when the PoC path can't be matched.
+_submit_results: Dict[tuple, Dict[str, Any]] = {}     # (agent_id, poc_key) -> structured
+_last_submit_by_agent: Dict[str, Dict[str, Any]] = {}  # agent_id -> last structured (fallback)
+_last_submit_lock = threading.Lock()
+
+
+def _poc_key(poc_path: Optional[str]) -> str:
+    p = str(poc_path or "").strip()
+    return os.path.basename(p) or p
+
+
+def _stash_submit_structured(
+    agent_id: Optional[str],
+    structured: Dict[str, Any],
+    poc_path: Optional[str] = None,
+) -> None:
+    key = str(agent_id or "").strip()
+    if not key:
+        return
+    pk = _poc_key(poc_path if poc_path is not None else structured.get("poc_path"))
+    with _last_submit_lock:
+        _last_submit_by_agent[key] = structured
+        if pk:
+            _submit_results[(key, pk)] = structured
+
+
+def get_last_submit_structured(
+    agent_id: Optional[str],
+    poc_path: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    key = str(agent_id or "").strip()
+    if not key:
+        return None
+    with _last_submit_lock:
+        if poc_path:
+            pk = _poc_key(poc_path)
+            if (key, pk) in _submit_results:
+                # consume the exact per-submission result
+                return _submit_results.pop((key, pk))
+        return _last_submit_by_agent.get(key)
 
 
 def _sanitize_model_text(text: Any) -> Any:
@@ -191,7 +239,7 @@ class SubmitPoCTool(BaseTool):
         display_poc_path = self._display_poc_path(poc_path, poc_file, runtime_context)
 
         if not poc_file.exists():
-            return self._render_submit_error({"status": "error", "error": f"PoC file not found: {poc_file}"})
+            return self._render_submit_error({"status": "error", "error": f"PoC file not found: {poc_file}"}, agent_id=agent_id)
 
         # Build the metadata payload
         metadata = json.dumps({
@@ -212,17 +260,17 @@ class SubmitPoCTool(BaseTool):
                     trust_env=False,  # bypass system proxy (causes 503 on localhost)
                 )
         except httpx.TimeoutException:
-            return self._render_submit_error({"status": "error", "error": "Server request timed out after 120 seconds"})
+            return self._render_submit_error({"status": "error", "error": "Server request timed out after 120 seconds"}, agent_id=agent_id)
         except httpx.ConnectError as e:
-            return self._render_submit_error({"status": "error", "error": _sanitize_model_text(f"Could not connect to verification server: {e}")})
+            return self._render_submit_error({"status": "error", "error": _sanitize_model_text(f"Could not connect to verification server: {e}")}, agent_id=agent_id)
 
         if response.status_code != 200:
-            return self._render_submit_error({"status": "error", "error": f"Server returned HTTP {response.status_code}: {response.text[:500]}"})
+            return self._render_submit_error({"status": "error", "error": f"Server returned HTTP {response.status_code}: {response.text[:500]}"}, agent_id=agent_id)
 
         try:
             result = response.json()
         except Exception:
-            return self._render_submit_error({"status": "error", "error": f"Invalid JSON response from server: {response.text[:500]}"})
+            return self._render_submit_error({"status": "error", "error": f"Invalid JSON response from server: {response.text[:500]}"}, agent_id=agent_id)
 
         vul_exit_code = result.get("vul_exit_code")
         fix_exit_code = result.get("fix_exit_code")
@@ -292,8 +340,7 @@ class SubmitPoCTool(BaseTool):
 
         # Store the structured dict for _process_action_result, then
         # return a rendered string for the LLM.
-        global _last_submit_structured_output
-        _last_submit_structured_output = structured
+        _stash_submit_structured(agent_id, structured)
         from .agent_impl.tool_render import render_tool_output, TOOL_RENDERING_ENABLED
         if TOOL_RENDERING_ENABLED:
             return render_tool_output("submit_poc", structured)
@@ -356,11 +403,10 @@ class SubmitPoCTool(BaseTool):
             return ""
 
     @staticmethod
-    def _render_submit_error(payload: Dict[str, Any]) -> Any:
+    def _render_submit_error(payload: Dict[str, Any], agent_id: str = "") -> Any:
         """Render a submit_poc error result, storing the dict for reduce()."""
-        global _last_submit_structured_output
         sanitized = _sanitize_payload(payload)
-        _last_submit_structured_output = sanitized
+        _stash_submit_structured(agent_id, sanitized)
         from .agent_impl.tool_render import render_tool_output, TOOL_RENDERING_ENABLED
         if TOOL_RENDERING_ENABLED:
             return render_tool_output("submit_poc", sanitized)

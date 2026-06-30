@@ -87,7 +87,7 @@ class ChainGate:
     gate_type: str       # "format_gate" | "path_gate" | "dispatch_gate" | "bounds_gate" | "value_gate"
     description: str     # e.g. "Must match 'Exif\\0\\0' magic (memcmp at attribute.c:1865)"
     required_condition: str  # Positive condition for PoC construction
-    status: str          # "confirmed" | "inferred" | "refuted" | "bypassed"
+    status: str          # "confirmed" | "inferred" | "refuted" | "bypassed" | "questioned"
     evidence: str        # e.g. "READ attribute.c:1887 — overflow detection present"
     repair_hint: str     # e.g. "Try oval+n wrap-around instead of n=0"
 
@@ -199,6 +199,7 @@ class CyberGymState(StateSchema):
     reinvestigate_requested: bool = False
     pending_reminder: str = ""
     pending_reminder_signature: str = ""
+    pending_reminders: List[str] = field(default_factory=list)
     reminder_cooldowns: Dict[str, int] = field(default_factory=dict)
     verification_history: List[Dict[str, Any]] = field(default_factory=list)
     failure_history: List[FailureRecord] = field(default_factory=list)
@@ -221,6 +222,8 @@ class CyberGymState(StateSchema):
     # Presented as "Suggested Constraints" in the observation for LLM to judge.
     # LLM should use record_gate to promote relevant ones to call_chain_gates.
     suggested_constraints: List[Dict[str, str]] = field(default_factory=list)
+    gate_board_last_changed_step: int = 0
+    gate_evidence_brief: Dict[str, str] = field(default_factory=dict)
     runtime_stage: str = "bootstrap"
     durable_project_memory: Dict[str, Any] = field(default_factory=dict)
     durable_code_facts: List[str] = field(default_factory=list)
@@ -308,7 +311,7 @@ class CyberGymState(StateSchema):
 
     def open_gates(self) -> List[ChainGate]:
         """Gates that are not yet confirmed or bypassed."""
-        return [g for g in self.call_chain_gates if g.status in ("inferred", "unknown")]
+        return [g for g in self.call_chain_gates if g.status in ("inferred", "unknown", "questioned")]
 
     def refuted_gates(self) -> List[ChainGate]:
         """Gates that were refuted — key learning signal."""

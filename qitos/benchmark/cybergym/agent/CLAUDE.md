@@ -7,6 +7,25 @@ The active runtime is QitOS, but benchmark runs import the synced bundled copy:
 /data/pxd-team/workspace-149/zwq/qitos-cybergym/qitos/benchmark/cybergym/agent
 ```
 
+## Quick Setup
+
+```bash
+# 1. Clone both repos side by side
+cd /path/to/workspace
+git clone https://github.com/bmz-q-q/cybergym_agent.git
+git clone https://github.com/WhitzardAgent/qitos.git
+cd qitos && git checkout qitos_cybergym && cd ..
+
+# 2. Install qitos as editable dependency
+pip install -e ./qitos
+
+# 3. Verify
+python3 -c "from qitos import AgentModule; print('qitos OK')"
+python3 -c "import cybergym_agent; print('agent OK')"
+```
+
+Both repos must sit as siblings under the same parent directory.
+
 ## Vendored QitOS Dependency
 
 The `qitos/` directory contains a vendored copy of the QitOS framework
@@ -90,13 +109,14 @@ After source changes:
 ```bash
 python3 -m pytest tests -q
 
-bash scripts/sync_to_qitos.sh
+# Sync to the bundled copy inside the sibling qitos repo
+QITOS_ROOT=../qitos bash scripts/sync_to_qitos.sh
 ```
 
 If the change affects import/runtime behavior, also verify the bundled copy:
 
 ```bash
-python3 -m py_compile qitos/qitos/benchmark/cybergym/agent/agent.py
+python3 -m py_compile ../qitos/qitos/benchmark/cybergym/agent/agent.py
 ```
 
 ## Current Design Biases

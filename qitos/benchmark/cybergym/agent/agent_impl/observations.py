@@ -15,8 +15,62 @@ from .constants import (
     DELEGATE_EXPLORATION_REPORT_SEEN_KEY,
     POC_OUTPUT_DIR,
     CANDIDATE_REQUIRED_REMINDER_TEXT,
+    SUGGESTED_CONSTRAINTS_ENABLED,
 )
 from .validation import ValidationMixin
+
+
+def _detect_gate_contradictions(gates) -> List[str]:
+    """Detect logical contradictions between chain gates.
+
+    Uses simple heuristic patterns to find cases where one gate
+    requires a condition that another gate makes impossible.
+    Returns a list of human-readable contradiction descriptions.
+    """
+    import re as _re
+    results: List[str] = []
+    active_gates = [g for g in gates if g.status in ("confirmed", "inferred", "questioned")]
+    if len(active_gates) < 2:
+        return results
+
+    # Build variable → condition maps for path_gate and value_gate
+    var_assignments: Dict[str, List[str]] = {}  # var → [gate_desc, ...]
+    var_nonnull: Dict[str, List[str]] = {}  # var → [gate_desc, ...]
+
+    for g in active_gates:
+        cond = str(g.required_condition or "")
+        desc = str(g.description or "")
+        # Pattern: "copy must be false" or "copy=false" in path_gate
+        if g.gate_type == "path_gate":
+            m = _re.search(r'(\w+)\s*(?:must be|=)\s*(false|true|0|1|null|NULL|nullptr)', cond, _re.IGNORECASE)
+            if m:
+                var_name = m.group(1).lower()
+                value = m.group(2).lower()
+                var_assignments.setdefault(var_name, []).append(f"{desc} ({var_name}={value})")
+
+        # Pattern: "data != NULL" or "data must be non-zero/non-null" in value_gate/bounds_gate
+        if g.gate_type in ("value_gate", "bounds_gate"):
+            m = _re.search(r'(\w+)\s*!=\s*(?:NULL|nullptr|null|0)', cond, _re.IGNORECASE)
+            if m:
+                var_name = m.group(1).lower()
+                var_nonnull.setdefault(var_name, []).append(desc)
+            m2 = _re.search(r'(\w+)\s+must be\s+(?:non-zero|non-null|true|positive)', cond, _re.IGNORECASE)
+            if m2:
+                var_name = m2.group(1).lower()
+                var_nonnull.setdefault(var_name, []).append(desc)
+
+    # Check: variable assigned false/null/0 AND required non-null
+    for var in set(var_assignments) & set(var_nonnull):
+        for assignment in var_assignments[var]:
+            for nonnull_desc in var_nonnull[var]:
+                results.append(
+                    f"Variable '{var}': {assignment} contradicts "
+                    f"{nonnull_desc} (requires {var} to be non-null)"
+                )
+                if len(results) >= 3:
+                    return results
+
+    return results
 
 
 def _gate_to_instruction(gate) -> str:
@@ -541,8 +595,12 @@ class ObservationMixin:
 
         if nodes or gates:
             confirmed_g = [g for g in gates if g.status == "confirmed"]
-            open_g = [g for g in gates if g.status in ("inferred", "unknown")]
+            open_g = [g for g in gates if g.status in ("inferred", "unknown", "questioned")]
             refuted_g = [g for g in gates if g.status == "refuted"]
+            questioned_g = [g for g in gates if g.status == "questioned"]
+
+            # Detect contradictions between gates
+            contradictions = _detect_gate_contradictions(gates)
 
             # ── Section 1: Vulnerability Summary ──
             if nodes:
@@ -561,8 +619,14 @@ class ObservationMixin:
             # ── Section 2: PoC Requirements ──
             if confirmed_g:
                 lines.append("## PoC Requirements")
+                evidence_brief = getattr(state, "gate_evidence_brief", {}) or {}
                 for g in confirmed_g:
-                    lines.append(f"- {_gate_to_instruction(g)}")
+                    instruction = _gate_to_instruction(g)
+                    brief = evidence_brief.get(g.description, "")
+                    if brief:
+                        lines.append(f"- {instruction} (evidence: {brief})")
+                    else:
+                        lines.append(f"- {instruction}")
                 lines.append("")
 
             # ── Section 3: PoC Byte Layout ──
@@ -576,6 +640,16 @@ class ObservationMixin:
             if refuted_g:
                 lines.append("## Failed Approaches")
                 for g in refuted_g[-5:]:
+                    desc = g.description
+                    if g.repair_hint:
+                        desc += f" → {g.repair_hint}"
+                    lines.append(f"- {desc}")
+                lines.append("")
+
+            # ── Section 4b: Questioned Gates ──
+            if questioned_g:
+                lines.append("## Questioned Gates (may be correct — confirm or adjust)")
+                for g in questioned_g[-5:]:
                     desc = g.description
                     if g.repair_hint:
                         desc += f" → {g.repair_hint}"
@@ -604,9 +678,18 @@ class ObservationMixin:
                         )
                         uncovered.append(node)
                     else:
+                        stale_steps = (
+                            (getattr(state, "current_step", 0) or 0)
+                            - getattr(state, "gate_board_last_changed_step", 0)
+                        )
+                        stale_msg = ""
+                        if stale_steps > 20:
+                            stale_msg = f" (board stale for {stale_steps} steps! Use record_gate NOW)"
+                        elif stale_steps > 10:
+                            stale_msg = f" (board stale for {stale_steps} steps)"
                         coverage_lines.append(
                             f"  [{node.role}] {node.function} @ {loc_short} — "
-                            f"NO gates discovered"
+                            f"NO gates discovered{stale_msg}"
                         )
                         uncovered.append(node)
 
@@ -621,29 +704,44 @@ class ObservationMixin:
                         )
                     lines.append("")
 
-            # ── Section 6: Suggested Constraints (auto-extracted, LLM judges) ──
-            suggestions = list(getattr(state, "suggested_constraints", []) or [])
-            if suggestions:
-                lines.append("## Suggested Constraints")
-                lines.append(
-                    "These conditions were auto-detected from code but may include "
-                    "false positives. Judge each one: if it is a real constraint on "
-                    "the path from input to the vulnerability, use record_gate to confirm it."
-                )
-                for s in suggestions[-8:]:
-                    gtype = s.get("gate_type", "unknown")
-                    desc = s.get("description", "")
-                    cond = s.get("required_condition", "")
-                    # Show gate type as natural language label
-                    type_label = {
-                        "bounds_gate": "BOUNDS",
-                        "dispatch_gate": "DISPATCH",
-                        "path_gate": "GUARD",
-                    }.get(gtype, gtype)
-                    lines.append(f"- [{type_label}] {desc}")
-                    if cond:
-                        lines.append(f"  Condition: {cond}")
+            # ── Section 5b: Contradiction Detection ──
+            if contradictions:
+                lines.append("## CONTRADICTION DETECTED")
+                for c in contradictions[:3]:
+                    lines.append(f"- {c}")
                 lines.append("")
+
+            # ── Section 6: Suggested Constraints (auto-extracted, LLM judges) ──
+            if SUGGESTED_CONSTRAINTS_ENABLED:
+                suggestions = list(getattr(state, "suggested_constraints", []) or [])
+                # Only show satisfy-polarity suggestions (avoid-exit ones are
+                # noisy and the tree-sitter extractor already marks them).
+                satisfy_suggestions = [
+                    s for s in suggestions if s.get("polarity", "satisfy") == "satisfy"
+                ]
+                if satisfy_suggestions:
+                    lines.append("## Suggested Constraints")
+                    lines.append(
+                        "These conditions were auto-detected from code but may include "
+                        "false positives. Judge each one: if it is a real constraint on "
+                        "the path from input to the vulnerability, use record_gate to confirm it."
+                    )
+                    for s in satisfy_suggestions[-5:]:
+                        gtype = s.get("gate_type", "unknown")
+                        desc = s.get("description", "")
+                        cond = s.get("required_condition", "")
+                        # Show gate type as natural language label
+                        type_label = {
+                            "bounds_gate": "BOUNDS",
+                            "dispatch_gate": "DISPATCH",
+                            "path_gate": "GUARD",
+                            "format_gate": "FORMAT",
+                            "value_gate": "VALUE",
+                        }.get(gtype, gtype)
+                        lines.append(f"- [MUST-SATISFY] [{type_label}] {desc}")
+                        if cond:
+                            lines.append(f"  Condition: {cond}")
+                    lines.append("")
 
             # ── Section 7: Unresolved Questions ──
             if open_g:
@@ -695,6 +793,11 @@ class ObservationMixin:
         ch = str(getattr(state, "current_hypothesis", "") or "").strip()
         if ch:
             lines.append(f"- Hypothesis: {ch}")
+        # Gate evidence briefs — survive context compaction
+        geb = dict(getattr(state, "gate_evidence_brief", {}) or {})
+        if geb:
+            for desc, brief in list(geb.items())[-6:]:
+                lines.append(f"- Gate evidence: {brief}")
         return lines
 
     def _current_objective(self, state: CyberGymState) -> str:
@@ -704,7 +807,7 @@ class ObservationMixin:
         if ready_paths:
             if self._candidate_ready_file_missing(state):
                 missing = self._missing_ready_poc_paths(state)
-                return f"Regenerate missing ready PoC file(s): {', '.join(missing)}."
+                return f"Regenerate missing ready PoC file(s): {', '.join(missing[:3])}."
             if len(ready_paths) <= 1:
                 return f"Submit the complete ready PoC list now: `{ready_paths[0]}`."
             return f"Submit the complete ready PoC list now ({len(ready_paths)} paths)."
