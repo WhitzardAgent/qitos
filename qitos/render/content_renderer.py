@@ -485,7 +485,7 @@ class ContentFirstRenderer:
         return {
             "status": "success",
             "title": title,
-            "body": self._truncate(body, 2000) if body else "",
+            "body": self._truncate(body, 50000) if body else "",
             "primary_kind": "terminal_output" if output else "terminal_screen",
             "secondary_only": secondary,
         }
@@ -497,7 +497,7 @@ class ContentFirstRenderer:
             return {
                 "status": "neutral",
                 "title": "Observation",
-                "body": self._truncate(self._to_text(item), 220),
+                "body": self._truncate(self._to_text(item), 50000),
                 "primary_kind": "tool_result",
                 "secondary_only": secondary,
             }
@@ -548,7 +548,7 @@ class ContentFirstRenderer:
                 "status": "error",
                 "title": self._truncate(str(err), 120),
                 "url": self._short_url(url) if url else "",
-                "body": self._truncate(self._to_text(cleaned.get("content", "")), 180),
+                "body": self._truncate(self._to_text(cleaned.get("content", "")), 50000),
                 "primary_kind": "error",
                 "secondary_only": secondary,
             }
@@ -558,7 +558,7 @@ class ContentFirstRenderer:
             "status": "success",
             "title": self._truncate(title, 120),
             "url": self._short_url(url) if url else "",
-            "body": self._truncate(body, 220) if body else "",
+            "body": self._truncate(body, 50000) if body else "",
             "primary_kind": "tool_result",
             "secondary_only": secondary,
         }
@@ -571,7 +571,7 @@ class ContentFirstRenderer:
             if "\n" not in value or len(value) < 40:
                 continue
             return Syntax(
-                self._truncate(value, 2000), self._guess_language(data), word_wrap=True
+                self._truncate(value, 50000), self._guess_language(data), word_wrap=True
             )
         return None
 
@@ -638,7 +638,7 @@ class ContentFirstRenderer:
     def _truncate(self, text: str, limit: int) -> str:
         if len(text) <= limit:
             return text
-        return f"{text[:limit]}... (truncated)"
+        return f"{text[:limit]}... (truncated, {len(text)} total chars)"
 
     def _to_text(self, value: Any) -> str:
         if isinstance(value, str):
