@@ -19,28 +19,6 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-# Install a global excepthook that writes uncaught exceptions to a file
-# so they are never silently lost even if stderr is redirected.
-_original_excepthook = sys.excepthook
-
-
-def _file_excepthook(exc_type, exc_value, exc_tb):
-    import traceback
-    # Always print to original stderr
-    _original_excepthook(exc_type, exc_value, exc_tb)
-    # Also write to file
-    try:
-        err_log = Path(os.environ.get("CYBERGYM_TASK_TRACE_DIR", "/tmp")) / "step_error.log"
-        with open(err_log, "a") as f:
-            f.write(f"\n{'='*60}\nUNCAUGHT EXCEPTION\n")
-            f.write(f"{exc_type.__name__}: {exc_value}\n")
-            traceback.print_exception(exc_type, exc_value, exc_tb, file=f)
-    except Exception:
-        pass
-
-
-sys.excepthook = _file_excepthook
-
 
 def run_local(
     *,
