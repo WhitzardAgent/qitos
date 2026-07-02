@@ -47,6 +47,24 @@ ObservationT = TypeVar("ObservationT")
 ActionT = TypeVar("ActionT")
 
 
+def _escape_runtime_context_content(content: str) -> str:
+    """Escape literal closing tags that would break the XML wrapper."""
+    return content.replace("</RUNTIME_CONTEXT>", "&lt;/RUNTIME_CONTEXT&gt;")
+
+
+def _wrap_runtime_context(content: str) -> str:
+    """Wrap runtime-state user message in semantic XML tags."""
+    safe_content = _escape_runtime_context_content(content)
+    return (
+        '<RUNTIME_CONTEXT\n'
+        '  source="agent_runtime_controller"\n'
+        '  kind="authoritative_state"\n'
+        '  task_continuation="true">\n'
+        f'{safe_content}\n'
+        '</RUNTIME_CONTEXT>'
+    )
+
+
 class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
     def __init__(self, engine: _EngineProtocol):
         self.engine = engine
@@ -298,6 +316,10 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
                 continue
             messages.append({"role": role, "content": content})
         current_user_content = "\n\n".join(injection_prefixes + [str(prepared)])
+        # Wrap runtime-state messages (step > 0) in semantic XML tags.
+        # Step 0 is the initial task assignment and must remain unwrapped.
+        if record.step_id > 0:
+            current_user_content = _wrap_runtime_context(current_user_content)
         current_user = self._build_current_user_message(
             prepared_text=current_user_content,
             prompt_user_content_blocks=prompt_user_content_blocks,
@@ -332,8 +354,11 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
                 "prompt": dict(record.prompt_metadata),
             },
         )
+        history_content = str(prepared)
+        if record.step_id > 0:
+            history_content = _wrap_runtime_context(history_content)
         engine._history_append(
-            "user", str(prepared), record.step_id, metadata={"source": "engine"}
+            "user", history_content, record.step_id, metadata={"source": "engine"}
         )
         request_options = self._build_model_request_options(
             prompt_bundle=prompt_bundle,
@@ -800,6 +825,20 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
             task_memory_text = self._extract_task_memory_text(state_obj)
             if task_memory_text:
                 stats["task_memory"] = task_memory_text
+            # Agent business phase and control mode for TUI badge
+            for attr in ("current_phase", "control_mode"):
+                val = getattr(state_obj, attr, None)
+                if val:
+                    stats[attr] = val
+            # Sink candidates and objective for TUI display
+            metadata = getattr(state_obj, "metadata", None)
+            if isinstance(metadata, dict):
+                sink_text = metadata.get("_tui_sink_candidates")
+                if isinstance(sink_text, str) and sink_text.strip():
+                    stats["sink_candidates"] = sink_text
+                objective_text = metadata.get("_tui_objective")
+                if isinstance(objective_text, str) and objective_text.strip():
+                    stats["objective"] = objective_text
         return stats
 
     @staticmethod

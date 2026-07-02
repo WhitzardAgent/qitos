@@ -112,6 +112,14 @@ _CLAUDE_THEME_PRESETS: Dict[str, Dict[str, Any]] = {
     },
 }
 
+_PHASE_COLORS: Dict[str, str] = {
+    "ingestion": "bright_blue",
+    "exploration": "bright_cyan",
+    "investigation": "bright_yellow",
+    "formulation": "bright_magenta",
+    "verification": "bright_green",
+}
+
 
 class RenderStreamHook(RenderHook):
     """Emit normalized render events for terminal and frontend consumers."""
@@ -133,11 +141,12 @@ class RenderStreamHook(RenderHook):
 
     def on_before_step(self, ctx: HookContext, engine: "Engine") -> None:
         agent_id = getattr(ctx.record, "agent_id", None) if ctx.record else None
+        agent_phase = getattr(ctx.state, "current_phase", None) or None
         self._emit(
             "lifecycle",
             "step_start",
             step_id=ctx.step_id,
-            payload={"phase": ctx.phase.value, "agent_id": agent_id},
+            payload={"phase": ctx.phase.value, "agent_id": agent_id, "agent_phase": agent_phase},
         )
 
     def on_after_decide(self, ctx: HookContext, engine: "Engine") -> None:
@@ -399,6 +408,11 @@ class ClaudeStyleHook(RenderStreamHook):
         self._rendered_action_indices: set[tuple[int, int]] = set()
         self._rendered_observation_indices: set[tuple[int, int]] = set()
 
+    @staticmethod
+    def _phase_badge(phase: str) -> str:
+        color = _PHASE_COLORS.get(phase, "gray")
+        return f"[bold white on {color}] {phase.upper()} [/bold white on {color}]"
+
     def _should_render_parser_diagnostic(self, diag: Dict[str, Any]) -> bool:
         severity = str(diag.get("severity") or "error").lower()
         if severity == "error":
@@ -454,6 +468,7 @@ class ClaudeStyleHook(RenderStreamHook):
         if event.node == "step_start":
             self._last_step = event.step_id
             agent_id = (event.payload or {}).get("agent_id")
+            agent_phase = (event.payload or {}).get("agent_phase")
             label = f"STEP {event.step_id + 1}"
             if agent_id:
                 label += f" ── agent: {agent_id}"
@@ -464,6 +479,12 @@ class ClaudeStyleHook(RenderStreamHook):
                     )
                 self._last_agent_id = agent_id
             self.console.print(Rule(label, style="gray23"))
+            # Phase badge — colored pill below the STEP separator
+            if agent_phase:
+                self._rail(
+                    _PHASE_COLORS.get(agent_phase, "blue"),
+                    self._phase_badge(agent_phase),
+                )
             return
 
         if event.channel == "thinking":
@@ -527,6 +548,30 @@ class ClaudeStyleHook(RenderStreamHook):
                                 self._rail("gray70", f"[dim]{stripped}[/dim]")
                             else:
                                 self._rail("gray70", stripped)
+                    # Render Sink Candidates — same text the LLM sees
+                    sink_candidates = stats.get("sink_candidates")
+                    if isinstance(sink_candidates, str) and sink_candidates.strip():
+                        self._rail("magenta", "[bold magenta]── Sink Candidates ──[/bold magenta]")
+                        for line in sink_candidates.strip().splitlines():
+                            stripped = line.strip()
+                            if not stripped:
+                                continue
+                            if stripped.startswith("No sink candidates") or "REQUIRED" in stripped:
+                                self._rail("bright_yellow", f"[bright_yellow]{stripped}[/bright_yellow]")
+                            elif stripped.startswith("- `") and "high conf" in stripped:
+                                self._rail("bright_magenta", f"[bright_magenta]{stripped}[/bright_magenta]")
+                            elif stripped.startswith("- `") and "medium conf" in stripped:
+                                self._rail("magenta", f"[magenta]{stripped}[/magenta]")
+                            elif stripped.startswith("- `"):
+                                self._rail("gray70", f"[dim]{stripped}[/dim]")
+                            elif stripped.startswith("Sink Candidates"):
+                                self._rail("bold magenta", f"[bold magenta]{stripped}[/bold magenta]")
+                            else:
+                                self._rail("gray70", stripped)
+                    # Render Objective — same text the LLM sees
+                    objective = stats.get("objective")
+                    if isinstance(objective, str) and objective.strip():
+                        self._rail("green", f"[green]── Objective ──[/green] {objective.strip()}")
                     self._state_steps.add(event.step_id)
                 return
             if event.step_id in self._thought_steps:

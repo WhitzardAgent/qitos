@@ -262,6 +262,18 @@ class CyberGymAgent(StaticAnalysisRuntimeMixin, StateInitMixin, TaskAnalysisMixi
 
     def prepare(self, state: CyberGymState) -> str:
         """Return a minimal observation lane close to raw tool results."""
+        try:
+            return self._prepare_inner(state)
+        except Exception as exc:
+            import logging, traceback
+            logging.getLogger(__name__).error(
+                "prepare() failed: %s: %s\n%s", type(exc).__name__, exc, traceback.format_exc(),
+            )
+            # Return a minimal fallback so the agent doesn't crash
+            return "Observation: analysis preparation encountered an error. Proceed with investigation."
+
+    def _prepare_inner(self, state: CyberGymState) -> str:
+        """Inner implementation of prepare(), wrapped for error safety."""
         prompt_state = state.metadata.setdefault("_prompt_state", {})
 
         finding_sig = self._finding_signature(state)
@@ -313,7 +325,7 @@ class CyberGymAgent(StaticAnalysisRuntimeMixin, StateInitMixin, TaskAnalysisMixi
         prepared = _sanitize_model_text(self._build_observation_packet(state))
         prepared = self._inject_static_analysis_brief(state, prepared)
 
-        # Store constraint board and task memory text in state metadata
+        # Store key observation sections in state metadata
         # so the TUI can render the exact same text the LLM sees.
         constraint_lines = self._constraint_board_lines(state)
         if constraint_lines:
@@ -321,6 +333,14 @@ class CyberGymAgent(StaticAnalysisRuntimeMixin, StateInitMixin, TaskAnalysisMixi
         task_memory_lines = self._task_memory_lines(state)
         if task_memory_lines:
             state.metadata["_tui_task_memory"] = "\n".join(task_memory_lines)
+        # Sink Candidates (including instructional nudge when empty)
+        sink_section = self._sink_candidates_text(state)
+        if sink_section:
+            state.metadata["_tui_sink_candidates"] = sink_section
+        # Current objective
+        objective = self._current_objective(state)
+        if objective:
+            state.metadata["_tui_objective"] = objective
 
         self._write_step_sidecar(
             state,
@@ -1549,10 +1569,15 @@ class CyberGymAgent(StaticAnalysisRuntimeMixin, StateInitMixin, TaskAnalysisMixi
             gates = list(getattr(state, "call_chain_gates", []) or [])
             active_sinks = state.confirmed_sink_candidates()
             pl_steps = phase_local_steps(state)
-            # Sink candidate checkpoint: force record_sink_candidate if none
-            # proposed after 3 steps of exploration.
-            if not active_sinks and pl_steps >= 3 and not getattr(state, "pending_sink_checkpoint", False):
-                state.pending_sink_checkpoint = True
+            # Adaptive sink candidate checkpoint: rich descriptions → nudge earlier
+            if not active_sinks and not getattr(state, "pending_sink_checkpoint", False):
+                conf = float(getattr(state, "task_spec_confidence", 0.5) or 0.5)
+                if conf >= 0.6 and pl_steps >= 1:
+                    state.pending_sink_checkpoint = True
+                elif conf >= 0.4 and pl_steps >= 2:
+                    state.pending_sink_checkpoint = True
+                elif pl_steps >= 3:
+                    state.pending_sink_checkpoint = True
             if not nodes and pl_steps >= 2 and not state.pending_chain_checkpoint:
                 state.pending_chain_checkpoint = True
             if nodes and not any(g.status == "confirmed" for g in gates) and pl_steps >= 4:
