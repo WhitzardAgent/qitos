@@ -556,7 +556,9 @@ class ClaudeStyleHook(RenderStreamHook):
                             stripped = line.strip()
                             if not stripped:
                                 continue
-                            if stripped.startswith("No sink candidates") or "REQUIRED" in stripped:
+                            if "CHECKPOINT BLOCKED" in stripped:
+                                self._rail("bold red", f"[bold red]{stripped}[/bold red]")
+                            elif stripped.startswith("No sink candidates") or "REQUIRED" in stripped:
                                 self._rail("bright_yellow", f"[bright_yellow]{stripped}[/bright_yellow]")
                             elif stripped.startswith("- `") and "high conf" in stripped:
                                 self._rail("bright_magenta", f"[bright_magenta]{stripped}[/bright_magenta]")
@@ -572,6 +574,40 @@ class ClaudeStyleHook(RenderStreamHook):
                     objective = stats.get("objective")
                     if isinstance(objective, str) and objective.strip():
                         self._rail("green", f"[green]── Objective ──[/green] {objective.strip()}")
+                    # Render Task Context — vulnerability, bug type, input format
+                    task_ctx = stats.get("task_context")
+                    if isinstance(task_ctx, str) and task_ctx.strip():
+                        self._rail("cyan", "[bold cyan]── Task Context ──[/bold cyan]")
+                        for line in task_ctx.strip().splitlines():
+                            stripped = line.strip()
+                            if not stripped:
+                                continue
+                            if stripped.startswith("Vulnerability:"):
+                                self._rail("bright_cyan", f"[bright_cyan]{stripped}[/bright_cyan]")
+                            elif stripped.startswith("Bug Type:"):
+                                self._rail("yellow", f"[yellow]{stripped}[/yellow]")
+                            elif stripped.startswith("Strategy:"):
+                                self._rail("green", f"[green]{stripped}[/green]")
+                            elif stripped.startswith("Input Format:"):
+                                self._rail("blue", f"[blue]{stripped}[/blue]")
+                            elif "CHECKPOINT" in stripped:
+                                self._rail("bold red", f"[bold red]{stripped}[/bold red]")
+                            else:
+                                self._rail("gray70", stripped)
+                    # Render Allowed Tools — checkpoint state
+                    allowed_tools = stats.get("allowed_tools")
+                    if isinstance(allowed_tools, str) and allowed_tools.strip():
+                        self._rail("gray50", "[dim]── Allowed Tools ──[/dim]")
+                        for line in allowed_tools.strip().splitlines():
+                            stripped = line.strip()
+                            if not stripped:
+                                continue
+                            if "CHECKPOINT" in stripped or "BLOCKED" in stripped:
+                                self._rail("bold red", f"[bold red]{stripped}[/bold red]")
+                            elif stripped.startswith("- `record_sink"):
+                                self._rail("bright_magenta", f"[bright_magenta]{stripped}[/bright_magenta]")
+                            else:
+                                self._rail("gray50", f"[dim]{stripped}[/dim]")
                     self._state_steps.add(event.step_id)
                 return
             if event.step_id in self._thought_steps:

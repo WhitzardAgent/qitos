@@ -414,11 +414,22 @@ class ObservationMixin:
                 sink_lines.append(f"  `{c.function}` ({conf_label} conf){status}{tag_str} — {c.evidence}")
             sections.extend(["## Sink Candidates", *sink_lines])
         else:
-            sections.extend([
-                "## Sink Candidates",
-                "- None recorded yet. Call `record_sink_candidate(function, evidence, location?, confidence?)` "
-                "when you identify a vulnerable function. This is REQUIRED before leaving exploration.",
-            ])
+            checkpoint_active = getattr(state, "pending_sink_checkpoint", False)
+            if checkpoint_active:
+                sections.extend([
+                    "## Sink Candidates",
+                    "- **CHECKPOINT BLOCKED** — You must call "
+                    "`record_sink_candidate(function, evidence, location?, confidence?)` NOW. "
+                    "No other actions (WRITE, BASH, submit) are allowed until a sink is recorded.",
+                    "- If you have identified a vulnerable function in your reasoning, record it immediately. "
+                    "Do not continue exploring without recording.",
+                ])
+            else:
+                sections.extend([
+                    "## Sink Candidates",
+                    "- None recorded yet. Call `record_sink_candidate(function, evidence, location?, confidence?)` "
+                    "when you identify a vulnerable function. This is REQUIRED before leaving exploration.",
+                ])
         patch_diff = (state.patch_diff or str(state.metadata.get("patch_diff", "") or "")).strip()
         if patch_diff:
             sections.extend(["## Patch Diff", patch_diff])
@@ -460,8 +471,40 @@ class ObservationMixin:
                     status += f" [{label}—REQUIRES MODEL CONFIRMATION]"
                 lines.append(f"- `{c.function}` ({conf_label} conf){status}{tag_str} — {c.evidence}")
         else:
-            lines.append("No sink candidates recorded. Call record_sink_candidate() "
-                         "when you identify a vulnerable function. REQUIRED before leaving exploration.")
+            checkpoint_active = getattr(state, "pending_sink_checkpoint", False)
+            if checkpoint_active:
+                lines.append("CHECKPOINT BLOCKED — record_sink_candidate() is REQUIRED NOW. "
+                             "No other actions allowed until a sink is recorded.")
+            else:
+                lines.append("No sink candidates recorded. Call record_sink_candidate() "
+                             "when you identify a vulnerable function. REQUIRED before leaving exploration.")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _task_context_text(state: CyberGymState) -> str:
+        """Render Task Context section text for TUI display."""
+        lines: List[str] = []
+        if state.vulnerability_description:
+            desc_text = state.vulnerability_description.replace("\n", " ")
+            lines.append(f"Vulnerability: {desc_text}")
+        if state.bug_type:
+            lines.append(f"Bug Type: {state.bug_type}")
+        if state.poc_strategy:
+            lines.append(f"Strategy: {state.poc_strategy}")
+        if hasattr(state, "input_format") and state.input_format and state.input_format.format_type:
+            fmt = state.input_format
+            fmt_line = f"Input Format: {fmt.format_type}"
+            if fmt.entry_point:
+                status = "confirmed" if fmt.confirmed else "inferred"
+                fmt_line += f" | Entry: {fmt.entry_point} ({status})"
+            if fmt.input_path:
+                fmt_line += f" | Input via: {fmt.input_path}"
+            if fmt.magic_bytes:
+                fmt_line += f" | Magic: {fmt.magic_bytes}"
+            lines.append(fmt_line)
+        if state.harness_entry_confirmed or (isinstance(getattr(state, "metadata", None), dict)
+                                              and state.metadata.get("harness_entry_confirmed")):
+            lines.append("Harness entry: confirmed (LLVMFuzzerTestOneInput found)")
         return "\n".join(lines)
 
     @staticmethod

@@ -341,6 +341,14 @@ class CyberGymAgent(StaticAnalysisRuntimeMixin, StateInitMixin, TaskAnalysisMixi
         objective = self._current_objective(state)
         if objective:
             state.metadata["_tui_objective"] = objective
+        # Task Context (vulnerability, bug type, strategy, input format)
+        task_ctx_lines = self._task_context_text(state)
+        if task_ctx_lines:
+            state.metadata["_tui_task_context"] = task_ctx_lines
+        # Allowed tools (checkpoint-aware)
+        allowed_lines = self._allowed_tool_lines(state)
+        if allowed_lines:
+            state.metadata["_tui_allowed_tools"] = "\n".join(allowed_lines)
 
         self._write_step_sidecar(
             state,
@@ -1550,6 +1558,8 @@ class CyberGymAgent(StaticAnalysisRuntimeMixin, StateInitMixin, TaskAnalysisMixi
         else:
             new_phase = self._phase_engine.advance(state, step)
         state.current_phase = new_phase
+        # Cache phase for TUI rendering (on_before_step fires before next prepare())
+        state.metadata["_tui_phase"] = new_phase
         if new_phase != old_phase:
             state.phase_enter_step = int(step)
             state.phase_local_steps = 0

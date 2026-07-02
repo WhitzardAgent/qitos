@@ -830,15 +830,24 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
                 val = getattr(state_obj, attr, None)
                 if val:
                     stats[attr] = val
-            # Sink candidates and objective for TUI display
+            # Metadata-based overrides (cached by agent.prepare() and reduce())
             metadata = getattr(state_obj, "metadata", None)
             if isinstance(metadata, dict):
+                tui_phase = metadata.get("_tui_phase")
+                if isinstance(tui_phase, str) and tui_phase.strip():
+                    stats["current_phase"] = tui_phase
                 sink_text = metadata.get("_tui_sink_candidates")
                 if isinstance(sink_text, str) and sink_text.strip():
                     stats["sink_candidates"] = sink_text
                 objective_text = metadata.get("_tui_objective")
                 if isinstance(objective_text, str) and objective_text.strip():
                     stats["objective"] = objective_text
+                task_ctx_text = metadata.get("_tui_task_context")
+                if isinstance(task_ctx_text, str) and task_ctx_text.strip():
+                    stats["task_context"] = task_ctx_text
+                allowed_tools_text = metadata.get("_tui_allowed_tools")
+                if isinstance(allowed_tools_text, str) and allowed_tools_text.strip():
+                    stats["allowed_tools"] = allowed_tools_text
         return stats
 
     @staticmethod
