@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import html
 import json
+import logging
 import math
 import os
 import re
@@ -15,7 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .indexer import index_file_isolated, resolve_calls, scan_files
+from .indexer import index_file, index_file_isolated, resolve_calls, scan_files
 from .models import (
     AnalysisPath, CallCandidate, CallEdge, CallSite, ConstraintIR, DefinitionIR,
     ExprIR, FunctionSummary, FunctionSymbol, Parameter, RiskSignal, SinkAnalysisBrief,
@@ -23,7 +24,9 @@ from .models import (
 )
 
 ANALYSIS_VERSION = "4-navigation"
-GRAMMAR_VERSION = "tree-sitter-c-cpp-v1"
+GRAMMAR_VERSION = "tree-sitter-c-cpp-v2"
+
+_LOG = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -34,13 +37,13 @@ class AnalysisConfig:
     max_paths: int = 20
     max_candidates_per_call: int = 10
     max_constraints_per_path: int = 100
-    analysis_timeout_seconds: int = 30
+    analysis_timeout_seconds: int = 120
     automatic_top_paths: int = 3
     automatic_max_call_depth: int = 6
     automatic_max_constraints: int = 12
     automatic_max_dataflow_steps: int = 8
     automatic_token_budget: int = 1500
-    automatic_timeout_seconds: int = 10
+    automatic_timeout_seconds: int = 60
     minimum_candidate_confidence: float = .30
     excludes: tuple[str, ...] = ()
 
@@ -215,6 +218,8 @@ class AnalysisService:
         self.sccs: list[list[str]] = []
         self.input_control: dict[str, dict[str, list[dict[str, Any]]]] = {}
         self.entry_paths: dict[str, list[str]] = {}
+        self._call_graph: Any | None = None
+        self._path_finder: Any | None = None
 
     def _refresh_graph_metadata(self) -> None:
         by_caller: dict[str, list[str]] = {}
@@ -381,10 +386,10 @@ class AnalysisService:
         while pending and time.perf_counter() < deadline:
             batch, pending = pending[:workers], pending[workers:]
             remaining = max(.1, deadline - time.perf_counter())
-            per_file_timeout = max(.5, min(2.0, remaining))
+            per_file_timeout = max(5.0, min(30.0, remaining))
             with ThreadPoolExecutor(max_workers=len(batch), thread_name_prefix="cybergym-index") as pool:
                 future_paths = {
-                    pool.submit(index_file_isolated, self.root, path, timeout=per_file_timeout): path
+                    pool.submit(index_file, self.root, path): path
                     for path in batch
                 }
                 for future in as_completed(future_paths):
@@ -432,7 +437,7 @@ class AnalysisService:
                 remaining = max(.2, overall_deadline - time.perf_counter())
                 with ThreadPoolExecutor(max_workers=len(frontier_paths), thread_name_prefix="cybergym-frontier") as pool:
                     futures = {
-                        pool.submit(index_file_isolated, self.root, path, timeout=max(.2, remaining)): path
+                        pool.submit(index_file, self.root, path): path
                         for path in frontier_paths
                     }
                     for future in as_completed(futures):
@@ -483,6 +488,10 @@ class AnalysisService:
             "elapsed_ms": round((time.perf_counter()-started)*1000, 2),
         }
         self.store.put_metadata(self.graph_key, "snapshot", self.index_report)
+
+        # Build CallGraph + CallPathFinder for supplementary bidirectional queries
+        self._build_call_graph()
+
         return dict(self.index_report)
 
     def ensure_file_indexed(self, file: str, *, timeout_seconds: float = 2.0) -> dict[str, Any]:
@@ -497,7 +506,7 @@ class AnalysisService:
             return {"status": "error", "reason": "outside_repository", "file": rel}
         if not path.is_file():
             return {"status": "not_found", "file": rel}
-        digest, syms, sums, unresolved = index_file_isolated(self.root, path, timeout=max(.5, timeout_seconds))
+        digest, syms, sums, unresolved = index_file(self.root, path)
         self.store.put_file(self.graph_key, rel, digest, syms, sums, unresolved)
         old_file_ids = {s.symbol_id for s in self.symbols if s.file == rel}
         self.symbols = [s for s in self.symbols if s.file != rel] + syms
@@ -513,6 +522,70 @@ class AnalysisService:
 
     def _ensure(self, timeout_seconds: float | None = None) -> None:
         if not self.symbols: self.index_repository(timeout_seconds=timeout_seconds)
+
+    def _build_call_graph(self) -> None:
+        """Build a CallGraph from the TSA modules for supplementary queries.
+
+        Instead of letting CallGraph.build() re-parse the entire repo (double
+        parsing), we build a lightweight wrapper that reuses our already-indexed
+        symbols, summaries, and edges.  CallPathFinder can still operate on it.
+        """
+        try:
+            from .call_graph import CallGraph, FunctionRef
+            from .call_path import CallPathFinder
+            # Build a CallGraph populated from our existing index
+            cg = CallGraph.__new__(CallGraph)
+            cg.project_root = self.root
+            cg._functions = []
+            cg._func_by_name = {}
+            cg._func_by_qualified = {}
+            cg._func_by_file = {}
+            cg._callees = {}
+            cg._callers = {}
+            cg._call_edges = []
+            cg._built = True
+            cg._imported_names = {}
+            cg._module_to_file = {}
+            cg._callee_resolver = None
+
+            from collections import defaultdict
+            cg._func_by_name = defaultdict(list)
+            cg._func_by_qualified = {}
+            cg._func_by_file = defaultdict(list)
+            cg._callees = defaultdict(list)
+            cg._callers = defaultdict(list)
+
+            ref_map: dict[str, FunctionRef] = {}
+            for sym in self.symbols:
+                ref = FunctionRef(
+                    file_path=sym.file,
+                    name=sym.name,
+                    start_line=sym.body_location.start_line,
+                    language=sym.language,
+                    receiver=sym.scope,
+                    end_line=sym.body_location.end_line,
+                )
+                ref_map[sym.symbol_id] = ref
+                cg._functions.append(ref)
+                cg._func_by_name[sym.name].append(ref)
+                cg._func_by_file[sym.file].append(ref)
+
+            for edge in self.edges:
+                caller_ref = ref_map.get(edge.caller_id)
+                callee_ref = ref_map.get(edge.callee_id)
+                if caller_ref and callee_ref:
+                    cg._callees[caller_ref].append(callee_ref)
+                    cg._callers[callee_ref].append(caller_ref)
+                    cg._call_edges.append((caller_ref, callee_ref, 0))
+
+            self._call_graph = cg
+            self._path_finder = CallPathFinder(str(self.root), graph=cg)
+            _LOG.debug("CallGraph built from existing index: %d functions, %d edges",
+                       len(cg._functions), len(cg._call_edges))
+        except Exception as exc:
+            _LOG.warning("CallGraph build failed (non-fatal, edge-list fallback active): %s", exc)
+            self._call_graph = None
+            self._path_finder = None
 
     def _symbols_matching(self, query: str) -> list[FunctionSymbol]:
         self._ensure(); q = query.strip()
@@ -803,6 +876,31 @@ class AnalysisService:
                 penalty += .15
             if summary.unresolved_nodes:
                 penalty += min(.08, .02 * len(summary.unresolved_nodes))
+            # Stdlib functions without vulnerability patterns are very unlikely sinks
+            from .vuln_patterns import classify_call
+            leaf_name = symbol.name.rsplit("::", 1)[-1]
+            call_class = classify_call(leaf_name)
+            if call_class == "stdlib":
+                penalty += .50  # Safe libc — very unlikely to be the sink
+            elif call_class == "vuln_stdlib":
+                risk_score += .10  # Boost unsafe libc calls (strcpy, memcpy, etc.)
+                utility_score += .05
+                # Add vuln-specific risk signal if not already present
+                from .vuln_patterns import get_vuln_pattern
+                vp = get_vuln_pattern(leaf_name)
+                if vp is not None and not any(s.kind == "unsafe_api" for s in signals):
+                    from .models import RiskSignal, SourceLocation
+                    vuln_signal = RiskSignal(
+                        signal_id=f"vuln_{leaf_name}",
+                        kind="unsafe_api",
+                        severity=float({"critical": .95, "high": .85, "medium": .65, "low": .40}.get(vp.severity, .50)),
+                        expression=leaf_name,
+                        location=SourceLocation(symbol.file, symbol.body_location.start_line, 0,
+                                                symbol.body_location.end_line, 0),
+                        reason=f"unsafe {vp.category}: {vp.description} — prefer {vp.safe_alternative}",
+                        parameter_dependencies=sorted(controlled),
+                    )
+                    signals.append(vuln_signal)
             score = max(0.0, min(1.0, input_score + risk_score + reach_score + direct_score + utility_score + focus_score + description_score - penalty))
             if score < .10:
                 continue

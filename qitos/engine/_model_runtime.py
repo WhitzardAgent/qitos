@@ -848,6 +848,9 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
                 allowed_tools_text = metadata.get("_tui_allowed_tools")
                 if isinstance(allowed_tools_text, str) and allowed_tools_text.strip():
                     stats["allowed_tools"] = allowed_tools_text
+                suggested_sinks_text = metadata.get("_tui_suggested_sinks")
+                if isinstance(suggested_sinks_text, str) and suggested_sinks_text.strip():
+                    stats["suggested_sinks"] = suggested_sinks_text
         return stats
 
     @staticmethod

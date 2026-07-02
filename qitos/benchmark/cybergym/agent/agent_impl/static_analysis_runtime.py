@@ -38,10 +38,19 @@ class StaticAnalysisRuntimeMixin:
             str(getattr(item, "file", "") or "")
             for item in list(getattr(state, "sink_candidates", []) or [])
         )
-        report = service.index_repository(
-            timeout_seconds=service.config.automatic_timeout_seconds,
-            priority_files=[item for item in priorities if item],
-        )
+        try:
+            report = service.index_repository(
+                timeout_seconds=service.config.automatic_timeout_seconds,
+                priority_files=[item for item in priorities if item],
+            )
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).error(
+                "index_repository failed: %s: %s", type(exc).__name__, exc, exc_info=True,
+            )
+            state.analysis_index_status = "INDEX_ERROR"
+            return
+
         state.analysis_graph_id = str(report.get("graph_id") or "")
         state.analysis_index_status = str(report.get("index_status") or "PARTIAL_INDEX")
         state.analysis_index_coverage = {
@@ -53,11 +62,17 @@ class StaticAnalysisRuntimeMixin:
             )
             if key in report
         }
-        search = service.discover_sink_navigation_leads(
-            limit=5,
-            description=str(getattr(state, "vulnerability_description", "") or ""),
-        )
-        self._sync_navigation_leads(state, search)
+        try:
+            search = service.discover_sink_navigation_leads(
+                limit=5,
+                description=str(getattr(state, "vulnerability_description", "") or ""),
+            )
+            self._sync_navigation_leads(state, search)
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).error(
+                "discover_sink_navigation_leads failed: %s: %s", type(exc).__name__, exc, exc_info=True,
+            )
 
     @staticmethod
     def _sync_navigation_leads(state: Any, result: dict[str, Any]) -> None:

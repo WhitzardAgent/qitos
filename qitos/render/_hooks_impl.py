@@ -608,6 +608,15 @@ class ClaudeStyleHook(RenderStreamHook):
                                 self._rail("bright_magenta", f"[bright_magenta]{stripped}[/bright_magenta]")
                             else:
                                 self._rail("gray50", f"[dim]{stripped}[/dim]")
+                    # Render Suggested Sinks — auto-discovered, unconfirmed
+                    suggested_sinks = stats.get("suggested_sinks")
+                    if isinstance(suggested_sinks, str) and suggested_sinks.strip():
+                        self._rail("bright_blue", "[bold bright_blue]── Suggested Sinks ──[/bold bright_blue]")
+                        for line in suggested_sinks.strip().splitlines():
+                            stripped = line.strip()
+                            if not stripped:
+                                continue
+                            self._rail("bright_blue", f"[bright_blue]{stripped}[/bright_blue]")
                     self._state_steps.add(event.step_id)
                 return
             if event.step_id in self._thought_steps:

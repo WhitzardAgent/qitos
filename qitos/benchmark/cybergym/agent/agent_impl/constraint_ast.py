@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import re
-import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional, Sequence
@@ -36,9 +35,6 @@ from .constraint_ir import (
 )
 
 
-_LANGUAGES: dict[str, Any] = {}
-_LANGUAGE_ERROR: Optional[str] = None
-_LANGUAGE_LOCK = threading.Lock()
 _LOG = logging.getLogger(__name__)
 
 
@@ -71,11 +67,29 @@ class ParsedSource:
     # Hold a reference to the Tree object so the C-owned root_node is not
     # freed by garbage collection while we still traverse it.
     _tree_ref: Any = None
+    # Pre-computed byte-offset → (line, column) table.  Avoids accessing
+    # node.start_point / node.end_point which are unstable in tree-sitter
+    # 0.25.x + tree-sitter-c 0.24.x (can SIGSEGV or return wrong values).
+    _line_table: Any = None
 
     def text(self, node: Any) -> str:
         return self.source[node.start_byte:node.end_byte].decode("utf-8", errors="replace")
 
     def span(self, node: Any) -> SourceSpan:
+        if self._line_table is not None:
+            sl, sc = self._line_table.line_col(node.start_byte)
+            el, ec = self._line_table.line_col(node.end_byte)
+            return SourceSpan(
+                start_byte=node.start_byte,
+                end_byte=node.end_byte,
+                start_line=self.line_offset + sl,
+                start_column=sc,
+                end_line=self.line_offset + el,
+                end_column=ec,
+            )
+        # Fallback for ParsedSource objects created without a _LineTable
+        # (e.g. in tests or legacy code paths).  Access Point attributes
+        # only in this safe fallback path.
         return SourceSpan(
             start_byte=node.start_byte,
             end_byte=node.end_byte,
@@ -95,86 +109,39 @@ class ParsedSource:
         return bool(node is None or node.has_error or self.local_error_count(node))
 
 
-def _load_languages() -> tuple[dict[str, Any], Optional[str]]:
-    global _LANGUAGE_ERROR
-    if _LANGUAGES or _LANGUAGE_ERROR:
-        return _LANGUAGES, _LANGUAGE_ERROR
-    with _LANGUAGE_LOCK:
-        if _LANGUAGES or _LANGUAGE_ERROR:
-            return _LANGUAGES, _LANGUAGE_ERROR
-        try:
-            import tree_sitter_c as tree_sitter_c
-            import tree_sitter_cpp as tree_sitter_cpp
-            from tree_sitter import Language
-
-            _LANGUAGES.update({
-                "c": Language(tree_sitter_c.language()),
-                "cpp": Language(tree_sitter_cpp.language()),
-            })
-        except Exception as exc:  # Import and ABI failures are both optional-dependency failures.
-            _LANGUAGE_ERROR = f"{type(exc).__name__}: {exc}"
-    return _LANGUAGES, _LANGUAGE_ERROR
-
-
 def tree_sitter_status() -> tuple[bool, Optional[str]]:
-    languages, error = _load_languages()
-    return bool(languages), error
+    """Report whether the TSA-based parsing backend is available."""
+    import importlib
+    mod = importlib.import_module("cybergym_agent.analysis.parser")
+    loader = mod.LanguageLoader()
+    return loader.tsa_available(), None
 
 
-def parse_source(
-    source_text: str | bytes,
-    *,
+def _resolve_language_choices(
     file_extension: str = ".c",
     language: Optional[str] = None,
-    line_offset: int = 0,
-    preferred_symbols: Sequence[str] = (),
-) -> Optional[ParsedSource]:
-    """Parse C/C++ with an isolated parser; ambiguous headers try both grammars."""
-    languages, _ = _load_languages()
-    if not languages:
-        return None
-    source = source_text if isinstance(source_text, bytes) else source_text.encode("utf-8", errors="replace")
-
+) -> list[str]:
+    """Determine which grammar(s) to try based on extension / explicit language."""
     requested = (language or "").strip().lower()
     if requested in {"c++", "cxx", "cc"}:
         requested = "cpp"
-    if requested and requested not in languages:
-        raise ValueError(f"unsupported language {language!r}; expected 'c' or 'cpp'")
 
     suffix = Path(file_extension or "").suffix.lower() or str(file_extension or "").lower()
     if requested:
-        choices = [requested]
-    elif suffix in {".cpp", ".cc", ".cxx", ".hpp", ".hh", ".hxx"}:
-        choices = ["cpp"]
-    elif suffix == ".h":
-        choices = ["c", "cpp"]
-    else:
-        choices = ["c"]
+        return [requested]
+    if suffix in {".cpp", ".cc", ".cxx", ".hpp", ".hh", ".hxx"}:
+        return ["cpp"]
+    if suffix == ".h":
+        return ["c", "cpp"]
+    return ["c"]
 
-    transparent_macros, noreturn_macros, source_macros = _source_macro_models(source)
-    parsed: list[ParsedSource] = []
-    for choice in choices:
-        try:
-            from tree_sitter import Parser
 
-            parser = Parser(languages[choice])
-            tree = parser.parse(source)
-            error_count = sum(1 for node in walk(tree.root_node) if node.type == "ERROR" or node.is_missing)
-            parsed.append(ParsedSource(
-                source=source,
-                root=tree.root_node,
-                language=choice,
-                has_error=bool(tree.root_node.has_error),
-                error_count=error_count,
-                line_offset=max(0, int(line_offset or 0)),
-                transparent_boolean_macros=transparent_macros,
-                noreturn_macros=noreturn_macros,
-                source_macros=source_macros,
-                _tree_ref=tree,
-            ))
-        except Exception as exc:
-            _LOG.debug("Tree-sitter %s parse failed: %s", choice, exc)
-            continue
+def _pick_best_parse(
+    parsed: list[ParsedSource],
+    choices: list[str],
+    preferred_symbols: Sequence[str] = (),
+) -> Optional[ParsedSource]:
+    """Select the best ParsedSource from multiple grammar attempts."""
     if not parsed:
         return None
     symbols = tuple(item for item in preferred_symbols if item)
@@ -188,6 +155,50 @@ def parse_source(
             return (not bool(matches), local_errors, item.error_count, item.has_error, choices.index(item.language))
         return min(parsed, key=local_rank)
     return min(parsed, key=lambda item: (item.error_count, item.has_error, choices.index(item.language)))
+
+
+def parse_source(
+    source_text: str | bytes,
+    *,
+    file_extension: str = ".c",
+    language: Optional[str] = None,
+    line_offset: int = 0,
+    preferred_symbols: Sequence[str] = (),
+) -> Optional[ParsedSource]:
+    """Parse C/C++ source via the TSA (tree-sitter-analyzer) backend.
+
+    Ambiguous ``.h`` headers try both C and C++ grammars and pick the one
+    with fewer errors (or the one matching *preferred_symbols*).
+    """
+    source = source_text if isinstance(source_text, bytes) else source_text.encode("utf-8", errors="replace")
+    choices = _resolve_language_choices(file_extension, language)
+
+    # Validate requested language
+    requested = (language or "").strip().lower()
+    if requested in {"c++", "cxx", "cc"}:
+        requested = "cpp"
+    if requested and requested not in {"c", "cpp"}:
+        raise ValueError(f"unsupported language {language!r}; expected 'c' or 'cpp'")
+
+    transparent_macros, noreturn_macros, source_macros = _source_macro_models(source)
+
+    import importlib
+    _parser_mod = importlib.import_module("cybergym_agent.analysis.parser")
+    _parser = _parser_mod.Parser()
+
+    tsa_results: list[ParsedSource] = []
+    for choice in choices:
+        result = _parser.parse_code(
+            source,
+            choice,
+            line_offset=line_offset,
+            transparent_boolean_macros=transparent_macros,
+            noreturn_macros=noreturn_macros,
+            source_macros=source_macros,
+        )
+        if result is not None:
+            tsa_results.append(result)
+    return _pick_best_parse(tsa_results, choices, preferred_symbols)
 
 
 def _source_macro_models(source: bytes) -> tuple[frozenset[str], frozenset[str], frozenset[str]]:

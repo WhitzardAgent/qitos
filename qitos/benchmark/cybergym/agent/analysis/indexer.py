@@ -1,4 +1,12 @@
-"""Tree-sitter repository indexing and summary construction."""
+"""Tree-sitter repository indexing and summary construction.
+
+Two-layer indexing:
+  Layer 1 (Shallow): Uses TSA's parser + function_extraction for function
+    definitions and call sites.  Always succeeds — no SIGSEGV risk.
+  Layer 2 (Deep): Uses constraint_ast + constraint_extractor for rich
+    analysis (RiskSignal, ConstraintIR, ExprIR).  Only runs when tree-sitter
+    + grammar versions are known-safe; gracefully skips otherwise.
+"""
 
 from __future__ import annotations
 
@@ -25,14 +33,70 @@ _LOG = logging.getLogger(__name__)
 SOURCE_SUFFIXES = {".c", ".h", ".cc", ".cpp", ".cxx", ".hh", ".hpp", ".hxx"}
 DEFAULT_EXCLUDES = {".git", "build", "dist", "out", "vendor", "third_party", "node_modules", "target"}
 
+
+# ---------------------------------------------------------------------------
+# Version safety gate
+# ---------------------------------------------------------------------------
+
+def _force_deep_indexing() -> bool:
+    """Check env var override to force deep indexing regardless of version."""
+    return os.environ.get("CYBERGYM_FORCE_DEEP_INDEXING", "").strip() in ("1", "true", "yes")
+
+
+def _ts_versions_safe() -> bool:
+    """Return True if tree-sitter deep AST walks are safe (no SIGSEGV risk).
+
+    tree-sitter 0.25.x + tree-sitter-c 0.24.x are known unsafe: Point
+    access and extended tree traversals on large ASTs can cause native
+    SIGSEGV.  The _LineTable fix eliminates our own start_point access,
+    but tree-sitter's internal traversal during constraint extraction
+    (parse_source + walk + descendants) still triggers C-level crashes
+    on large repos.
+
+    Until tree-sitter is upgraded to a version where this is fixed,
+    we conservatively return False so that only shallow extraction
+    (which only uses walk_tree + _LineTable) is attempted.
+    """
+    if _force_deep_indexing():
+        return True
+    return False
+
+
+_TS_DEEP_ANALYSIS_SAFE = _ts_versions_safe()
+
+
+# ---------------------------------------------------------------------------
+# Language helpers
+# ---------------------------------------------------------------------------
+
+_CPP_EXTS = {".cpp", ".cc", ".cxx", ".hpp", ".hh", ".hxx"}
+
+
+def _language_from_ext(ext: str) -> str:
+    """Guess C/C++ language from file extension."""
+    if ext.lower() in _CPP_EXTS:
+        return "cpp"
+    return "c"  # .c or .h (ambiguous, default to c)
+
+
+# ---------------------------------------------------------------------------
+# Risk-signal extraction (used by deep path)
+# ---------------------------------------------------------------------------
+
 _CALL_RISK_KINDS = {
     "memcpy": ("memory_copy", .95), "memmove": ("memory_copy", .95),
     "strcpy": ("memory_copy", .95), "strncpy": ("memory_copy", .85),
-    "sprintf": ("memory_copy", .85), "realloc": ("allocation", .80),
+    "strcat": ("memory_copy", .95), "strncat": ("memory_copy", .85),
+    "gets": ("memory_copy", .99),
+    "sprintf": ("memory_copy", .85), "vsprintf": ("memory_copy", .85),
+    "snprintf": ("memory_copy", .60), "vsnprintf": ("memory_copy", .60),
+    "realloc": ("allocation", .80),
     "malloc": ("allocation", .65), "calloc": ("allocation", .65),
     "free": ("lifecycle", .75), "delete": ("lifecycle", .75),
     "read": ("io", .65), "write": ("io", .65),
     "fread": ("io", .70), "fwrite": ("io", .70),
+    "system": ("command_injection", .99), "popen": ("command_injection", .99),
+    "printf": ("format_string", .80), "fprintf": ("format_string", .80),
 }
 
 
@@ -78,7 +142,13 @@ def _extract_risk_signals(parsed: Any, fn: Any, file: str, function_id: str,
             match = next(((name, value) for name, value in _CALL_RISK_KINDS.items() if leaf in {name, "__builtin_" + name}), None)
             if match:
                 kind, severity = match[1]
-                reason = f"call to {leaf} carries memory, I/O, or lifecycle semantics"
+                # Use vuln_patterns for richer description when available
+                from .vuln_patterns import get_vuln_pattern
+                vp = get_vuln_pattern(match[0])
+                if vp is not None:
+                    reason = f"call to unsafe {leaf} ({vp.category}): {vp.description} — safe alternative: {vp.safe_alternative}"
+                else:
+                    reason = f"call to {leaf} carries memory, I/O, or lifecycle semantics"
             elif any(token in leaf for token in ("copy", "insert", "append", "decode", "convert", "bytes2", "release", "destroy")):
                 kind, severity, reason = "utility_call", .55, f"utility operation {leaf} may be the direct crash site"
         elif node.type == "binary_expression" and any(op in raw for op in (" + ", " - ", " * ", " / ", " << ", " >> ")):
@@ -97,6 +167,10 @@ def _extract_risk_signals(parsed: Any, fn: Any, file: str, function_id: str,
         result.append(_risk_signal(parsed, node, file, function_id, kind, severity, parameter_names, reason))
     return sorted(result, key=lambda item: (-item.severity, item.location.start_line))[:64]
 
+
+# ---------------------------------------------------------------------------
+# Shared helpers
+# ---------------------------------------------------------------------------
 
 def source_location(parsed: Any, node: Any, file: str) -> SourceLocation:
     span = parsed.span(node)
@@ -227,8 +301,95 @@ def scan_files(root: Path, *, excludes: set[str] | None = None, max_files: int =
     return files
 
 
-def index_file(root: Path, path: Path) -> tuple[str, list[FunctionSymbol], list[FunctionSummary], list[dict[str, Any]]]:
-    rel = path.relative_to(root).as_posix()
+def stable_location(location: SourceLocation) -> dict[str, Any]:
+    return {"file": location.file, "start_line": location.start_line, "start_column": location.start_column, "end_line": location.end_line, "end_column": location.end_column}
+
+
+# ---------------------------------------------------------------------------
+# Layer 1: Shallow extraction (always succeeds, no SIGSEGV)
+# ---------------------------------------------------------------------------
+
+def _shallow_extract(root: Path, path: Path, rel: str) -> tuple[list[FunctionSymbol], list[FunctionSummary]]:
+    """Extract function definitions and call sites using TSA's safe parser path.
+
+    Uses analysis/parser.py + analysis/function_extraction.py which handle
+    tree-sitter API version compatibility internally.
+    """
+    from .parser import Parser as TSAParser
+    from .function_extraction import walk_tree as tsa_walk_tree
+
+    parser = TSAParser()
+    language = _language_from_ext(path.suffix)
+
+    result = parser.parse_file(str(path), language)
+    if result is None:
+        return [], []
+
+    source = result.source.decode("utf-8", errors="replace") if isinstance(result.source, bytes) else result.source
+    definitions, calls = tsa_walk_tree(result.root, source, language, result._line_table)
+
+    # Build function index: line range → function summary
+    # (TSA definitions only give start/end lines, not parameters)
+    symbols: list[FunctionSymbol] = []
+    summaries: list[FunctionSummary] = []
+
+    # Index function definitions
+    line_to_fn: dict[int, int] = {}  # start_line → index in summaries
+    for defn in definitions:
+        name = defn["name"] or ""
+        class_name = defn.get("class")
+        qualified = f"{class_name}::{name}" if class_name else name
+        start_line = defn.get("start_line", 0)
+        end_line = defn.get("end_line", start_line)
+        params: list[Parameter] = []  # shallow path doesn't extract parameter details
+        is_static = False  # shallow path doesn't parse static
+        sid = _symbol_id(rel, qualified, params, is_static)
+
+        symbol = FunctionSymbol(
+            sid, name, qualified, rel,
+            class_name, params, is_static, language,
+            SourceLocation(rel, start_line, 1, end_line, 1),
+            "",
+        )
+        summary = FunctionSummary(sid, [])
+        symbols.append(symbol)
+        summaries.append(summary)
+        line_to_fn[start_line] = len(summaries) - 1
+
+    # Attach call sites to the enclosing function's summary
+    for call in calls:
+        call_line = call.get("line", 0)
+        call_name = call.get("name", call.get("full_name", ""))
+        call_full = call.get("full_name", call_name)
+        # Find the enclosing function (latest function starting before this line)
+        enclosing_idx = -1
+        for i, defn in enumerate(definitions):
+            fn_start = defn.get("start_line", 0)
+            fn_end = defn.get("end_line", fn_start)
+            if fn_start <= call_line <= fn_end:
+                if enclosing_idx == -1 or fn_end - fn_start < definitions[enclosing_idx].get("end_line", 0) - definitions[enclosing_idx].get("start_line", 0):
+                    enclosing_idx = i
+        if enclosing_idx >= 0:
+            sid = symbols[enclosing_idx].symbol_id
+            cid = f"{sid}@{call_line}:0"
+            call_loc = SourceLocation(rel, call_line, call.get("col", 0) + 1, call_line, call.get("col", 0) + 1)
+            summaries[enclosing_idx].calls.append(
+                CallSite(cid, sid, call_full, None, [], call_loc)
+            )
+
+    return symbols, summaries
+
+
+# ---------------------------------------------------------------------------
+# Layer 2: Deep extraction (conditional on version safety)
+# ---------------------------------------------------------------------------
+
+def _deep_extract(root: Path, path: Path, rel: str) -> tuple[str, list[FunctionSymbol], list[FunctionSummary], list[dict[str, Any]]]:
+    """Deep per-function analysis using constraint_ast + constraint_extractor.
+
+    This is the original index_file() logic, extracted into a helper.
+    Only called when _TS_DEEP_ANALYSIS_SAFE is True.
+    """
     raw = path.read_bytes()
     digest = hashlib.sha256(raw).hexdigest()
     try:
@@ -317,16 +478,216 @@ def index_file(root: Path, path: Path) -> tuple[str, list[FunctionSymbol], list[
     return digest, symbols, summaries, unresolved
 
 
-def stable_location(location: SourceLocation) -> dict[str, Any]:
-    return {"file": location.file, "start_line": location.start_line, "start_column": location.start_column, "end_line": location.end_line, "end_column": location.end_column}
+# ---------------------------------------------------------------------------
+# Merge: deep results enrich shallow results
+# ---------------------------------------------------------------------------
 
+def _merge_shallow_deep(
+    shallow_sym: list[FunctionSymbol],
+    shallow_sum: list[FunctionSummary],
+    deep_sym: list[FunctionSymbol],
+    deep_sum: list[FunctionSummary],
+) -> tuple[list[FunctionSymbol], list[FunctionSummary]]:
+    """Merge shallow + deep extraction results.
+
+    Deep results override shallow ones where available (richer data).
+    Shallow results are preserved for functions that deep extraction missed.
+    Matching is by (name, file, start_line) to handle overloaded functions.
+    """
+    deep_sym_by_id = {s.symbol_id: s for s in deep_sym}
+    deep_sum_by_id = {s.function_id: s for s in deep_sum}
+
+    # Index deep by (name, file, start_line) for matching when symbol_ids differ
+    # (shallow may compute different IDs due to missing parameter info)
+    deep_by_key: dict[tuple[str, str, int], tuple[FunctionSymbol, FunctionSummary]] = {}
+    for sym, summ in zip(deep_sym, deep_sum):
+        key = (sym.name, sym.file, sym.body_location.start_line)
+        deep_by_key[key] = (sym, summ)
+
+    merged_sym: list[FunctionSymbol] = []
+    merged_sum: list[FunctionSummary] = []
+    used_deep: set[tuple[str, str, int]] = set()
+
+    for s_sym, s_sum in zip(shallow_sym, shallow_sum):
+        # Prefer deep by symbol_id, then by (name, file, line)
+        if s_sym.symbol_id in deep_sym_by_id:
+            merged_sym.append(deep_sym_by_id[s_sym.symbol_id])
+            merged_sum.append(deep_sum_by_id[s_sym.symbol_id])
+        else:
+            key = (s_sym.name, s_sym.file, s_sym.body_location.start_line)
+            if key in deep_by_key:
+                d_sym, d_sum = deep_by_key[key]
+                merged_sym.append(d_sym)
+                merged_sum.append(d_sum)
+                used_deep.add(key)
+            else:
+                merged_sym.append(s_sym)
+                merged_sum.append(s_sum)
+
+    # Add deep results that weren't matched by any shallow result
+    for sym, summ in zip(deep_sym, deep_sum):
+        key = (sym.name, sym.file, sym.body_location.start_line)
+        if key not in used_deep and sym.symbol_id not in {s.symbol_id for s in merged_sym}:
+            merged_sym.append(sym)
+            merged_sum.append(summ)
+
+    return merged_sym, merged_sum
+
+
+# ---------------------------------------------------------------------------
+# Main entry: index_file with two-layer approach
+# ---------------------------------------------------------------------------
+
+def index_file(root: Path, path: Path) -> tuple[str, list[FunctionSymbol], list[FunctionSummary], list[dict[str, Any]]]:
+    """Index a single file using two-layer extraction.
+
+    When deep analysis is safe, runs only deep (avoids double-parsing).
+    When deep is unsafe, falls back to shallow extraction only.
+    """
+    rel = path.relative_to(root).as_posix()
+    raw = path.read_bytes()
+    digest = hashlib.sha256(raw).hexdigest()
+
+    # When deep is safe, skip shallow — deep includes all shallow data plus more
+    if _TS_DEEP_ANALYSIS_SAFE or _force_deep_indexing():
+        try:
+            _digest, symbols, summaries, unresolved = _deep_extract(root, path, rel)
+            return digest, symbols, summaries, unresolved
+        except Exception as exc:
+            _LOG.warning("Deep extraction failed for %s: %s (trying shallow fallback)", rel, exc)
+            # Fall through to shallow
+
+    # Shallow extraction (always safe, no SIGSEGV)
+    try:
+        symbols, summaries = _shallow_extract(root, path, rel)
+    except Exception as exc:
+        _LOG.warning("Shallow extraction failed for %s: %s", rel, exc)
+        symbols, summaries = [], []
+
+    unresolved: list[dict[str, Any]] = []
+    if not symbols:
+        unresolved = [{"file": rel, "reason": "shallow_only_no_functions"}]
+
+    return digest, symbols, summaries, unresolved
+
+
+# ---------------------------------------------------------------------------
+# Call resolution
+# ---------------------------------------------------------------------------
 
 def resolve_calls(symbols: list[FunctionSymbol], summaries: list[FunctionSummary]) -> list[CallEdge]:
+    """Resolve call edges using CalleeResolver with 3-tier resolution.
+
+    Falls back to the original name-only lookup if CalleeResolver is unavailable.
+    """
     by_name: dict[str, list[FunctionSymbol]] = {}
     by_id = {s.symbol_id: s for s in symbols}
     for symbol in symbols:
         by_name.setdefault(symbol.name, []).append(symbol)
         by_name.setdefault(symbol.qualified_name, []).append(symbol)
+
+    # Try CalleeResolver first (3-tier: local → import → global)
+    try:
+        from .callee_resolution import CalleeResolver
+
+        by_file: dict[str, list[FunctionSymbol]] = {}
+        for s in symbols:
+            by_file.setdefault(s.file, []).append(s)
+        name_to_source: dict[str, dict[str, str]] = {}
+        for file_path, file_syms in by_file.items():
+            name_to_source[file_path] = {sym.name: sym.file for sym in file_syms}
+
+        resolver = CalleeResolver(
+            functions_by_name=by_name,
+            functions_by_file=by_file,
+            name_to_source=name_to_source,
+        )
+
+        return _resolve_with_callee_resolver(symbols, summaries, by_name, by_id, resolver)
+    except Exception as exc:
+        _LOG.debug("CalleeResolver unavailable, using fallback: %s", exc)
+        return _resolve_calls_fallback(symbols, summaries, by_name, by_id)
+
+
+def _resolve_with_callee_resolver(
+    symbols: list[FunctionSymbol],
+    summaries: list[FunctionSummary],
+    by_name: dict[str, list[FunctionSymbol]],
+    by_id: dict[str, FunctionSymbol],
+    resolver: Any,
+) -> list[CallEdge]:
+    """Resolve calls using CalleeResolver for lookup + original ranking logic."""
+    edges: list[CallEdge] = []
+    for summary in summaries:
+        caller = by_id.get(summary.function_id)
+        for call in summary.calls:
+            leaf = call.callee_text.rsplit("::", 1)[-1].rsplit("->", 1)[-1].rsplit(".", 1)[-1]
+            pointer_name = leaf.split("[", 1)[0]
+            caller_file = caller.file if caller else ""
+
+            # Use CalleeResolver for 3-tier resolution
+            resolved = resolver.resolve_items(leaf, caller_file)
+
+            # Also check qualified name and pointer targets
+            candidates = list(dict.fromkeys(
+                ref.symbol_id for ref, _conf in resolved
+                if hasattr(ref, 'symbol_id')
+            ))
+            # Fallback: add by_name lookups for full callee text
+            candidates.extend(
+                s.symbol_id for s in by_name.get(call.callee_text, [])
+            )
+            # Pointer resolution from local definitions
+            pointer_defs = [d for d in summary.local_definitions + summary.field_writes if d.target in {leaf, pointer_name} or d.target.endswith("." + pointer_name)]
+            pointer_targets: list[str] = []
+            def collect_targets(expression: ExprIR) -> None:
+                if expression.kind == "identifier": pointer_targets.append(str(expression.value))
+                for child in expression.children: collect_targets(child)
+            for definition in pointer_defs: collect_targets(definition.expression)
+            for target_name in pointer_targets:
+                candidates.extend(s.symbol_id for s in by_name.get(target_name, []))
+            candidates = list(dict.fromkeys(candidates))
+
+            ranked: list[CallCandidate] = []
+            for sid in candidates:
+                target = by_id.get(sid)
+                if target is None:
+                    continue
+                if len(target.parameters) != len(call.arguments):
+                    continue
+                if target.is_static and (caller is None or target.file != caller.file):
+                    continue
+                if target.name in pointer_targets:
+                    kind, confidence = ("function_pointer_table", .60) if "[" in call.callee_text else ("function_pointer_assignment", .60)
+                elif target.is_static and caller and target.file == caller.file:
+                    kind, confidence = "same_file_static", 1.0
+                elif "::" in call.callee_text and target.qualified_name.endswith(call.callee_text):
+                    kind, confidence = "qualified_name", .95
+                elif call.receiver_type and target.qualified_name.endswith(f"{call.receiver_type}::{leaf}"):
+                    kind, confidence = "explicit_receiver_type", .70
+                elif caller and target.file == caller.file:
+                    kind, confidence = "same_file", .90
+                elif len(candidates) == 1:
+                    kind, confidence = "cross_file_unique", .85
+                else:
+                    kind, confidence = "name_arity_candidate", .45
+                ranked.append(CallCandidate(sid, kind, confidence, [f"definition {target.file}:{target.body_location.start_line}"]))
+            call.candidates = sorted(ranked, key=lambda x: -x.confidence)[:10]
+            call.resolution_status = "resolved_unique" if len(call.candidates) == 1 else "resolved_candidates" if call.candidates else "unresolved"
+            for candidate in call.candidates:
+                target = by_id[candidate.symbol_id]
+                bindings = {p.name: a for p, a in zip(target.parameters, call.arguments)}
+                edges.append(CallEdge(summary.function_id, target.symbol_id, call.callsite_id, bindings, call.local_guards, candidate.resolution_kind, candidate.confidence, candidate.evidence))
+    return edges
+
+
+def _resolve_calls_fallback(
+    symbols: list[FunctionSymbol],
+    summaries: list[FunctionSummary],
+    by_name: dict[str, list[FunctionSymbol]],
+    by_id: dict[str, FunctionSymbol],
+) -> list[CallEdge]:
+    """Original name-only resolution as fallback when CalleeResolver is unavailable."""
     edges: list[CallEdge] = []
     for summary in summaries:
         caller = by_id.get(summary.function_id)
@@ -378,14 +739,18 @@ def resolve_calls(symbols: list[FunctionSymbol], summaries: list[FunctionSummary
 
 
 # ---------------------------------------------------------------------------
-# Subprocess isolation for SIGSEGV resilience
+# Subprocess isolation for SIGSEGV resilience (DEPRECATED)
+#
+# With the two-layer approach, shallow extraction always succeeds in-process.
+# Deep extraction is gated by _TS_DEEP_ANALYSIS_SAFE and won't SIGSEGV.
+# Keeping this for backward compatibility and potential future use.
 # ---------------------------------------------------------------------------
 
 def index_file_isolated(root: Path, path: Path, *, timeout: float = 30.0) -> tuple[str, list[FunctionSymbol], list[FunctionSummary], list[dict[str, Any]]]:
     """Index a single file in an isolated subprocess.
 
-    If the subprocess crashes (SIGSEGV, SIGABRT, timeout), return partial
-    results so the rest of the repository can still be indexed.
+    DEPRECATED: With two-layer indexing, index_file() runs safely in-process.
+    Kept for backward compatibility.
     """
     rel = path.relative_to(root).as_posix()
     raw = path.read_bytes()
@@ -418,7 +783,6 @@ def index_file_isolated(root: Path, path: Path, *, timeout: float = 30.0) -> tup
         elif result.returncode == -6 or result.returncode == 134:
             reason = "sigabrt_crash"
         elif result.returncode == 1:
-            # Python exception — stderr may have details
             stderr = result.stderr.decode("utf-8", errors="replace")[-300:]
             _LOG.warning("index_file subprocess error for %s: %s", rel, stderr)
             reason = "index_exception"

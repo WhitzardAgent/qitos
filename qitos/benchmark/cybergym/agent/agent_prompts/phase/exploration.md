@@ -68,6 +68,14 @@ If the description is vague (low task_spec_confidence):
 - Even with vague descriptions, you MUST still call `record_sink_candidate` for your
   best guess — you can always upgrade or replace it later
 
+### Rich description strategy
+If the description is specific (high task_spec_confidence ≥ 0.6):
+- The description likely names the vulnerable function or a close caller
+- READ the named function immediately, then check its callees
+- The actual sink is typically a LEAF callee — record it with `record_sink_candidate`
+- You should have a sink candidate recorded within 1-2 steps
+- Don't spend time on broad GREP searches — go directly to the described function
+
 ### Description anchoring warning
 **The vulnerability description often names a CALLER of the actual sink, not the sink itself.**
 The description says "vulnerability in function X" but X calls Y which calls Z, and Z is

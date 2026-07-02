@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cybergym-agent"
+version = "0.11.0"
+description = "Automated vulnerability reproduction (PoC generation) agent for the CyberGym benchmark"
+requires-python = ">=3.10"
+dependencies = [
+    "tree-sitter",
+    "tree-sitter-c",
+    "tree-sitter-cpp",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-timeout",
+]
+
+[tool.pytest.ini_options]
+pythonpath = [".."]

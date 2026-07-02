@@ -390,11 +390,14 @@ class ObservationMixin:
         sink_candidates = [c for c in (getattr(state, "sink_candidates", None) or [])
                            if c.status != "eliminated"
                            and not (c.source == "description_symbol" and c.confidence <= 0.3)]
+        auto_sources = {"static_navigation", "graph_auto_deepen"}
         if sink_candidates:
             sink_lines = [f"- Sink Candidates ({len(sink_candidates)}):"]
             for c in sorted(sink_candidates, key=lambda x: -x.confidence)[:5]:
                 conf_label = "high" if c.confidence >= 0.7 else "medium" if c.confidence >= 0.4 else "low"
                 status = f" [{c.status}]" if c.status != "candidate" else ""
+                # Auto-discovered tag — makes these visually distinct from model-confirmed
+                auto_prefix = "[AUTO] " if c.source in auto_sources else ""
                 # Graph metadata enrichment tags
                 meta = c.metadata or {}
                 tags = []
@@ -409,9 +412,9 @@ class ObservationMixin:
                     tags.append(f"{risk_count} risk{'s' if risk_count != 1 else ''}")
                 tag_str = f" [{', '.join(tags)}]" if tags else ""
                 if bool(meta.get("requires_review")):
-                    label = "STATIC LEAD" if c.source == "static_navigation" else "WEAK PRIOR"
+                    label = "STATIC LEAD" if c.source in auto_sources else "WEAK PRIOR"
                     status += f" [{label}—REQUIRES MODEL CONFIRMATION]"
-                sink_lines.append(f"  `{c.function}` ({conf_label} conf){status}{tag_str} — {c.evidence}")
+                sink_lines.append(f"  {auto_prefix}`{c.function}` ({conf_label} conf){status}{tag_str} — {c.evidence}")
             sections.extend(["## Sink Candidates", *sink_lines])
         else:
             checkpoint_active = getattr(state, "pending_sink_checkpoint", False)
@@ -430,6 +433,29 @@ class ObservationMixin:
                     "- None recorded yet. Call `record_sink_candidate(function, evidence, location?, confidence?)` "
                     "when you identify a vulnerable function. This is REQUIRED before leaving exploration.",
                 ])
+        # Suggested Sinks — auto-discovered candidates not yet confirmed by model
+        model_confirmed = {c.function.lower() for c in (getattr(state, "sink_candidates", []) or [])
+                           if c.source == "model_candidate" and c.status != "eliminated"}
+        unconfirmed_auto = [c for c in (getattr(state, "sink_candidates", []) or [])
+                            if c.source in auto_sources
+                            and c.status != "eliminated"
+                            and c.function.lower() not in model_confirmed
+                            and c.confidence >= 0.5]
+        if unconfirmed_auto:
+            suggest_lines = ["- Suggested sinks (auto-discovered via static analysis, not yet confirmed):"]
+            for c in sorted(unconfirmed_auto, key=lambda x: -x.confidence)[:3]:
+                meta = c.metadata or {}
+                role = meta.get("role", "")
+                risk_signals = meta.get("risk_signals") or [{}]
+                risk_desc = risk_signals[0].get("reason", "") if risk_signals else ""
+                detail = f" ({role})" if role else ""
+                if risk_desc:
+                    detail += f" — {risk_desc}"
+                suggest_lines.append(
+                    f"  `{c.function}`{detail} — "
+                    f"Call `record_sink_candidate(\"{c.function}\", evidence)` to confirm."
+                )
+            sections.extend(["## Suggested Sinks", *suggest_lines])
         patch_diff = (state.patch_diff or str(state.metadata.get("patch_diff", "") or "")).strip()
         if patch_diff:
             sections.extend(["## Patch Diff", patch_diff])
@@ -467,9 +493,10 @@ class ObservationMixin:
                     tags.append(f"{risk_count} risk{'s' if risk_count != 1 else ''}")
                 tag_str = f" [{', '.join(tags)}]" if tags else ""
                 if bool(meta.get("requires_review")):
-                    label = "STATIC LEAD" if c.source == "static_navigation" else "WEAK PRIOR"
+                    label = "STATIC LEAD" if c.source in {"static_navigation", "graph_auto_deepen"} else "WEAK PRIOR"
                     status += f" [{label}—REQUIRES MODEL CONFIRMATION]"
-                lines.append(f"- `{c.function}` ({conf_label} conf){status}{tag_str} — {c.evidence}")
+                auto_prefix = "[AUTO] " if c.source in {"static_navigation", "graph_auto_deepen"} else ""
+                lines.append(f"- {auto_prefix}`{c.function}` ({conf_label} conf){status}{tag_str} — {c.evidence}")
         else:
             checkpoint_active = getattr(state, "pending_sink_checkpoint", False)
             if checkpoint_active:
@@ -505,6 +532,34 @@ class ObservationMixin:
         if state.harness_entry_confirmed or (isinstance(getattr(state, "metadata", None), dict)
                                               and state.metadata.get("harness_entry_confirmed")):
             lines.append("Harness entry: confirmed (LLVMFuzzerTestOneInput found)")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _suggested_sinks_text(state: CyberGymState) -> str:
+        """Render Suggested Sinks section text for TUI display.
+
+        Auto-discovered sinks not yet confirmed by the model.
+        """
+        auto_sources = {"static_navigation", "graph_auto_deepen"}
+        model_confirmed = {c.function.lower() for c in (getattr(state, "sink_candidates", []) or [])
+                           if c.source == "model_candidate" and c.status != "eliminated"}
+        unconfirmed_auto = [c for c in (getattr(state, "sink_candidates", []) or [])
+                            if c.source in auto_sources
+                            and c.status != "eliminated"
+                            and c.function.lower() not in model_confirmed
+                            and c.confidence >= 0.5]
+        if not unconfirmed_auto:
+            return ""
+        lines: List[str] = []
+        for c in sorted(unconfirmed_auto, key=lambda x: -x.confidence)[:3]:
+            meta = c.metadata or {}
+            role = meta.get("role", "")
+            risk_signals = meta.get("risk_signals") or [{}]
+            risk_desc = risk_signals[0].get("reason", "") if risk_signals else ""
+            detail = f" ({role})" if role else ""
+            if risk_desc:
+                detail += f" — {risk_desc}"
+            lines.append(f"[AUTO] {c.function}{detail}")
         return "\n".join(lines)
 
     @staticmethod

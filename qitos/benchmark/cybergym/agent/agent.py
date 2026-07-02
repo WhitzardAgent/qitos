@@ -349,6 +349,10 @@ class CyberGymAgent(StaticAnalysisRuntimeMixin, StateInitMixin, TaskAnalysisMixi
         allowed_lines = self._allowed_tool_lines(state)
         if allowed_lines:
             state.metadata["_tui_allowed_tools"] = "\n".join(allowed_lines)
+        # Suggested sinks (auto-discovered, unconfirmed)
+        suggested = self._suggested_sinks_text(state)
+        if suggested:
+            state.metadata["_tui_suggested_sinks"] = suggested
 
         self._write_step_sidecar(
             state,
