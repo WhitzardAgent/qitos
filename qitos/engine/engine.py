@@ -582,6 +582,16 @@ class Engine(Generic[StateT, ObservationT, ActionT]):
         except Exception as exc:
             import traceback as _tb
             _tb.print_exc()
+            # Also write to a dedicated error log for debugging
+            try:
+                from pathlib import Path as _P
+                _err_log = _P(os.environ.get("CYBERGYM_TASK_TRACE_DIR", "/tmp")) / "step_error.log"
+                with open(_err_log, "a") as _ef:
+                    _ef.write(f"\n{'='*60}\nDECIDE EXCEPTION step={step_id}\n")
+                    _ef.write(f"{type(exc).__name__}: {exc}\n")
+                    _tb.print_exc(file=_ef)
+            except Exception:
+                pass
             failed_phase = self._infer_failed_phase(record)
             if self._recover(state, failed_phase, exc):
                 self._finalize_step(record, state)
@@ -647,6 +657,16 @@ class Engine(Generic[StateT, ObservationT, ActionT]):
         except Exception as exc:
             import traceback as _tb
             _tb.print_exc()
+            # Also write to a dedicated error log for debugging
+            try:
+                from pathlib import Path as _P
+                _err_log = _P(os.environ.get("CYBERGYM_TASK_TRACE_DIR", "/tmp")) / "step_error.log"
+                with open(_err_log, "a") as _ef:
+                    _ef.write(f"\n{'='*60}\nACT EXCEPTION step={step_id}\n")
+                    _ef.write(f"{type(exc).__name__}: {exc}\n")
+                    _tb.print_exc(file=_ef)
+            except Exception:
+                pass
             failed_phase = self._infer_failed_phase(record)
             if self._recover(state, failed_phase, exc):
                 self._finalize_step(record, state)
@@ -838,7 +858,21 @@ class Engine(Generic[StateT, ObservationT, ActionT]):
         if _resume_state is not None:
             state = _resume_state
         else:
-            state = self.agent.init_state(task_text, **kwargs)
+            try:
+                state = self.agent.init_state(task_text, **kwargs)
+            except Exception as exc:
+                import traceback as _tb_init
+                _tb_init.print_exc()
+                try:
+                    from pathlib import Path as _P_init
+                    _err_log = _P_init(os.environ.get("CYBERGYM_TASK_TRACE_DIR", "/tmp")) / "step_error.log"
+                    with open(_err_log, "a") as _ef_init:
+                        _ef_init.write(f"\n{'='*60}\nINIT_STATE EXCEPTION\n")
+                        _ef_init.write(f"{type(exc).__name__}: {exc}\n")
+                        _tb_init.print_exc(file=_ef_init)
+                except Exception:
+                    pass
+                raise
         self._memory_append(
             "task",
             {
@@ -853,14 +887,42 @@ class Engine(Generic[StateT, ObservationT, ActionT]):
         started_at = time.monotonic()
         self._hydrate_trace_metadata(task_obj=task_obj, task_text=task_text)
 
-        self._setup_toolsets(
-            {
-                "state": state,
-                "trace_writer": self.trace_writer,
-                "task": task_obj or task_text,
-            }
-        )
-        self._setup_env(task_obj=task_obj, state=state, kwargs=kwargs)
+        try:
+            self._setup_toolsets(
+                {
+                    "state": state,
+                    "trace_writer": self.trace_writer,
+                    "task": task_obj or task_text,
+                }
+            )
+        except Exception as exc:
+            import traceback as _tb_setup
+            _tb_setup.print_exc()
+            try:
+                from pathlib import Path as _P_setup
+                _err_log = _P_setup(os.environ.get("CYBERGYM_TASK_TRACE_DIR", "/tmp")) / "step_error.log"
+                with open(_err_log, "a") as _ef_setup:
+                    _ef_setup.write(f"\n{'='*60}\nSETUP_TOOLSETS EXCEPTION\n")
+                    _ef_setup.write(f"{type(exc).__name__}: {exc}\n")
+                    _tb_setup.print_exc(file=_ef_setup)
+            except Exception:
+                pass
+            raise
+        try:
+            self._setup_env(task_obj=task_obj, state=state, kwargs=kwargs)
+        except Exception as exc:
+            import traceback as _tb_env
+            _tb_env.print_exc()
+            try:
+                from pathlib import Path as _P_env
+                _err_log = _P_env(os.environ.get("CYBERGYM_TASK_TRACE_DIR", "/tmp")) / "step_error.log"
+                with open(_err_log, "a") as _ef_env:
+                    _ef_env.write(f"\n{'='*60}\nSETUP_ENV EXCEPTION\n")
+                    _ef_env.write(f"{type(exc).__name__}: {exc}\n")
+                    _tb_env.print_exc(file=_ef_env)
+            except Exception:
+                pass
+            raise
         harness_diagnostics = self._harness_mismatch_diagnostics()
         self._emit(
             0,
@@ -981,6 +1043,17 @@ class Engine(Generic[StateT, ObservationT, ActionT]):
                 try:
                     decision = self._run_decide(state, current_observation, record)
                 except Exception as exc:
+                    # Write exception to file for debugging (stderr may be lost)
+                    try:
+                        import traceback as _tb2
+                        from pathlib import Path as _P2
+                        _err_log = _P2(os.environ.get("CYBERGYM_TASK_TRACE_DIR", "/tmp")) / "step_error.log"
+                        with open(_err_log, "a") as _ef2:
+                            _ef2.write(f"\n{'='*60}\nRUN-LOOP DECIDE EXCEPTION step={step_id}\n")
+                            _ef2.write(f"{type(exc).__name__}: {exc}\n")
+                            _tb2.print_exc(file=_ef2)
+                    except Exception:
+                        pass
                     failed_phase = self._infer_failed_phase(record)
                     if not self._recover(state, failed_phase, exc):
                         self._finalize_step(record, state)
@@ -1176,6 +1249,17 @@ class Engine(Generic[StateT, ObservationT, ActionT]):
                         if isinstance(fr, str) and fr and state.stop_reason is None:
                             state.set_stop("final", fr)
                     except Exception as exc:
+                        # Write exception to file for debugging (stderr may be lost)
+                        try:
+                            import traceback as _tb3
+                            from pathlib import Path as _P3
+                            _err_log = _P3(os.environ.get("CYBERGYM_TASK_TRACE_DIR", "/tmp")) / "step_error.log"
+                            with open(_err_log, "a") as _ef3:
+                                _ef3.write(f"\n{'='*60}\nRUN-LOOP ACT EXCEPTION step={step_id}\n")
+                                _ef3.write(f"{type(exc).__name__}: {exc}\n")
+                                _tb3.print_exc(file=_ef3)
+                        except Exception:
+                            pass
                         failed_phase = self._infer_failed_phase(record)
                         if not self._recover(state, failed_phase, exc):
                             self._finalize_step(record, state)
