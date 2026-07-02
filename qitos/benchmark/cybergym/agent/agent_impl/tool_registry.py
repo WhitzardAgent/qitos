@@ -16,7 +16,8 @@ from ..tool_names import (
     EXPLORE_DELEGATE as EXPLORE_DELEGATE_TOOL_NAME,
     INSIGHT_DELEGATE as INSIGHT_DELEGATE_TOOL_NAME,
 )
-from ..tracking_tools import RecordHypothesisTool, RecordReflectionTool, RecordChainNodeTool, RecordGateTool
+from ..tracking_tools import RecordHypothesisTool, RecordReflectionTool, RecordChainNodeTool, RecordGateTool, RecordSinkCandidateTool, RecordAttemptTool, SwitchPhaseTool
+from ..analysis.tools import analysis_tools
 
 
 def _load_qitos_delegate_components():
@@ -133,6 +134,11 @@ def build_tool_registry(agent: Any, *, llm: Any, shell_timeout: int, server_url:
     tool_registry.register(RecordReflectionTool())
     tool_registry.register(RecordChainNodeTool())
     tool_registry.register(RecordGateTool())
+    tool_registry.register(RecordSinkCandidateTool())
+    tool_registry.register(RecordAttemptTool())
+    tool_registry.register(SwitchPhaseTool())
+    for analysis_tool in analysis_tools():
+        tool_registry.register(analysis_tool)
 
     agent_registry = None
     if getattr(agent, "qitos_delegate_enabled", False):

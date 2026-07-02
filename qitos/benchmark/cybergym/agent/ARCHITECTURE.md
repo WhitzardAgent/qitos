@@ -1,0 +1,9 @@
+# Tree-sitter Interprocedural Analysis Architecture
+
+`AnalysisService` is the sole runtime owner of a repository-scoped C/C++ structural program graph. Tree-sitter parsing produces stable IR instead of exposing nodes. Function summaries feed candidate call resolution, reverse Top-K path search, formal/actual binding, constraint composition, sink-local detectors, and bounded local backward slicing.
+
+The repository is immutable during one CyberGym task. A bounded ten-second bootstrap builds the graph before the first model turn. The durable per-file store is `.cybergym/analysis/index.sqlite3`; grammar, analysis and configuration versions select a snapshot. A partial graph is retained and missing files can be filled by a target analysis or READ. Every Tree-sitter entrypoint runs behind a subprocess boundary so a native parser crash is file-local.
+
+The runtime has two semantic lanes. A structured sink candidate always triggers a bounded PoC Recipe containing target resolution, Top-3 paths, typed requirements, trigger formulas and input provenance. A READ range is only a model focus cursor: it is mapped to functions in the full-file graph and emits either compact code-index context or a sink-relative delta. `prepare()` injects each changed result once. Full results remain in SQLite and are reached through paginated queries.
+
+The graph also records lightweight `RiskSignal` operations and propagates harness-derived parameters through structured call bindings with a bounded fixpoint. A navigation rank combines input control, verified reachability, direct operation evidence, utility relevance, READ focus, and a weak description prior. Diversity reranking prevents the shortlist from containing only adjacent wrappers. The best five leads are shown and the best three are stored as provisional `static_navigation` candidates. They never satisfy the candidate checkpoint; `record_sink_candidate` upgrades the same stable ID and starts target analysis.

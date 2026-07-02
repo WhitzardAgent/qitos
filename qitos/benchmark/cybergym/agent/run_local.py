@@ -31,6 +31,7 @@ def run_local(
     base_url: Optional[str] = None,
     server_url: str = "http://localhost:8000",
     max_steps: int = 30,
+    exploration_only: bool = False,
 ) -> Any:
     """Run the CyberGym agent locally without Docker."""
 
@@ -89,7 +90,7 @@ def run_local(
     # ------------------------------------------------------------------
     from qitos.kit.env.host_env import HostEnv
     from qitos.engine.stop_criteria import FinalResultCriteria, MaxStepsCriteria
-    from cybergym_agent.stop_criteria import PoCVerificationCriteria
+    from cybergym_agent.stop_criteria import PoCVerificationCriteria, PhaseExitCriteria
     from qitos.engine.states import ContextConfig
 
     env = HostEnv(workspace_root=workspace)
@@ -99,6 +100,14 @@ def run_local(
         FinalResultCriteria(),
         MaxStepsCriteria(max_steps=max_steps),
     ]
+
+    if exploration_only:
+        effective_max_steps = min(max_steps, 15)
+        stop_criteria = [
+            PhaseExitCriteria(phase="exploration"),
+            MaxStepsCriteria(max_steps=effective_max_steps),
+        ]
+        server_url = "http://localhost:0"  # dummy, no submit needed
 
     context_config = ContextConfig(
         tool_result_max_chars=60000,
@@ -193,6 +202,10 @@ def main():
         "--max-steps", type=int, default=30,
         help="Maximum agent steps (default: 30)",
     )
+    parser.add_argument(
+        "--exploration-only", action="store_true", default=False,
+        help="Stop after exploration phase (for sink recall evaluation)",
+    )
 
     args = parser.parse_args()
 
@@ -209,6 +222,7 @@ def main():
         base_url=args.base_url,
         server_url=args.server,
         max_steps=args.max_steps,
+        exploration_only=args.exploration_only,
     )
 
 

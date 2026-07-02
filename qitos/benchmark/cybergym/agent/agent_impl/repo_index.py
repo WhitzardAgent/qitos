@@ -311,7 +311,7 @@ def _extract_calls_from_body(body_text: str, known_functions: set) -> List[str]:
     it only reports calls to functions that are already in the index.
     """
     calls = []
-    for name in known_functions:
+    for name in sorted(known_functions):
         if name in body_text and re.search(rf'\b{re.escape(name)}\s*\(', body_text):
             calls.append(name)
             if len(calls) >= 30:
@@ -384,6 +384,11 @@ def build_repo_index(
 
     # Phase 2: Build call graph from function bodies
     call_graph: Dict[str, List[str]] = {}
+    call_graph_v2: Dict[str, List[Dict[str, Any]]] = {}
+    definitions: Dict[str, List[Tuple[str, int]]] = {}
+    for rel, info in files.items():
+        for fn in info.get("functions", []):
+            definitions.setdefault(fn["name"], []).append((rel, fn["line"]))
     edge_count = 0
     for rel, info in files.items():
         text = file_texts.get(rel, "")
@@ -399,9 +404,40 @@ def build_repo_index(
             calls = _extract_calls_from_body(body_text, all_func_names)
             # A function doesn't call itself
             calls = [c for c in calls if c != fn["name"]]
-            if calls:
-                call_graph[fn["name"]] = calls
-                edge_count += len(calls)
+            has_indirect_call = bool(re.search(r'(?:->|\.)\s*\w+\s*\(', body_text))
+            if calls or has_indirect_call:
+                if calls:
+                    call_graph[fn["name"]] = calls
+                caller_id = _symbol_node_id(rel, fn["name"], fn["line"])
+                edges: List[Dict[str, Any]] = []
+                for callee in calls:
+                    defs = list(definitions.get(callee, []))
+                    same_file = [item for item in defs if item[0] == rel]
+                    if len(same_file) == 1:
+                        targets = same_file
+                        status = "resolved"
+                    elif len(defs) == 1:
+                        targets = defs
+                        status = "resolved"
+                    elif defs:
+                        targets = defs
+                        status = "ambiguous"
+                    else:
+                        targets = []
+                        status = "unresolved"
+                    edges.append({
+                        "callee_name": callee,
+                        "target_ids": [_symbol_node_id(p, callee, line) for p, line in targets],
+                        "status": status,
+                    })
+                if has_indirect_call:
+                    edges.append({
+                        "callee_name": "<indirect>",
+                        "target_ids": [],
+                        "status": "unresolved",
+                    })
+                call_graph_v2[caller_id] = edges
+                edge_count += len(calls) + int(has_indirect_call)
                 if edge_count >= _MAX_CALL_GRAPH_EDGES:
                     break
         if edge_count >= _MAX_CALL_GRAPH_EDGES:
@@ -416,6 +452,7 @@ def build_repo_index(
     return {
         "files": files,
         "call_graph": call_graph,
+        "call_graph_v2": call_graph_v2,
         "harness_entries": harness_entries,
         "_fingerprint": fingerprint,
     }
@@ -518,10 +555,68 @@ def _extract_harness_entries(
             "entry_function": entry_fn["name"],
             "signature": entry_fn.get("signature", ""),
             "line": entry_fn["line"],
+            "node_id": _symbol_node_id(rel, entry_fn["name"], entry_fn["line"]),
             "calls": called,
         })
 
     return entries
+
+
+def _symbol_node_id(path: str, name: str, line: int) -> str:
+    """Return a stable identity for duplicate symbols in different files."""
+    return f"{path}::{name}::{int(line or 0)}"
+
+
+def trace_harness_reachability(
+    index: Dict[str, Any],
+    entry_node_id: str,
+    target_symbols: List[str],
+    max_depth: int = 8,
+) -> Dict[str, Any]:
+    """Trace one concrete harness to vulnerability symbols.
+
+    Ambiguous edges are retained as possible paths but never promoted to
+    verified reachability.
+    """
+    targets = {str(item) for item in target_symbols if str(item)}
+    if not entry_node_id or not targets:
+        return {"status": "not_found", "symbols": [], "paths": []}
+    graph = index.get("call_graph_v2", {})
+    queue: List[Tuple[str, List[str], bool]] = [(entry_node_id, [entry_node_id], False)]
+    visited: set[Tuple[str, bool]] = set()
+    verified_paths: List[List[str]] = []
+    possible_paths: List[List[str]] = []
+    reached: set[str] = set()
+    saw_unresolved = False
+    while queue and len(verified_paths) + len(possible_paths) < 20:
+        node_id, path, uncertain = queue.pop(0)
+        marker = (node_id, uncertain)
+        if marker in visited or len(path) > max_depth + 1:
+            continue
+        visited.add(marker)
+        for edge in graph.get(node_id, []):
+            callee = str(edge.get("callee_name") or "")
+            edge_uncertain = uncertain or edge.get("status") != "resolved"
+            target_ids = list(edge.get("target_ids") or [])
+            if edge.get("status") == "unresolved":
+                saw_unresolved = True
+            if callee in targets:
+                reached.add(callee)
+                found_path = path + (target_ids[:1] or [callee])
+                (possible_paths if edge_uncertain else verified_paths).append(found_path)
+            for target_id in target_ids:
+                queue.append((target_id, path + [target_id], edge_uncertain))
+    if verified_paths:
+        status = "verified"
+    elif possible_paths or saw_unresolved:
+        status = "unknown"
+    else:
+        status = "not_found"
+    return {
+        "status": status,
+        "symbols": sorted(reached),
+        "paths": verified_paths or possible_paths,
+    }
 
 
 def _compute_fingerprint(source_files: List[Path]) -> str:
@@ -678,6 +773,15 @@ def reverse_call_lookup(index: Dict[str, Any], target: str) -> List[Dict[str, An
     Returns a list of ``{"caller": name, "path": ..., "line": ...}``.
     """
     callers = []
+    graph_v2 = index.get("call_graph_v2", {})
+    if graph_v2:
+        for caller_id, edges in graph_v2.items():
+            if not any(edge.get("callee_name") == target for edge in edges):
+                continue
+            path, name, line = _split_symbol_node_id(caller_id)
+            callers.append({"caller": name, "path": path, "line": line})
+        callers.sort(key=lambda item: (item["path"], item["line"], item["caller"]))
+        return callers
     call_graph = index.get("call_graph", {})
     # Build a name -> (path, line) map
     func_locations: Dict[str, Tuple[str, int]] = {}
@@ -707,6 +811,32 @@ def trace_call_chain(
     Returns a list of chain strings like ``"Entry → A → B → target"``.
     Only factual — no guessing. Returns empty list if no path exists.
     """
+    if index.get("call_graph_v2"):
+        chains: List[str] = []
+        for entry in index.get("harness_entries", []):
+            result = trace_harness_reachability(
+                index,
+                str(entry.get("node_id") or ""),
+                [target],
+                max_depth=max_depth,
+            )
+            if result.get("status") != "verified":
+                continue
+            for path in result.get("paths", []):
+                rendered = []
+                for node_id in path:
+                    if "::" in node_id:
+                        node_path, name, line = _split_symbol_node_id(node_id)
+                        rendered.append(f"{name}@{node_path}:{line}")
+                    else:
+                        rendered.append(str(node_id))
+                chain = " → ".join(rendered)
+                if chain not in chains:
+                    chains.append(chain)
+                if len(chains) >= 5:
+                    return chains
+        return chains
+
     call_graph = index.get("call_graph", {})
     harness_names = set()
     for entry in index.get("harness_entries", []):
@@ -738,6 +868,14 @@ def trace_call_chain(
             queue.append((parent, new_path))
 
     return chains
+
+
+def _split_symbol_node_id(node_id: str) -> Tuple[str, str, int]:
+    try:
+        path, name, line = node_id.rsplit("::", 2)
+        return path, name, int(line)
+    except (TypeError, ValueError):
+        return "", str(node_id), 0
 
 
 def find_format_parsers(index: Dict[str, Any]) -> List[Dict[str, Any]]:

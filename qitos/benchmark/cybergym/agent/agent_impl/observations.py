@@ -20,8 +20,8 @@ from .constants import (
 from .validation import ValidationMixin
 
 
-def _detect_gate_contradictions(gates) -> List[str]:
-    """Detect logical contradictions between chain gates.
+def _detect_gate_contradictions(gates, suggestions=None) -> List[str]:
+    """Detect logical contradictions between chain gates and suggestions.
 
     Uses simple heuristic patterns to find cases where one gate
     requires a condition that another gate makes impossible.
@@ -30,12 +30,14 @@ def _detect_gate_contradictions(gates) -> List[str]:
     import re as _re
     results: List[str] = []
     active_gates = [g for g in gates if g.status in ("confirmed", "inferred", "questioned")]
-    if len(active_gates) < 2:
+    if len(active_gates) < 2 and not suggestions:
         return results
 
     # Build variable → condition maps for path_gate and value_gate
     var_assignments: Dict[str, List[str]] = {}  # var → [gate_desc, ...]
     var_nonnull: Dict[str, List[str]] = {}  # var → [gate_desc, ...]
+    # reachability bounds for trigger vs reachability cross-check
+    reachability_bounds: Dict[str, List[str]] = {}  # var → [cond, ...]
 
     for g in active_gates:
         cond = str(g.required_condition or "")
@@ -58,6 +60,15 @@ def _detect_gate_contradictions(gates) -> List[str]:
             if m2:
                 var_name = m2.group(1).lower()
                 var_nonnull.setdefault(var_name, []).append(desc)
+            # Collect reachability bounds for trigger cross-check
+            if getattr(g, "role", "reachability") == "reachability":
+                # Extract: "var < N" or "var >= N" etc.
+                bm = _re.search(r'(\w+)\s*([<>=!]+)\s*(\d+|0x[\da-fA-F]+)', cond)
+                if bm:
+                    var_name = bm.group(1).lower()
+                    reachability_bounds.setdefault(var_name, []).append(
+                        f"{desc} ({bm.group(0)})"
+                    )
 
     # Check: variable assigned false/null/0 AND required non-null
     for var in set(var_assignments) & set(var_nonnull):
@@ -69,6 +80,56 @@ def _detect_gate_contradictions(gates) -> List[str]:
                 )
                 if len(results) >= 3:
                     return results
+
+    # Check: trigger violation_formula vs reachability bounds
+    if suggestions:
+        for s in suggestions:
+            if s.get("role") != "trigger":
+                continue
+            violation = str(s.get("violation_formula", "") or "").strip()
+            if not violation:
+                continue
+            # Extract variable and comparison from violation
+            vm = _re.search(r'(\w+)\s*([<>=!]+)\s*(\d+|0x[\da-fA-F]+)', violation)
+            if not vm:
+                continue
+            var_name = vm.group(1).lower()
+            if var_name in reachability_bounds:
+                for reach_desc in reachability_bounds[var_name]:
+                    results.append(
+                        f"Trigger vs reachability on '{var_name}': "
+                        f"reachability says {reach_desc}, but trigger violation says {violation}"
+                    )
+                    if len(results) >= 3:
+                        return results
+
+        # Check: dataflow == binding vs value_gate != requirement
+        for s in suggestions:
+            if s.get("role") != "dataflow":
+                continue
+            formula = str(s.get("normalized_formula", "") or "")
+            dm = _re.search(r'(\w+)\s*==\s*(\d+|0x[\da-fA-F]+|nullptr|null|NULL)', formula)
+            if not dm:
+                continue
+            var_name = dm.group(1).lower()
+            bound_val = dm.group(2)
+            # Check if any value_gate requires var != same value
+            for g in active_gates:
+                if g.gate_type != "value_gate":
+                    continue
+                cond = str(g.required_condition or "")
+                nm = _re.search(
+                    rf'{_re.escape(var_name)}\s*!=\s*({_re.escape(bound_val)})',
+                    cond, _re.IGNORECASE,
+                )
+                if nm:
+                    results.append(
+                        f"Dataflow vs value gate on '{var_name}': "
+                        f"dataflow binds {var_name} == {bound_val}, "
+                        f"but value_gate requires {cond}"
+                    )
+                    if len(results) >= 3:
+                        return results
 
     return results
 
@@ -306,6 +367,52 @@ class ObservationMixin:
             context_lines.append("- Harness entry: **confirmed** (LLVMFuzzerTestOneInput found in source)")
         if context_lines:
             sections.extend(["## Task Context", *context_lines])
+        # Vague description guidance in exploration phase
+        if (state.task_spec_confidence < 0.4
+                and getattr(state, "current_phase", "") == "exploration"):
+            vague_lines = [
+                "- Description is vague — use broad GREP searches with keywords "
+                "from the description to locate the vulnerable code before reading deeply."
+            ]
+            if getattr(state, "search_anchors", None):
+                anchors = ", ".join(f"`{s}`" for s in state.search_anchors[:6])
+                vague_lines.append(f"  Search targets: {anchors}")
+            if getattr(state, "sink_candidates", None):
+                visible = [c for c in state.sink_candidates
+                           if not (c.source == "description_symbol" and c.confidence <= 0.3)]
+                top = [c.function for c in sorted(visible, key=lambda x: -x.confidence)[:3]]
+                vague_lines.append(f"  Top sink candidates: {', '.join(f'`{f}`' for f in top)}")
+            sections.extend(["## Vague Description Guidance", *vague_lines])
+        harness_lines = self._harness_resolution_lines(state)
+        if harness_lines:
+            sections.extend(["## Harness Resolution", *harness_lines])
+        # Sink Candidates
+        sink_candidates = [c for c in (getattr(state, "sink_candidates", None) or [])
+                           if c.status != "eliminated"
+                           and not (c.source == "description_symbol" and c.confidence <= 0.3)]
+        if sink_candidates:
+            sink_lines = [f"- Sink Candidates ({len(sink_candidates)}):"]
+            for c in sorted(sink_candidates, key=lambda x: -x.confidence)[:5]:
+                conf_label = "high" if c.confidence >= 0.7 else "medium" if c.confidence >= 0.4 else "low"
+                status = f" [{c.status}]" if c.status != "candidate" else ""
+                # Graph metadata enrichment tags
+                meta = c.metadata or {}
+                tags = []
+                if meta.get("graph_validated"):
+                    tags.append("graph-validated")
+                if meta.get("reachable_from_entry"):
+                    tags.append("reachable")
+                if meta.get("description_anchor_stale"):
+                    tags.append("STALE")
+                risk_count = int(meta.get("risk_signal_count", 0) or 0)
+                if risk_count > 0:
+                    tags.append(f"{risk_count} risk{'s' if risk_count != 1 else ''}")
+                tag_str = f" [{', '.join(tags)}]" if tags else ""
+                if bool(meta.get("requires_review")):
+                    label = "STATIC LEAD" if c.source == "static_navigation" else "WEAK PRIOR"
+                    status += f" [{label}—REQUIRES MODEL CONFIRMATION]"
+                sink_lines.append(f"  `{c.function}` ({conf_label} conf){status}{tag_str} — {c.evidence}")
+            sections.extend(["## Sink Candidates", *sink_lines])
         patch_diff = (state.patch_diff or str(state.metadata.get("patch_diff", "") or "")).strip()
         if patch_diff:
             sections.extend(["## Patch Diff", patch_diff])
@@ -313,6 +420,55 @@ class ObservationMixin:
         if task_spec_lines:
             sections.extend(["## Task Spec", *task_spec_lines])
         return sections
+
+    @staticmethod
+    def _harness_resolution_lines(state: CyberGymState) -> List[str]:
+        candidates = list(getattr(state, "harness_candidates", []) or [])
+        resolution = getattr(state, "harness_resolution", None)
+        if not candidates and not getattr(state, "submit_harness_targets", None):
+            return []
+        status = str(getattr(resolution, "status", "unresolved") or "unresolved")
+        selected_id = str(getattr(resolution, "selected_candidate_id", "") or "")
+        selected = next((item for item in candidates if item.candidate_id == selected_id), None)
+        lines = [f"- Status: **{status}**"]
+        if selected:
+            binary = str(getattr(resolution, "selected_binary", "") or "")
+            label = f"`{binary}` → " if binary else ""
+            lines.append(
+                f"- Selected Harness: {label}`{selected.source_path}:{selected.line}` "
+                f"(`{selected.entry_function}`)"
+            )
+            if selected.reachable_symbols:
+                lines.append("- Vulnerability Reachability: " + ", ".join(
+                    f"`{item}`" for item in selected.reachable_symbols
+                ))
+        alternatives = [item for item in candidates if item.candidate_id != selected_id]
+        if alternatives:
+            rendered = []
+            for item in alternatives[:6]:
+                names = "/".join(item.binary_names[:2])
+                suffix = f" ({names})" if names else ""
+                selected_binary = str(getattr(resolution, "selected_binary", "") or "")
+                if selected_binary and selected_binary not in item.binary_names:
+                    why = "submit-target mismatch"
+                elif any("unresolved" in fact for fact in item.evidence):
+                    why = "reachability unresolved"
+                elif status == "reachability_verified" and not item.reachable_symbols:
+                    why = "no source-backed vulnerability path found"
+                else:
+                    why = item.status
+                rendered.append(f"`{item.source_path}:{item.line}`{suffix} [{why}]")
+            lines.append("- Alternatives: " + "; ".join(rendered))
+        reasons = list(getattr(resolution, "reasons", []) or [])
+        conflicts = list(getattr(resolution, "conflicts", []) or [])
+        if reasons:
+            lines.append("- Evidence: " + "; ".join(reasons[:4]))
+        if conflicts:
+            lines.append("- Conflicts: " + "; ".join(conflicts[:4]))
+        next_action = str(getattr(resolution, "next_action", "") or "")
+        if next_action:
+            lines.append(f"- Next verification action: {next_action}")
+        return lines
 
     def _build_initial_brief(self, state: CyberGymState) -> str:
         sections: List[str] = [
@@ -594,13 +750,39 @@ class ObservationMixin:
         gates = list(getattr(state, "call_chain_gates", []) or [])
 
         if nodes or gates:
+            # ── Multi-sink header ──
+            active_sinks = [c for c in state.confirmed_sink_candidates()
+                            if not (c.source == "description_symbol" and c.confidence <= 0.3)]
+            active_sink_id = getattr(state, "active_sink_id", "") or ""
+
+            if len(active_sinks) > 1:
+                lines.append("## Active Sink Candidates")
+                for c in sorted(active_sinks, key=lambda x: -x.confidence):
+                    sid = f"{c.function}@{c.location}"
+                    conf_label = "high" if c.confidence >= 0.7 else "medium" if c.confidence >= 0.4 else "low"
+                    marker = " ◀ ACTIVE" if sid == active_sink_id else ""
+                    status_tag = f" [{c.status}]" if c.status != "candidate" else ""
+                    lines.append(f"- `{c.function}` ({conf_label} conf){status_tag}{marker}")
+                lines.append("")
+
+            # Filter to active sink's nodes/gates when multi-sink
+            if active_sink_id and len(active_sinks) > 1:
+                primary = state._primary_sink_id()
+                nodes = [n for n in nodes
+                         if n.sink_id == active_sink_id
+                         or (not n.sink_id and active_sink_id == primary)]
+                gates = [g for g in gates
+                         if g.sink_id == active_sink_id
+                         or (not g.sink_id and active_sink_id == primary)]
+
             confirmed_g = [g for g in gates if g.status == "confirmed"]
             open_g = [g for g in gates if g.status in ("inferred", "unknown", "questioned")]
             refuted_g = [g for g in gates if g.status == "refuted"]
             questioned_g = [g for g in gates if g.status == "questioned"]
 
-            # Detect contradictions between gates
-            contradictions = _detect_gate_contradictions(gates)
+            # Detect contradictions between gates and suggestions
+            suggestions_for_contra = list(getattr(state, "suggested_constraints", []) or [])
+            contradictions = _detect_gate_contradictions(gates, suggestions_for_contra)
 
             # ── Section 1: Vulnerability Summary ──
             if nodes:
@@ -623,10 +805,12 @@ class ObservationMixin:
                 for g in confirmed_g:
                     instruction = _gate_to_instruction(g)
                     brief = evidence_brief.get(g.description, "")
+                    span = getattr(g, "source_span", {}) or {}
+                    loc = f" (line {span['start_line']})" if span.get("start_line") else ""
                     if brief:
-                        lines.append(f"- {instruction} (evidence: {brief})")
+                        lines.append(f"- {instruction} (evidence: {brief}){loc}")
                     else:
-                        lines.append(f"- {instruction}")
+                        lines.append(f"- {instruction}{loc}")
                 lines.append("")
 
             # ── Section 3: PoC Byte Layout ──
@@ -641,6 +825,9 @@ class ObservationMixin:
                 lines.append("## Failed Approaches")
                 for g in refuted_g[-5:]:
                     desc = g.description
+                    span = getattr(g, "source_span", {}) or {}
+                    if span.get("start_line"):
+                        desc += f" [line {span['start_line']}]"
                     if g.repair_hint:
                         desc += f" → {g.repair_hint}"
                     lines.append(f"- {desc}")
@@ -651,6 +838,9 @@ class ObservationMixin:
                 lines.append("## Questioned Gates (may be correct — confirm or adjust)")
                 for g in questioned_g[-5:]:
                     desc = g.description
+                    span = getattr(g, "source_span", {}) or {}
+                    if span.get("start_line"):
+                        desc += f" [line {span['start_line']}]"
                     if g.repair_hint:
                         desc += f" → {g.repair_hint}"
                     lines.append(f"- {desc}")
@@ -711,6 +901,18 @@ class ObservationMixin:
                     lines.append(f"- {c}")
                 lines.append("")
 
+            # ── Section 5c: Interprocedural Analysis ──
+            brief = dict(getattr(state, "latest_sink_analysis_brief", {}) or {})
+            if brief and brief.get("status") in ("success", "partial"):
+                paths = brief.get("candidate_paths", [])
+                requirements = brief.get("requirements") or brief.get("key_constraints") or []
+                gaps = brief.get("gaps") or []
+                lines.append(
+                    f"- Static Analysis: {brief.get('status')} · "
+                    f"{len(paths)} path(s) · {len(requirements)} requirement(s) · {len(gaps)} actionable gap(s)"
+                )
+                lines.append("")
+
             # ── Section 6: Suggested Constraints (auto-extracted, LLM judges) ──
             if SUGGESTED_CONSTRAINTS_ENABLED:
                 suggestions = list(getattr(state, "suggested_constraints", []) or [])
@@ -722,14 +924,22 @@ class ObservationMixin:
                 if satisfy_suggestions:
                     lines.append("## Suggested Constraints")
                     lines.append(
-                        "These conditions were auto-detected from code but may include "
-                        "false positives. Judge each one: if it is a real constraint on "
-                        "the path from input to the vulnerability, use record_gate to confirm it."
+                        "These are grouped, source-backed analyzer candidates. Only "
+                        "reachability conditions may be ordinary path gates; trigger and "
+                        "hazard findings require source review before record_gate."
                     )
-                    for s in satisfy_suggestions[-5:]:
+                    last_group = None
+                    for s in satisfy_suggestions[-12:]:
                         gtype = s.get("gate_type", "unknown")
                         desc = s.get("description", "")
                         cond = s.get("required_condition", "")
+                        role = s.get("role", "reachability")
+                        path_id = s.get("path_id", "unassigned")
+                        confidence = s.get("confidence", "unknown")
+                        group = (path_id, role)
+                        if group != last_group:
+                            lines.append(f"### Path `{path_id}` · role `{role}`")
+                            last_group = group
                         # Show gate type as natural language label
                         type_label = {
                             "bounds_gate": "BOUNDS",
@@ -738,9 +948,28 @@ class ObservationMixin:
                             "format_gate": "FORMAT",
                             "value_gate": "VALUE",
                         }.get(gtype, gtype)
-                        lines.append(f"- [MUST-SATISFY] [{type_label}] {desc}")
+                        lines.append(f"- [{confidence.upper()}] [{type_label}] {desc}")
                         if cond:
                             lines.append(f"  Condition: {cond}")
+                        safe = s.get("safe_formula", "")
+                        if safe:
+                            lines.append(f"  Safe invariant: {safe}")
+                    lines.append("")
+
+                # Analyzer parser/precondition diagnostics are internal.  Only
+                # submission-feedback transitions are durable model evidence.
+                diagnostics = [
+                    item for item in list(getattr(state, "constraint_diagnostics", []) or [])
+                    if item.get("source") == "feedback"
+                ]
+                if diagnostics:
+                    lines.append("## Constraint Analysis Diagnostics")
+                    for item in diagnostics[-5:]:
+                        source_tag = "[FEEDBACK]" if item.get("source") == "feedback" else "[ANALYZER]"
+                        lines.append(
+                            f"- {source_tag} [{str(item.get('severity', 'info')).upper()}] "
+                            f"{item.get('code', 'analysis')}: {item.get('message', '')}"
+                        )
                     lines.append("")
 
             # ── Section 7: Unresolved Questions ──
@@ -942,6 +1171,38 @@ class ObservationMixin:
         submitted_fps = state.submitted_fingerprints or state.metadata.get("submitted_candidate_fingerprints", [])
         if submitted_fps:
             lines.append(f"- Submitted PoCs: {len(submitted_fps)} distinct")
+        # Auto-deepen hints from graph analysis (3-step TTL, not one-shot)
+        deepen_hints = list(getattr(state, "metadata", {}).get("_auto_deepen_hints", []) or [])
+        hint_ages = dict(getattr(state, "metadata", {}).get("_auto_deepen_hint_ages", {}) or {})
+        remaining = []
+        for hint in deepen_hints:
+            age = hint_ages.get(hint, 0)
+            lines.append(f"- {hint}")
+            if age < 3:
+                remaining.append(hint)
+                hint_ages[hint] = age + 1
+        state.metadata["_auto_deepen_hints"] = remaining if remaining else None
+        state.metadata["_auto_deepen_hint_ages"] = {
+            h: a for h, a in hint_ages.items() if h in remaining
+        }
+        # Description symbol validation hints
+        desc_hints = list(getattr(state, "metadata", {}).get("_desc_validation_hints", []) or [])
+        for hint in desc_hints:
+            lines.append(f"- {hint}")
+        state.metadata.pop("_desc_validation_hints", None)  # show once
+        # Callee-check gate hints
+        callee_hints = list(getattr(state, "metadata", {}).get("_callee_gate_hints", []) or [])
+        for hint in callee_hints:
+            lines.append(f"- {hint}")
+        state.metadata.pop("_callee_gate_hints", None)  # show once
+        # Persistent description anchor staleness warning (not one-shot)
+        for c in (getattr(state, "sink_candidates", []) or []):
+            if c.status != "eliminated" and (c.metadata or {}).get("description_anchor_stale"):
+                lines.append(
+                    f"- [WARNING] Sink candidate '{c.function}' derived from description but "
+                    f"graph suggests it's NOT the actual sink (conf={c.confidence:.1f}). "
+                    "Check deeper callees."
+                )
         return lines
 
     def _allowed_tool_lines(self, state: CyberGymState) -> List[str]:
@@ -958,6 +1219,14 @@ class ObservationMixin:
             return [
                 "- `record_reflection(summary, next_step, request_reinvestigation?)`; record one concise reflection now.",
                 "- Do not call `READ`, `GREP`, `BASH`, edit tools, or `submit_poc` before `record_reflection`.",
+            ]
+        if getattr(state, "pending_sink_checkpoint", False):
+            return [
+                "- `record_sink_candidate(function, evidence, location?, confidence?)` — "
+                "record the vulnerable function you identified NOW.",
+                "- `READ` / `GREP` / `FindSymbols` / `CallsiteSearch` — "
+                "only if needed to identify the sink function.",
+                "- Do not call `submit_poc`, `WRITE`, `BASH`, or edit tools until the checkpoint is satisfied.",
             ]
         if getattr(state, "pending_chain_checkpoint", False):
             return [
@@ -1063,6 +1332,8 @@ class ObservationMixin:
             "- `record_reflection` / `record_hypothesis`",
             "- `record_chain_node(function, location, role, description, status)` — record each function in the entry-to-sink chain",
             "- `record_gate(node_function, gate_type, description, required_condition, status)` — record each constraint the PoC must satisfy",
+            "- `record_sink_candidate(function, evidence, location?, confidence?)` — propose a sink candidate after reading code",
+            "- `switch_phase(target_phase, reason)` — switch to a different phase when the current one is wrong (e.g., back to exploration for more code reading)",
             "- Parallel read-only calls are allowed; keep batches to at most `4` tools.",
         ]
         return lines

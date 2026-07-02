@@ -49,6 +49,9 @@ from ..tool_names import (
     RECORD_REFLECTION,
     RECORD_CHAIN_NODE,
     RECORD_GATE,
+    RECORD_SINK_CANDIDATE,
+    ANALYZE_SINK_CANDIDATE,
+    ANALYSIS_QUERY_TOOLS,
 )
 
 
@@ -312,6 +315,7 @@ class ValidationMixin:
         *,
         runtime_context: Optional[Dict[str, Any]],
         tool_name: str,
+        path: str = "",
     ) -> str:
         # P34: fail closed — if runtime_context is missing or has no state,
         # block access rather than silently allowing it.
@@ -324,6 +328,9 @@ class ValidationMixin:
         if not ValidationMixin._ready_poc_paths(state):
             return ""
         if self._candidate_ready_file_missing(state):
+            return ""
+        # Allow WRITE to pocs/ for new PoC construction after a NO TRIGGER.
+        if tool_name == WRITE and path and "pocs/" in str(path).lower():
             return ""
         return (
             f"Candidate is ready for submission. Call submit_poc now; "
@@ -417,6 +424,9 @@ class ValidationMixin:
         text = str(command or "").strip().lower()
         if re.search(r"(?:^|[;&|]\s*)cat\s*(?:>{1,2}|<<)", text):
             return False
+        # Any command redirecting to pocs/ is PoC construction, not browsing
+        if ValidationMixin._bash_is_poc_construction_command(command):
+            return False
         browse_patterns = (
             r"(?:^|[;&|]\s*)(?:cat|bat|less|more|nl|strings|hexdump|xxd)\b",
             r"(?:^|[;&|]\s*)sed\s+-n\b",
@@ -449,6 +459,10 @@ class ValidationMixin:
             return False
         if ValidationMixin._bash_is_python_source_browse_command(command):
             return False
+        # PoC construction commands are always allowed when a candidate
+        # exists -- the agent may need to create a new PoC after a NO TRIGGER.
+        if ValidationMixin._bash_is_poc_construction_command(command):
+            return True
         relocation_patterns = (
             r"(?:^|[;&|]\s*)(?:cp|mv|chmod)\b",
         )
@@ -460,6 +474,30 @@ class ValidationMixin:
             r"(?:^|[;&|]\s*)(?:cmp|diff)\b",
         )
         return any(re.search(pattern, text) for pattern in relocation_patterns + inspection_patterns)
+
+    @staticmethod
+    def _bash_is_poc_construction_command(command: str) -> bool:
+        """True when the command writes to or creates a file in pocs/."""
+        text = str(command or "").strip().lower()
+        if not text:
+            return False
+        poc_output_patterns = (
+            # Shell redirection to pocs/
+            r"[>]\s*['\"]?[^;\s&|]*pocs[^;\s&|]*",
+            # dd of=pocs/...
+            r"\bof=['\"]?[^;\s&|]*pocs[^;\s&|]*",
+            # Python open("pocs/...", "w"/"wb"/"a")
+            r"""open\(\s*['"][^'"]*pocs[^'"]*['"]\s*,\s*['"][wa]""",
+            # printf/echo redirecting to pocs/
+            r"(?:printf|echo)\s+.*[>]\s*['\"]?[^;\s&|]*pocs[^;\s&|]*",
+            # xxd -r writing to pocs/
+            r"xxd\s+-r\s+.*[>]\s*['\"]?[^;\s&|]*pocs[^;\s&|]*",
+            # tee to pocs/
+            r"\btee\s+['\"]?[^;\s&|]*pocs[^;\s&|]*",
+            # cp/mv destination is pocs/
+            r"(?:^|[;&|]\s*)(?:cp|mv)\s+(?:-\S+\s+)*\S+\s+['\"]?[^;\s&|]*pocs[^;\s&|]*",
+        )
+        return any(re.search(pattern, text) for pattern in poc_output_patterns)
 
     @staticmethod
     def _bash_is_candidate_file_sanity_command(command: str, state: CyberGymState) -> bool:
@@ -490,6 +528,10 @@ class ValidationMixin:
         if not re.search(r"(?:^|[;&|]\s*)(?:python3?|python)\b", text):
             return False
         if not any(marker in text for marker in ("repo-vul/", "repo-vul", "src/")):
+            return False
+        # Exception: if the Python command writes to pocs/, it's PoC
+        # construction, not source browsing.
+        if ValidationMixin._bash_is_poc_construction_command(command):
             return False
         browse_markers = (
             "open(",
@@ -545,9 +587,13 @@ class ValidationMixin:
                     return ""
                 if self._bash_is_candidate_ready_maintenance_command(command):
                     return ""
+                # Allow PoC construction commands even when a candidate exists.
+                if ValidationMixin._bash_is_poc_construction_command(command):
+                    return ""
                 return (
                     "Candidate is ready for submission. Call submit_poc now; "
-                    "only byte-level sanity checks or moving the existing candidate into place are allowed before submitting."
+                    "only PoC construction in pocs/, byte-level sanity checks, or moving "
+                    "the existing candidate into place are allowed before submitting."
                 )
         if self._bash_is_candidate_file_sanity_command(command, state):
             return ""
@@ -615,6 +661,20 @@ class ValidationMixin:
                     RECORD_CHAIN_NODE,
                     RECORD_GATE,
                 }
+            # After a NO TRIGGER, allow construction tools so the agent can
+            # build a new PoC variant.  The post_submit_miss mode lasts 2 steps.
+            current_mode = str(getattr(state, "control_mode", "") or "")
+            if current_mode == "post_submit_miss":
+                return {
+                    BASH,
+                    WRITE,
+                    APPEND,
+                    INSERT,
+                    REPLACE_LINES,
+                    STR_REPLACE,
+                    SUBMIT_POC,
+                    RECORD_REFLECTION,
+                }
             return self._submit_ready_tool_names()
         names = {
             *READ_ONLY_TOOLS,
@@ -624,6 +684,7 @@ class ValidationMixin:
             RECORD_REFLECTION,
             RECORD_CHAIN_NODE,
             RECORD_GATE,
+            RECORD_SINK_CANDIDATE,
         }
         names.update(
             {
@@ -668,11 +729,25 @@ class ValidationMixin:
         )
         if advanced_context:
             names.update(EVIDENCE_TOOLS)
+        names.add(RECORD_SINK_CANDIDATE)
+        if state.current_phase in {"ingestion", "exploration", "investigation"}:
+            names.add("discover_sink_navigation_leads")
+        if getattr(state, "active_sink_candidate_id", ""):
+            names.add(ANALYZE_SINK_CANDIDATE)
+        brief = dict(getattr(state, "latest_sink_analysis_brief", {}) or {})
+        for query in brief.get("suggested_queries", []):
+            tool_name = str(query.get("tool") or "")
+            if tool_name in ANALYSIS_QUERY_TOOLS:
+                names.add(tool_name)
+        if brief:
+            names.add("get_analysis_result")
         return names
 
     def _submit_ready_tool_names(self) -> set[str]:
         return {
             SUBMIT_POC,
+            BASH,
+            WRITE,
         }
 
     def _should_filter_to_candidate_tools(self, state: CyberGymState) -> bool:

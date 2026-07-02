@@ -449,10 +449,13 @@ class FeedbackMixin:
         if not gate or not hasattr(state, "call_chain_gates"):
             return
 
-        # Get gates that are still open (inferred/unknown) for refutation
+        # Record pre-status for diagnostics emission at the end
+        pre_status = {id(g): g.status for g in state.call_chain_gates}
+
+        # Get gates that are still open (inferred/unknown/questioned) for refutation
         open_gates = [
             (i, g) for i, g in enumerate(state.call_chain_gates)
-            if g.status in ("inferred", "unknown")
+            if g.status in ("inferred", "unknown", "questioned")
         ]
 
         # Diagnostic helper: extract PoC header hex for repair hints
@@ -482,6 +485,9 @@ class FeedbackMixin:
                             "Check magic bytes, header structure, and container validity."
                         )
                     g.evidence = "Refuted by carrier_parse failure"
+                    path_id = getattr(g, "path_id", "") or ""
+                    if path_id:
+                        g.repair_hint += f" (path: {path_id})"
         elif gate == "path_not_reached":
             # Diagnostic refutation: try to identify the frontier where
             # execution stopped, instead of always refuting the earliest gate.
@@ -514,11 +520,20 @@ class FeedbackMixin:
                             frontier_node = node
                             break
                 if frontier_node:
-                    # Refute gates at the frontier node
-                    for i, g in open_gates:
-                        if g.node_order == frontier_node.order:
+                    # Refute gates at the frontier node, preferring
+                    # reachability-role gates (trigger-role gates don't
+                    # affect path reachability).
+                    frontier_gates = [(i, g) for i, g in open_gates
+                                      if g.node_order == frontier_node.order]
+                    target_gate = None
+                    # Prefer reachability-role
+                    for i, g in frontier_gates:
+                        if getattr(g, "role", "reachability") == "reachability":
                             target_gate = (i, g)
                             break
+                    # Fallback to any role
+                    if target_gate is None and frontier_gates:
+                        target_gate = frontier_gates[0]
 
             if target_gate:
                 target_gate[1].status = "refuted"
@@ -563,14 +578,29 @@ class FeedbackMixin:
             # ASAN corruption detected but wrong crash type — the path WAS
             # reached but the trigger is wrong.  Don't refute path gates;
             # mark the sink's bounds/value gate as needing refinement.
+            # Prefer trigger-role gates over reachability-role gates.
+            sink_order = max(
+                (n.order for n in state.call_chain_nodes if n.role == "sink"), default=0
+            )
+            target = None
+            # Prefer trigger-role
             for i, g in open_gates:
-                if g.gate_type in ("bounds_gate", "value_gate") and g.node_order == max(
-                    (n.order for n in state.call_chain_nodes if n.role == "sink"), default=0
-                ):
-                    g.status = "refuted"
-                    g.repair_hint = "Trigger reached but wrong crash signature — refine overflow size/offset"
-                    g.evidence = f"Refuted by trigger_wrong_signature"
-                    break  # Only refute one
+                if (g.gate_type in ("bounds_gate", "value_gate")
+                        and getattr(g, "role", "reachability") == "trigger"
+                        and g.node_order == sink_order):
+                    target = g
+                    break
+            # Fallback to any role
+            if target is None:
+                for i, g in open_gates:
+                    if (g.gate_type in ("bounds_gate", "value_gate")
+                            and g.node_order == sink_order):
+                        target = g
+                        break
+            if target is not None:
+                target.status = "refuted"
+                target.repair_hint = "Trigger reached but wrong crash signature — refine overflow size/offset"
+                target.evidence = "Refuted by trigger_wrong_signature"
         elif gate == "trigger_wrong_location":
             # Crash in unexpected location — dispatch gates are wrong
             for i, g in open_gates:
@@ -582,19 +612,48 @@ class FeedbackMixin:
             # Non-ASAN crash or crash without type — input reached the code
             # but didn't satisfy the trigger condition. Refute the first
             # open value_gate or bounds_gate at the sink node.
+            # Prefer trigger-role gates over reachability-role gates.
             sink_order = max(
                 (n.order for n in state.call_chain_nodes if n.role == "sink"),
                 default=0,
             )
+            target = None
+            # Prefer trigger-role
             for i, g in open_gates:
-                if g.gate_type in ("value_gate", "bounds_gate") and g.node_order == sink_order:
-                    g.status = "refuted"
-                    g.repair_hint = (
-                        "Input reached vulnerable code but trigger condition not met — "
-                        "adjust the trigger value/field in the PoC"
-                    )
-                    g.evidence = "Refuted by wrong_trigger"
+                if (g.gate_type in ("value_gate", "bounds_gate")
+                        and getattr(g, "role", "reachability") == "trigger"
+                        and g.node_order == sink_order):
+                    target = g
                     break
+            # Fallback to any role
+            if target is None:
+                for i, g in open_gates:
+                    if (g.gate_type in ("value_gate", "bounds_gate")
+                            and g.node_order == sink_order):
+                        target = g
+                        break
+            if target is not None:
+                target.status = "refuted"
+                target.repair_hint = (
+                    "Input reached vulnerable code but trigger condition not met — "
+                    "adjust the trigger value/field in the PoC"
+                )
+                target.evidence = "Refuted by wrong_trigger"
+
+        # Emit diagnostics for any gates whose status changed
+        for g in state.call_chain_gates:
+            if id(g) in pre_status and g.status != pre_status[id(g)]:
+                diag_code = "gate_refuted" if g.status == "refuted" else "gate_questioned"
+                diag_severity = "warning" if g.status == "refuted" else "info"
+                state.constraint_diagnostics.append({
+                    "code": diag_code,
+                    "message": f"{g.description} → {g.repair_hint or 'status changed'}",
+                    "severity": diag_severity,
+                    "source_span": getattr(g, "source_span", {}) or {},
+                    "source": "feedback",
+                })
+        if len(state.constraint_diagnostics) > 32:
+            state.constraint_diagnostics = state.constraint_diagnostics[-32:]
 
     @staticmethod
     def _derive_failure_record(output: Dict[str, Any], submit_context: Dict[str, Any]) -> FailureRecord | None:

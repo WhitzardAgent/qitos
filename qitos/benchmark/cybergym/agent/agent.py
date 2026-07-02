@@ -96,9 +96,10 @@ from .agent_impl.candidates import CandidateFamilyMixin
 from .agent_impl.feedback import FeedbackMixin
 from .agent_impl.observations import ObservationMixin
 from .agent_impl.tools import ToolMixin
+from .agent_impl.static_analysis_runtime import StaticAnalysisRuntimeMixin
 
 
-class CyberGymAgent(StateInitMixin, TaskAnalysisMixin, RepoAnalysisMixin, CrashParsingMixin, PromptsMixin, HarnessMixin, PathMixin, ValidationMixin, CandidateFamilyMixin, FeedbackMixin, ObservationMixin, ToolMixin, AgentModule[CyberGymState, Observation, Any]):
+class CyberGymAgent(StaticAnalysisRuntimeMixin, StateInitMixin, TaskAnalysisMixin, RepoAnalysisMixin, CrashParsingMixin, PromptsMixin, HarnessMixin, PathMixin, ValidationMixin, CandidateFamilyMixin, FeedbackMixin, ObservationMixin, ToolMixin, AgentModule[CyberGymState, Observation, Any]):
     """PoC Generation Agent for CyberGym Level 1 tasks.
 
     Given a vulnerability description and a pre-patch codebase, produces a
@@ -148,6 +149,7 @@ class CyberGymAgent(StateInitMixin, TaskAnalysisMixin, RepoAnalysisMixin, CrashP
         self.server_url = server_url
         self.max_steps = max_steps
         self.shell_timeout = shell_timeout
+
         # Initialize exchange logger if enabled
         from .agent_impl.exchange_logger import get_exchange_logger
         self._exchange_logger = get_exchange_logger(self.workspace_root)
@@ -273,6 +275,7 @@ class CyberGymAgent(StateInitMixin, TaskAnalysisMixin, RepoAnalysisMixin, CrashP
 
         if not prompt_state.get("initialized"):
             prepared = _sanitize_model_text(self._build_initial_brief(state))
+            prepared = self._inject_static_analysis_brief(state, prepared)
             prompt_state.update(
                 {
                     "initialized": True,
@@ -308,6 +311,7 @@ class CyberGymAgent(StateInitMixin, TaskAnalysisMixin, RepoAnalysisMixin, CrashP
         )
 
         prepared = _sanitize_model_text(self._build_observation_packet(state))
+        prepared = self._inject_static_analysis_brief(state, prepared)
 
         # Store constraint board and task memory text in state metadata
         # so the TUI can render the exact same text the LLM sees.
@@ -478,9 +482,7 @@ class CyberGymAgent(StateInitMixin, TaskAnalysisMixin, RepoAnalysisMixin, CrashP
         return paths
 
     def _detect_harness_entry(self, state: CyberGymState, short_name: str, output: Any) -> None:
-        """Auto-detect harness entry function in READ/FindSymbols results."""
-        if state.harness_entry_confirmed or state.metadata.get("harness_entry_confirmed"):
-            return
+        """Record a harness read without confusing discovery with verification."""
         normalized_name = str(short_name or "").upper()
         if normalized_name not in (self.READ_TOOL, self.FIND_SYMBOLS_TOOL.upper()):
             return
@@ -496,21 +498,45 @@ class CyberGymAgent(StateInitMixin, TaskAnalysisMixin, RepoAnalysisMixin, CrashP
         for pattern in harness_patterns:
             m = re.search(pattern, content)
             if m:
-                state.harness_entry_confirmed = True
-                state.metadata["harness_entry_confirmed"] = True  # backward compat
                 entry_name = m.group(0)
                 path = str(output.get("path") or "") if isinstance(output, dict) else ""
                 loc = f"{entry_name} in {path}" if path else entry_name
+                matching = [
+                    candidate for candidate in state.harness_candidates
+                    if candidate.source_path and (
+                        path.endswith(candidate.source_path)
+                        or candidate.source_path in path
+                    )
+                ]
+                resolution = state.harness_resolution
+                selected = next(
+                    (candidate for candidate in matching
+                     if candidate.candidate_id == resolution.selected_candidate_id),
+                    None,
+                )
+                if selected is None:
+                    qualifier = "discovered; not the selected harness" if matching else "discovered; unmapped harness"
+                elif resolution.status == "reachability_verified":
+                    qualifier = "reachability verified"
+                else:
+                    qualifier = "selected but vulnerability reachability is unverified"
                 state.durable_code_facts = self._append_capped_fact(
                     state.durable_code_facts,
-                    f"[confirmed] harness_entry: {loc}",
+                    f"[harness {qualifier}] {loc}",
                 )
-                # Confirm input format model
-                if hasattr(state, "input_format"):
+                state.harness_entry_confirmed = resolution.status == "reachability_verified"
+                state.metadata["harness_entry_confirmed"] = state.harness_entry_confirmed
+                if selected is not None and hasattr(state, "input_format"):
                     state.input_format.entry_point = entry_name
+                    state.input_format.field_provenance["entry_point"] = selected.source_path
+                    state.input_format.field_confidence["entry_point"] = (
+                        1.0 if state.harness_entry_confirmed else 0.75
+                    )
                     if "LLVMFuzzerTestOneInput" in entry_name:
                         state.input_format.input_path = "buffer"
-                    state.input_format.confirmed = True
+                        state.input_format.field_provenance["input_path"] = selected.source_path
+                        state.input_format.field_confidence["input_path"] = 0.95
+                    state.input_format.confirmed = state.harness_entry_confirmed
                 break
 
     def _update_read_coverage(self, state: CyberGymState, short_name: str, output: Any) -> None:
@@ -592,6 +618,25 @@ class CyberGymAgent(StateInitMixin, TaskAnalysisMixin, RepoAnalysisMixin, CrashP
         return False
 
     @staticmethod
+    def _constraint_source_from_read(output: Dict[str, Any]) -> tuple[str, int]:
+        """Recover parseable source and its zero-based line offset from READ output.
+
+        READ content is decorated with a display header and ``cat -n`` style
+        line numbers.  Feeding that representation to Tree-sitter changes the
+        grammar, so constraint extraction strips only the known decoration.
+        """
+        content = str(output.get("content") or "")
+        line_offset = max(0, int(output.get("offset") or 0))
+        lines = content.splitlines()
+        if not lines or not lines[0].startswith("// Lines "):
+            return content, line_offset
+        source_lines: List[str] = []
+        for line in lines[1:]:
+            match = re.match(r"^\s*\d+\t(.*)$", line)
+            source_lines.append(match.group(1) if match else line)
+        return "\n".join(source_lines), line_offset
+
+    @staticmethod
     def _extract_path_constraints_from_read(state: CyberGymState, output: Any) -> None:
         """Auto-extract constraints from READ content using tree-sitter AST.
 
@@ -607,7 +652,7 @@ class CyberGymAgent(StateInitMixin, TaskAnalysisMixin, RepoAnalysisMixin, CrashP
         if not isinstance(output, dict):
             return
         read_path = str(output.get("path") or "").strip()
-        content = str(output.get("content") or "")
+        content, source_line_offset = CyberGymAgent._constraint_source_from_read(output)
         if not read_path or not content:
             return
         existing_descriptions = {
@@ -616,52 +661,140 @@ class CyberGymAgent(StateInitMixin, TaskAnalysisMixin, RepoAnalysisMixin, CrashP
         }
         from .state import ChainGate, PathConstraint
 
-        # Determine node_order for new gates
-        node_order = 0
-        is_chain_node = False
-        for node in state.call_chain_nodes:
-            if read_path.endswith(node.location.split(":")[0]) or node.location.split(":")[0] in read_path:
-                node_order = node.order
-                is_chain_node = True
-                break
+        # Resolve explicit caller -> next-hop edges from the ordered chain.
+        # A file may contain several chain nodes, so extract each edge
+        # independently and retain each target callsite span.
+        ordered_nodes = sorted(state.call_chain_nodes, key=lambda item: item.order)
+        edge_specs = []
+        for index, node in enumerate(ordered_nodes[:-1]):
+            node_path = node.location.split(":")[0]
+            if node_path and (read_path.endswith(node_path) or node_path in read_path):
+                edge_specs.append((node, ordered_nodes[index + 1]))
 
         # Existing suggestion/gate descriptions for dedup
         existing_suggestion_descs = {
             s.get("description", "") for s in state.suggested_constraints
         }
         existing_gate_descs = {g.description for g in state.call_chain_gates}
-        existing_gate_conditions = {g.required_condition for g in state.call_chain_gates}
-
-        # --- tree-sitter extraction ---
-        from .agent_impl.constraint_extractor import extract_path_constraints
+        # --- Level-1 source-only tree-sitter analysis ---
+        from .agent_impl.constraint_analysis import analyze_constraint_requests
+        from .agent_impl.constraint_models import ExtractionRequest, SourceUnit, hint_from_description
 
         # Determine file extension for C vs C++ parser selection
         ext = ".c"
         if read_path.endswith((".cpp", ".cc", ".cxx", ".hpp")):
             ext = ".cpp"
         elif read_path.endswith(".h"):
-            # .h could be C or C++; default to C which is more common in fuzz targets
-            ext = ".c"
+            # The extractor tries both grammars for ambiguous headers.
+            ext = ".h"
 
-        known_funcs = set(state.vulnerable_functions or [])
-        candidates = extract_path_constraints(
-            content,
-            source_path=read_path,
-            known_functions=known_funcs if is_chain_node else set(),
+        candidates = []
+        analysis_paths: List[Dict[str, Any]] = []
+        analysis_diagnostics: List[Dict[str, Any]] = []
+        hint = hint_from_description(state.vulnerability_description)
+        state.vulnerability_hints = list(hint.families)
+        is_partial = bool(
+            int(output.get("offset") or 0) > 0
+            or output.get("has_more")
+            or output.get("truncated")
+        )
+        has_complete_function = bool(
+            re.search(r"\b[A-Za-z_~][\w:~]*\s*\([^;{}]*\)\s*\{", content)
+            and content.count("{") == content.count("}")
+        )
+        source_unit = SourceUnit(
+            text=content,
+            path=read_path,
             file_extension=ext,
+            line_offset=source_line_offset,
+            completeness=(
+                "full_function" if is_partial and has_complete_function
+                else "snippet" if is_partial
+                else "full_file"
+            ),
         )
 
+        def collect_result(result) -> None:
+            candidates.extend(result.candidates)
+            analysis_paths.extend({
+                "path_id": path.path_id,
+                "target_function": path.target_function,
+                "required_formula": path.required_formula,
+                "anchor_span": path.anchor_span.as_dict(),
+            } for path in result.paths)
+            analysis_diagnostics.extend({
+                "code": item.code,
+                "message": item.message,
+                "severity": item.severity,
+                "source_span": item.source_span.as_dict() if item.source_span else {},
+                "source": read_path,
+            } for item in result.diagnostics)
+
+        analysis_requests = []
+        if edge_specs:
+            for caller_node, target_node in edge_specs:
+                analysis_requests.append(ExtractionRequest(
+                    source=source_unit,
+                    caller_function=caller_node.function,
+                    target_function=target_node.function,
+                    vulnerability_hint=hint,
+                ))
+        else:
+            # Legacy compatibility is intentionally limited to one unambiguous
+            # target and is downgraded by the extractor.
+            matching_nodes = [
+                node for node in ordered_nodes
+                if (node_path := node.location.split(":")[0])
+                and (read_path.endswith(node_path) or node_path in read_path)
+            ]
+            known_funcs = set(state.vulnerable_functions or [])
+            if matching_nodes and len(known_funcs) == 1:
+                analysis_requests.append(ExtractionRequest(
+                    source=source_unit,
+                    caller_function=matching_nodes[0].function,
+                    target_function=next(iter(known_funcs)),
+                    vulnerability_hint=hint,
+                ))
+
+        # The final chain node is the vulnerability-relative sink.  Trigger
+        # detectors are deliberately run only when its source is READ.
+        if ordered_nodes:
+            sink_node = ordered_nodes[-1]
+            sink_path = sink_node.location.split(":")[0]
+            if sink_path and (read_path.endswith(sink_path) or sink_path in read_path):
+                analysis_requests.append(ExtractionRequest(
+                    source=source_unit,
+                    sink_function=sink_node.function,
+                    vulnerability_hint=hint,
+                ))
+
+        for analysis_result in analyze_constraint_requests(analysis_requests):
+            collect_result(analysis_result)
+
+        # Adjacent chain edges can overlap in malformed/incomplete chain state.
+        unique_candidates = {}
+        for candidate in candidates:
+            span = candidate.target_call_span
+            key = (
+                candidate.node_function,
+                candidate.target_function,
+                span.start_byte if span else -1,
+                span.end_byte if span else -1,
+                candidate.origin,
+                candidate.normalized_formula,
+                candidate.role,
+                candidate.path_id,
+            )
+            unique_candidates[key] = candidate
+        candidates = list(unique_candidates.values())
+
         new_gates: List[ChainGate] = []
-        new_suggestions: List[Dict[str, str]] = []
+        new_suggestions: List[Dict[str, Any]] = []
 
         for cand in candidates:
             desc = cand.description
             if desc in existing_gate_descs or desc in existing_descriptions:
                 continue
-            # Also dedup by required_condition to avoid semantically duplicate gates
-            if cand.required_condition in existing_gate_conditions:
-                continue
-
             # Legacy path_constraints for backward compat
             if desc not in existing_descriptions:
                 state.path_constraints.append(
@@ -669,42 +802,99 @@ class CyberGymAgent(StateInitMixin, TaskAnalysisMixin, RepoAnalysisMixin, CrashP
                         description=desc,
                         source_location=read_path,
                         status="hypothesized",
+                        required_values=cand.normalized_formula,
                         constraint_type=cand.gate_type,
                     )
                 )
                 existing_descriptions.add(desc)
 
-            if cand.confidence == "high" and cand.polarity == "satisfy":
-                # High-confidence satisfy constraints → directly create ChainGate
+            if cand.promotable and cand.role == "reachability" and cand.confidence == "high":
+                # Only source-proven reachability constraints may auto-promote.
                 brief = f"{cand.gate_type} at {read_path}: {cand.required_condition[:80]}"
                 state.gate_evidence_brief[desc] = brief
+                node_order = next(
+                    (node.order for node in ordered_nodes if node.function == cand.node_function),
+                    0,
+                )
+                target_line = cand.target_call_span.start_line if cand.target_call_span else 0
                 new_gates.append(ChainGate(
                     node_order=node_order,
                     gate_type=cand.gate_type,
                     description=desc,
                     required_condition=cand.required_condition,
                     status="inferred",
-                    evidence=f"READ {read_path}",
+                    evidence=f"READ {read_path}:{target_line}" if target_line else f"READ {read_path}",
                     repair_hint="",
+                    role=cand.role,
+                    path_id=cand.path_id,
+                    source_span=cand.source_span.as_dict() if cand.source_span else {},
                 ))
             elif desc not in existing_suggestion_descs:
-                # Medium/low confidence → suggested constraints
-                # Only include satisfy-polarity with medium+ confidence
-                # to reduce noise from low-confidence avoid-exit suggestions.
-                if cand.polarity == "satisfy" and cand.confidence in ("medium", "high"):
+                # Trigger/hazard/dataflow candidates always require model review.
+                # Low-confidence semantic hazards remain visible as warnings,
+                # but cannot become gates without an explicit record_gate call.
+                if cand.polarity == "satisfy":
                     new_suggestions.append({
                         "gate_type": cand.gate_type,
                         "description": desc,
                         "required_condition": cand.required_condition,
+                        "normalized_formula": cand.normalized_formula,
+                        "raw_condition": cand.raw_condition,
                         "source": read_path,
                         "polarity": cand.polarity,
+                        "origin": cand.origin,
+                        "node_function": cand.node_function,
+                        "target_function": cand.target_function,
+                        "source_span": cand.source_span.as_dict() if cand.source_span else {},
+                        "target_call_span": cand.target_call_span.as_dict() if cand.target_call_span else {},
+                        "sink_span": cand.sink_span.as_dict() if cand.sink_span else {},
+                        "access_mode": cand.access_mode,
+                        "role": cand.role,
+                        "path_id": cand.path_id,
+                        "confidence": cand.confidence,
+                        "safe_formula": cand.safe_formula,
+                        "violation_formula": cand.violation_formula,
+                        "promotable": cand.promotable,
+                        "confidence_reasons": list(cand.confidence_reasons),
+                        "symbol_dependencies": list(cand.symbol_dependencies),
+                        "semantic_tags": list(cand.semantic_tags),
                     })
                     existing_suggestion_descs.add(desc)
 
-        # Append suggestions to state, cap at 8
-        state.suggested_constraints.extend(new_suggestions)
-        if len(state.suggested_constraints) > 8:
-            state.suggested_constraints = state.suggested_constraints[-8:]
+        # Keep suggestions diverse across callsite path, role, and gate type.
+        combined = [*state.suggested_constraints, *new_suggestions]
+        deduplicated: Dict[tuple, Dict[str, Any]] = {}
+        for suggestion in reversed(combined):
+            key = (
+                suggestion.get("path_id", ""),
+                suggestion.get("role", "reachability"),
+                suggestion.get("gate_type", "path_gate"),
+                suggestion.get("normalized_formula", ""),
+            )
+            deduplicated.setdefault(key, suggestion)
+        ordered = list(reversed(list(deduplicated.values())))
+        groups: Dict[tuple, List[Dict[str, Any]]] = {}
+        for suggestion in ordered:
+            group_key = (
+                suggestion.get("path_id", ""),
+                suggestion.get("role", "reachability"),
+                suggestion.get("gate_type", "path_gate"),
+            )
+            groups.setdefault(group_key, []).append(suggestion)
+        selected: List[Dict[str, Any]] = []
+        while len(selected) < 24 and any(groups.values()):
+            for group in groups.values():
+                if group and len(selected) < 24:
+                    selected.append(group.pop(0))
+        state.suggested_constraints = selected
+        if analysis_paths:
+            path_index = {item.get("path_id", ""): item for item in state.constraint_paths}
+            for item in analysis_paths:
+                path_index[item["path_id"]] = item
+            state.constraint_paths = list(path_index.values())[-32:]
+        if analysis_diagnostics:
+            state.constraint_diagnostics.extend(analysis_diagnostics)
+            state.constraint_diagnostics = state.constraint_diagnostics[-32:]
 
         # Add deduplicated ChainGate entries
         existing_gate_descs = {g.description for g in state.call_chain_gates}
@@ -727,7 +917,10 @@ class CyberGymAgent(StateInitMixin, TaskAnalysisMixin, RepoAnalysisMixin, CrashP
         """Detect contradictions between chain gates and downgrade the latest
         confirmed gate to 'questioned' if a contradiction is found."""
         from .agent_impl.observations import _detect_gate_contradictions
-        contradictions = _detect_gate_contradictions(state.call_chain_gates)
+        contradictions = _detect_gate_contradictions(
+            state.call_chain_gates,
+            suggestions=list(getattr(state, "suggested_constraints", []) or []),
+        )
         if contradictions:
             # Downgrade the latest confirmed gate to questioned
             confirmed = [g for g in state.call_chain_gates if g.status == "confirmed"]
@@ -771,12 +964,15 @@ class CyberGymAgent(StateInitMixin, TaskAnalysisMixin, RepoAnalysisMixin, CrashP
             return
 
         existing_keys = {
-            f"{n.function}@{n.location}" for n in state.call_chain_nodes
+            f"{n.function}@{n.location}@{n.sink_id}" for n in state.call_chain_nodes
         }
-        max_order = max(
-            (n.order for n in state.call_chain_nodes), default=-1
-        )
         vulnerable = set(state.vulnerable_functions or [])
+        # Build a map from function name to sink_id for matching SinkCandidates
+        sink_func_to_id: Dict[str, str] = {}
+        for c in (state.sink_candidates or []):
+            if c.status != "eliminated":
+                sink_func_to_id[c.function] = f"{c.function}@{c.location}"
+        primary_sink_id = state._primary_sink_id()
         _SKIP_NAMES = {"if", "while", "for", "switch", "return", "sizeof", "main"}
 
         for item in eligible:
@@ -792,15 +988,23 @@ class CyberGymAgent(StateInitMixin, TaskAnalysisMixin, RepoAnalysisMixin, CrashP
             if not location:
                 continue
 
-            key = f"{func}@{location}"
-            if key in existing_keys:
-                continue
-
+            # Determine sink_id for this node
+            node_sink_id = ""
             # Infer role from position and function name
-            if max_order < 0:
+            if not state.call_chain_nodes:
                 role = "entry"
-            elif func in vulnerable:
+            elif func in vulnerable or func in sink_func_to_id:
                 role = "sink"
+                # Assign sink_id from matching SinkCandidate
+                if func in sink_func_to_id:
+                    node_sink_id = sink_func_to_id[func]
+                    # Upgrade matching SinkCandidate to confirmed
+                    for c in state.sink_candidates:
+                        if c.function == func and c.status == "candidate":
+                            c.status = "confirmed"
+                            break
+                elif primary_sink_id:
+                    node_sink_id = primary_sink_id
             elif any(
                 kw in func.lower()
                 for kw in ("parse", "read", "decode", "process")
@@ -814,7 +1018,28 @@ class CyberGymAgent(StateInitMixin, TaskAnalysisMixin, RepoAnalysisMixin, CrashP
             else:
                 role = "parser"
 
-            max_order += 1
+            # For non-sink roles, inherit sink_id from last sink node or primary
+            if not node_sink_id and state.call_chain_nodes:
+                # Check if any recent node has a sink_id
+                for n in reversed(state.call_chain_nodes):
+                    if n.sink_id:
+                        node_sink_id = n.sink_id
+                        break
+            if not node_sink_id:
+                node_sink_id = primary_sink_id
+
+            key = f"{func}@{location}@{node_sink_id}"
+            if key in existing_keys:
+                continue
+
+            # Assign order within same sink_id
+            same_sink_orders = [
+                n.order for n in state.call_chain_nodes
+                if n.sink_id == node_sink_id
+                or (not n.sink_id and node_sink_id == primary_sink_id)
+            ]
+            max_order = max(same_sink_orders, default=-1)
+
             state.call_chain_nodes.append(ChainNode(
                 location=location,
                 function=func,
@@ -822,7 +1047,8 @@ class CyberGymAgent(StateInitMixin, TaskAnalysisMixin, RepoAnalysisMixin, CrashP
                 description=f"Found via {short_name} (inferred)",
                 status="inferred",
                 evidence=f"{short_name} query result",
-                order=max_order,
+                order=max_order + 1,
+                sink_id=node_sink_id,
             ))
             existing_keys.add(key)
 
@@ -1189,6 +1415,15 @@ class CyberGymAgent(StateInitMixin, TaskAnalysisMixin, RepoAnalysisMixin, CrashP
             if getattr(state, "stop_reason", ""):
                 break
 
+        self._run_pending_sink_analysis(state)
+
+        # Deepen analysis after repeated failures
+        if (getattr(state, "poc_attempts", 0) >= 2
+            and getattr(state, "best_poc_score", 0) == 0
+            and getattr(state, "analysis_status", "") == "BRIEF_AVAILABLE"
+            and getattr(state, "latest_analysis_mode", "") == "automatic"):
+            self._deepen_sink_analysis(state)
+
         self._update_candidate_requirement_from_decision(state, decision)
         if getattr(state, "stop_reason", ""):
             if state.is_verified() and self.memory:
@@ -1229,7 +1464,59 @@ class CyberGymAgent(StateInitMixin, TaskAnalysisMixin, RepoAnalysisMixin, CrashP
                 if state.candidate_queue:
                     self._drain_candidate_queue_to_ready_pocs(state)
 
-        # Advance phase via PhaseEngine
+        # --- Exploration phase: auto-detect completion ---
+        # When the agent has built sufficient understanding for at least one
+        # sink candidate (2+ chain nodes and 1 confirmed gate), mark
+        # exploration as complete so the phase engine can transition.
+        # REQUIRES at least one sink candidate — exploration is not complete
+        # if the agent hasn't proposed a sink function.
+        if getattr(state, "current_phase", "") == "exploration":
+            nodes = list(getattr(state, "call_chain_nodes", []) or [])
+            gates = list(getattr(state, "call_chain_gates", []) or [])
+            active_sinks = state.confirmed_sink_candidates()
+            if active_sinks:
+                primary = state._primary_sink_id()
+                for sink in active_sinks:
+                    sid = f"{sink.function}@{sink.location}"
+                    sink_nodes = [n for n in nodes
+                                  if n.sink_id == sid or (not n.sink_id and sid == primary)]
+                    sink_confirmed = any(
+                        g.status == "confirmed" and (g.sink_id == sid or (not g.sink_id and sid == primary))
+                        for g in gates
+                    )
+                    if len(sink_nodes) >= 2 and sink_confirmed:
+                        state.exploration_complete = True
+                        break
+                # ── Callee-check gate: if the primary sink has unexplored callees
+                # in the graph, block exploration_complete and inject a hint.
+                if state.exploration_complete and active_sinks:
+                    svc = self._analysis_service(state)
+                    if svc is not None and svc.index_status in {"GRAPH_READY", "PARTIAL_INDEX"}:
+                        primary_sink = active_sinks[0]
+                        explored_funcs = {n.function for n in nodes if n.function}
+                        unexplored = []
+                        for sym in svc.symbols:
+                            if sym.name == primary_sink.function or sym.qualified_name == primary_sink.function:
+                                # Find callees of this symbol
+                                for edge in svc.edges:
+                                    if edge.caller_id == sym.symbol_id:
+                                        callee = next((s for s in svc.symbols if s.symbol_id == edge.callee_id), None)
+                                        if callee and callee.name not in explored_funcs:
+                                            unexplored.append(callee.name)
+                                break
+                        if unexplored[:3]:
+                            state.exploration_complete = False
+                            hints = list(state.metadata.get("_callee_gate_hints", []) or [])
+                            hints.append(
+                                f"[GRAPH] Your sink candidate {primary_sink.function} calls "
+                                f"{', '.join(unexplored[:3])} which haven't been explored. "
+                                "Trace these callees before advancing to investigation."
+                            )
+                            state.metadata["_callee_gate_hints"] = hints
+            # Without a sink candidate, do NOT set exploration_complete
+            # even if nodes/gates exist — the agent must propose a sink first.
+
+        # Advance phase via PhaseEngine — respect manual switch_phase if used
         step = getattr(state, "current_step", 0) or 0
         try:
             state.current_step = int(step)
@@ -1237,7 +1524,11 @@ class CyberGymAgent(StateInitMixin, TaskAnalysisMixin, RepoAnalysisMixin, CrashP
             pass
         state.phase_local_steps = phase_local_steps(state)
         old_phase = state.current_phase
-        new_phase = self._phase_engine.advance(state, step)
+        manual_phase = str(state.metadata.pop("_manual_phase_switch", "") or "")
+        if manual_phase:
+            new_phase = manual_phase
+        else:
+            new_phase = self._phase_engine.advance(state, step)
         state.current_phase = new_phase
         if new_phase != old_phase:
             state.phase_enter_step = int(step)
@@ -1251,6 +1542,22 @@ class CyberGymAgent(StateInitMixin, TaskAnalysisMixin, RepoAnalysisMixin, CrashP
         else:
             state.phase_local_steps = phase_local_steps(state)
         self._update_control_mode(state, int(step))
+
+        # --- Exploration phase checkpoints (earlier triggers than investigation) ---
+        if state.current_phase == "exploration":
+            nodes = list(getattr(state, "call_chain_nodes", []) or [])
+            gates = list(getattr(state, "call_chain_gates", []) or [])
+            active_sinks = state.confirmed_sink_candidates()
+            pl_steps = phase_local_steps(state)
+            # Sink candidate checkpoint: force record_sink_candidate if none
+            # proposed after 3 steps of exploration.
+            if not active_sinks and pl_steps >= 3 and not getattr(state, "pending_sink_checkpoint", False):
+                state.pending_sink_checkpoint = True
+            if not nodes and pl_steps >= 2 and not state.pending_chain_checkpoint:
+                state.pending_chain_checkpoint = True
+            if nodes and not any(g.status == "confirmed" for g in gates) and pl_steps >= 4:
+                if not state.pending_gates_checkpoint:
+                    state.pending_gates_checkpoint = True
 
         # --- Constraint checkpoint during investigation ---
         # If the constraint board is empty after N phase-local steps, force
@@ -1286,6 +1593,20 @@ class CyberGymAgent(StateInitMixin, TaskAnalysisMixin, RepoAnalysisMixin, CrashP
                 "chain, or record_gate to add a path constraint."
             )
             state.pending_reminder_signature = "empty-constraint-board"
+
+        # --- Sink rotation on repeated failure ---
+        # When consecutive misses reach 3, try rotating to the next sink
+        # candidate.  This gives the agent a fresh direction instead of
+        # repeatedly failing on the same sink.
+        if (state.consecutive_misses >= 3
+                and not state.reinvestigate_requested
+                and self._advance_sink_candidate(state)):
+            state.pending_reminder = (
+                "Rotated to next sink candidate after repeated failures. "
+                "The previous sink's constraints may not be reachable — "
+                "try the new sink's approach."
+            )
+            state.pending_reminder_signature = "sink-rotation"
 
         # --- Consecutive-miss reinvestigation nudge ---
         if (state.consecutive_misses >= 4
@@ -1346,6 +1667,7 @@ class CyberGymAgent(StateInitMixin, TaskAnalysisMixin, RepoAnalysisMixin, CrashP
         # --- Stable Prefix ---
         parts.append(self.base_persona_prompt(state))
         parts.append(self.task_policy_prompt(state))
+        parts.append(self.runtime_context_protocol_prompt(state))
         phase_guidance = self._phase_operating_guidance(state)
         if phase_guidance:
             parts.append(phase_guidance)
@@ -1775,11 +2097,17 @@ class CyberGymAgent(StateInitMixin, TaskAnalysisMixin, RepoAnalysisMixin, CrashP
             self._track_match_read_follow(state, output)
             if output_str:
                 self._extract_findings_from_read(state, output_str)
+            structural_index = state.metadata.get("repo_index_v2")
+            if isinstance(structural_index, dict) and state.harness_candidates:
+                self._resolve_harness_candidates(state, structural_index)
+                state.input_format = self._build_input_format_model(state)
             # P26: confirm constraints whose source_location matches the read path
             self._confirm_constraints_from_read(state, output)
             # P36: extract path constraints from READ content (parser gates,
-            # branch conditions, magic-number checks).
-            self._extract_path_constraints_from_read(state, output)
+            # branch conditions, magic-number checks).  READ snippets are a
+            # model presentation boundary, not an analysis boundary; query the
+            # immutable full-file graph instead.
+            self._analyze_read_context(state, output)
             # Chain node recording is now the LLM's responsibility via
             # record_chain_node. Auto-extraction was removed because it
             # produced low-quality nodes (wrong roles, generic descriptions).
@@ -2169,7 +2497,9 @@ class CyberGymAgent(StateInitMixin, TaskAnalysisMixin, RepoAnalysisMixin, CrashP
         if not os.path.isfile(submit_sh):
             return ""
         try:
-            content = Path(submit_sh).read_text(errors="replace")[:2000]
+            # submit.sh is retained for audit and parsed separately.  A generous
+            # bound avoids losing declarations that follow generated headers.
+            content = Path(submit_sh).read_text(errors="replace")[:65536]
             return f"submit.sh content:\n{content}"
         except Exception:
             return ""
@@ -2438,6 +2768,31 @@ class CyberGymAgent(StateInitMixin, TaskAnalysisMixin, RepoAnalysisMixin, CrashP
             "version https://git-lfs.github.com/spec/v1" in content
             and "\noid sha256:" in content
         )
+
+    def _advance_sink_candidate(self, state: CyberGymState) -> bool:
+        """After failure on current sink, try the next candidate. Returns True if rotated."""
+        current = state.active_sink_id
+        active = sorted(
+            [c for c in state.sink_candidates if c.status != "eliminated"],
+            key=lambda c: -c.confidence,
+        )
+        if len(active) <= 1:
+            return False
+        for i, c in enumerate(active):
+            sid = f"{c.function}@{c.location}"
+            if sid == current:
+                if i + 1 < len(active):
+                    # Mark current as eliminated and rotate
+                    c.status = "eliminated"
+                    c.evidence = (c.evidence + " [eliminated: repeated PoC failures]") if c.evidence else "Eliminated: repeated PoC failures"
+                    next_sink = active[i + 1]
+                    state.active_sink_id = f"{next_sink.function}@{next_sink.location}"
+                    return True
+                return False
+        # No current match; set to best
+        best = active[0]
+        state.active_sink_id = f"{best.function}@{best.location}"
+        return True
 
     def _save_success_memory(self, state: CyberGymState) -> None:
         """Save a feedback-type memory after successful PoC generation."""

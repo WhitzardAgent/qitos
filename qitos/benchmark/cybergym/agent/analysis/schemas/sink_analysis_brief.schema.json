@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SinkAnalysisBrief",
+  "type": "object",
+  "required": ["brief_id", "candidate_id", "status", "target", "candidate_paths", "requirements", "gaps", "full_result_id"],
+  "properties": {
+    "brief_id": {"type": "string"},
+    "candidate_id": {"type": "string"},
+    "status": {"enum": ["success", "partial", "not_found", "error"]},
+    "target": {"type": "object"},
+    "target_resolution": {"type": "object"},
+    "candidate_paths": {"type": "array"},
+    "requirements": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["requirement_id", "role", "expression", "status", "confidence", "origin"]
+      }
+    },
+    "trigger_conditions": {"type": "array"},
+    "argument_provenance": {"type": "array"},
+    "gaps": {"type": "array"},
+    "alternatives": {"type": "array"},
+    "suggested_queries": {"type": "array"},
+    "key_constraints": {"type": "array", "description": "Backward-compatible view of requirements"},
+    "unresolved": {"type": "array", "description": "Backward-compatible view of actionable gaps"},
+    "confidence": {"type": "object"},
+    "truncation": {"type": "object"},
+    "full_result_id": {"type": "string"},
+    "context_payload": {"type": "string"}
+  }
+}

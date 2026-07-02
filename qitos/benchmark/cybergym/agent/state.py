@@ -27,6 +27,35 @@ class InputFormatModel:
     container_structure: str = ""  # e.g., "CFF2 inside SFNT inside OTF"
     size_constraints: str = ""     # e.g., "max 1MB, declared_size at offset 4"
     confirmed: bool = False        # confirmed from source code vs inferred
+    field_provenance: Dict[str, str] = field(default_factory=dict)
+    field_confidence: Dict[str, float] = field(default_factory=dict)
+
+
+@dataclass
+class HarnessCandidate:
+    """One concrete harness entry, identified by source location."""
+
+    candidate_id: str
+    binary_names: List[str] = field(default_factory=list)
+    source_path: str = ""
+    entry_function: str = ""
+    line: int = 0
+    evidence: List[str] = field(default_factory=list)
+    direct_calls: List[str] = field(default_factory=list)
+    reachable_symbols: List[str] = field(default_factory=list)
+    status: str = "discovered"
+
+
+@dataclass
+class HarnessResolution:
+    """Conservative result of relating a task to one harness candidate."""
+
+    status: str = "unresolved"
+    selected_candidate_id: str = ""
+    selected_binary: str = ""
+    reasons: List[str] = field(default_factory=list)
+    conflicts: List[str] = field(default_factory=list)
+    next_action: str = ""
 
 
 @dataclass
@@ -37,6 +66,29 @@ class HarnessSignal:
     source: str = ""
     evidence: str = ""
     confidence: float = 0.0
+
+
+@dataclass
+class SinkCandidate:
+    """A candidate vulnerable function (sink) with confidence scoring."""
+
+    function: str = ""           # function name
+    location: str = ""           # file:line
+    confidence: float = 0.0      # 0.0-1.0 based on description match
+    evidence: str = ""           # why this is considered a sink
+    status: str = "candidate"    # candidate / confirmed / eliminated
+    source: str = ""             # description / grep / harness_chain / suggested
+    candidate_id: str = ""
+    repository_id: str = "repo_current"
+    file: str = ""
+    line: int = 0
+    callee: str = ""
+    expression: str = ""
+    category: str = ""
+    reason: str = ""
+    evidence_locations: List[Dict[str, Any]] = field(default_factory=list)
+    related_cve: str = ""
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -71,6 +123,7 @@ class ChainNode:
     status: str          # "confirmed" | "inferred" | "unknown"
     evidence: str        # e.g. "READ attribute.c:1870-1910"
     order: int           # Position in chain (0 = harness entry)
+    sink_id: str = ""    # Links node to a specific SinkCandidate; empty = unassigned
 
 
 @dataclass
@@ -90,6 +143,12 @@ class ChainGate:
     status: str          # "confirmed" | "inferred" | "refuted" | "bypassed" | "questioned"
     evidence: str        # e.g. "READ attribute.c:1887 — overflow detection present"
     repair_hint: str     # e.g. "Try oval+n wrap-around instead of n=0"
+    # Added by the Level-1 constraint analyzer.  Defaults keep old serialized
+    # states loadable without migrations.
+    role: str = "reachability"
+    path_id: str = ""
+    source_span: Dict[str, Any] = field(default_factory=dict)
+    sink_id: str = ""    # Links gate to a specific SinkCandidate; empty = unassigned
 
 
 @dataclass
@@ -111,6 +170,7 @@ class CyberGymState(StateSchema):
     vulnerability_description: str = ""
     cve_id: str = ""
     bug_type: str = ""  # buffer_overflow, use_after_free, integer_overflow, etc.
+    vulnerability_hints: List[str] = field(default_factory=list)
     affected_component: str = ""
 
     # CyberGym task metadata
@@ -136,9 +196,36 @@ class CyberGymState(StateSchema):
 
     # Harness info (populated during ingestion from submit.sh)
     harness_info: str = ""  # binary path and arguments from submit.sh
+    submit_harness_targets: List[str] = field(default_factory=list)
+    harness_candidates: List[HarnessCandidate] = field(default_factory=list)
+    harness_resolution: HarnessResolution = field(default_factory=HarnessResolution)
     corpus_files: List[str] = field(default_factory=list)  # discovered fuzzing corpus/sample files
     poc_strategy: str = ""  # auto-detected: text, binary_python, corpus_mutate, hex
     input_format: InputFormatModel = field(default_factory=InputFormatModel)
+    sink_candidates: List[SinkCandidate] = field(default_factory=list)
+    search_anchors: List[str] = field(default_factory=list)
+    exploration_complete: bool = False  # set True when agent has enough understanding
+    active_sink_id: str = ""  # Currently targeted sink candidate
+    latest_sink_analysis_brief: Dict[str, Any] = field(default_factory=dict)
+    active_sink_candidate_id: str = ""
+    latest_brief_id: str = ""
+    selected_analysis_path_id: str = ""
+    open_analysis_unresolved_ids: List[str] = field(default_factory=list)
+    analysis_status: str = "NO_TARGET"
+    injected_brief_fingerprint: str = ""
+    latest_analysis_mode: str = ""  # "automatic" | "interactive" | ""
+    analysis_graph_id: str = ""
+    analysis_index_status: str = "NO_INDEX"
+    analysis_index_coverage: Dict[str, Any] = field(default_factory=dict)
+    latest_read_analysis: Dict[str, Any] = field(default_factory=dict)
+    latest_read_analysis_fingerprint: str = ""
+    injected_read_analysis_fingerprint: str = ""
+    injected_index_fingerprint: str = ""
+    sink_search_leads: List[Dict[str, Any]] = field(default_factory=list)
+    latest_sink_search_brief: Dict[str, Any] = field(default_factory=dict)
+    latest_sink_search_brief_id: str = ""
+    sink_search_fingerprint: str = ""
+    injected_sink_search_fingerprint: str = ""
 
     # File read tracking — which files/line ranges have been read
     read_coverage: Dict[str, List[tuple]] = field(default_factory=dict)
@@ -159,6 +246,7 @@ class CyberGymState(StateSchema):
     pending_reflection: bool = False
     pending_chain_checkpoint: bool = False
     pending_gates_checkpoint: bool = False
+    pending_sink_checkpoint: bool = False
     last_recorded_poc_id: str = ""  # DEPRECATED: unused, kept for serialization compat
     last_submitted_poc_path: str = ""
     last_submitted_poc_hash: str = ""
@@ -221,7 +309,9 @@ class CyberGymState(StateSchema):
     # Candidate constraints auto-extracted from code but NOT yet confirmed by LLM.
     # Presented as "Suggested Constraints" in the observation for LLM to judge.
     # LLM should use record_gate to promote relevant ones to call_chain_gates.
-    suggested_constraints: List[Dict[str, str]] = field(default_factory=list)
+    suggested_constraints: List[Dict[str, Any]] = field(default_factory=list)
+    constraint_paths: List[Dict[str, Any]] = field(default_factory=list)
+    constraint_diagnostics: List[Dict[str, Any]] = field(default_factory=list)
     gate_board_last_changed_step: int = 0
     gate_evidence_brief: Dict[str, str] = field(default_factory=dict)
     runtime_stage: str = "bootstrap"
@@ -257,8 +347,6 @@ class CyberGymState(StateSchema):
             self.patch_diff = str(self.metadata["patch_diff"])
         if not self.error_txt and self.metadata.get("error_txt"):
             self.error_txt = str(self.metadata["error_txt"])
-        if not self.harness_entry_confirmed and self.metadata.get("harness_entry_confirmed"):
-            self.harness_entry_confirmed = bool(self.metadata["harness_entry_confirmed"])
         if not self.submitted_fingerprints and self.metadata.get("submitted_candidate_fingerprints"):
             self.submitted_fingerprints = list(self.metadata["submitted_candidate_fingerprints"])
         if not self.repo_archive_root and self.metadata.get("repo_archive_root"):
@@ -271,9 +359,33 @@ class CyberGymState(StateSchema):
         self.hot_feedback_window = self._normalize_record_list(self.hot_feedback_window, FeedbackRecord)
         self.failure_history = self._normalize_record_list(self.failure_history, FailureRecord)
         self.harness_signals = self._normalize_record_list(self.harness_signals, HarnessSignal)
+        self.harness_candidates = self._normalize_record_list(self.harness_candidates, HarnessCandidate)
+        if isinstance(self.harness_resolution, dict):
+            self.harness_resolution = HarnessResolution(**self.harness_resolution)
+        if isinstance(self.input_format, dict):
+            self.input_format = InputFormatModel(**self.input_format)
+        # The legacy boolean is a compatibility projection, never an
+        # independent source of truth.
+        self.harness_entry_confirmed = (
+            self.harness_resolution.status == "reachability_verified"
+        )
+        self.metadata["harness_entry_confirmed"] = self.harness_entry_confirmed
+        self.input_format.confirmed = self.harness_entry_confirmed
         self.path_constraints = self._normalize_record_list(self.path_constraints, PathConstraint)
         self.call_chain_nodes = self._normalize_record_list(self.call_chain_nodes, ChainNode)
         self.call_chain_gates = self._normalize_record_list(self.call_chain_gates, ChainGate)
+        self.sink_candidates = self._normalize_record_list(self.sink_candidates, SinkCandidate)
+        for candidate in self.sink_candidates:
+            if not candidate.file and candidate.location:
+                raw_file, sep, raw_line = candidate.location.rpartition(":")
+                candidate.file = raw_file if sep and raw_line.isdigit() else candidate.location
+                candidate.line = int(raw_line) if sep and raw_line.isdigit() else candidate.line
+            if not candidate.reason:
+                candidate.reason = candidate.evidence
+            if not candidate.candidate_id:
+                import hashlib
+                material = f"{candidate.repository_id}|{candidate.file}|{candidate.line}|{candidate.function}|{candidate.callee}|{candidate.expression}"
+                candidate.candidate_id = "sink_" + hashlib.blake2s(material.encode(), digest_size=6).hexdigest()
 
         # Migrate legacy path_constraints → call_chain_gates (one-time)
         if self.path_constraints and not self.call_chain_gates:
@@ -325,6 +437,46 @@ class CyberGymState(StateSchema):
         """The earliest unresolved gate — the primary blocker."""
         open_gates = self.open_gates()
         return open_gates[0] if open_gates else None
+
+    def _primary_sink_id(self) -> str:
+        """Highest-confidence model-confirmed candidate; static leads do not count."""
+        active = self.confirmed_sink_candidates()
+        if not active:
+            return ""
+        best = max(active, key=lambda c: c.confidence)
+        return f"{best.function}@{best.location}"
+
+    def confirmed_sink_candidates(self) -> List[SinkCandidate]:
+        provisional_sources = {
+            "static_navigation", "description", "description_symbol",
+            "harness_chain", "graph_auto_deepen",
+        }
+        return [
+            candidate for candidate in self.sink_candidates
+            if candidate.status != "eliminated"
+            and candidate.status != "provisional"
+            and candidate.source not in provisional_sources
+            and not bool((candidate.metadata or {}).get("requires_review"))
+        ]
+
+    def navigation_candidates(self) -> List[SinkCandidate]:
+        return [
+            candidate for candidate in self.sink_candidates
+            if candidate.status != "eliminated"
+            and (candidate.source == "static_navigation" or bool((candidate.metadata or {}).get("requires_review")))
+        ]
+
+    def nodes_for_sink(self, sink_id: str) -> List[ChainNode]:
+        """Get chain nodes for a specific sink candidate."""
+        primary = self._primary_sink_id()
+        return [n for n in self.call_chain_nodes
+                if n.sink_id == sink_id or (not n.sink_id and sink_id == primary)]
+
+    def gates_for_sink(self, sink_id: str) -> List[ChainGate]:
+        """Get gates for a specific sink candidate."""
+        primary = self._primary_sink_id()
+        return [g for g in self.call_chain_gates
+                if g.sink_id == sink_id or (not g.sink_id and sink_id == primary)]
 
     def derive_numerical_constraints(self) -> List[str]:
         """Derive concrete numeric constraints from code facts × gate conditions.

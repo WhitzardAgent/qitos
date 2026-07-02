@@ -34,6 +34,20 @@ def _ingestion_ready(s: CyberGymState) -> bool:
     return False
 
 
+def _exploration_step_limit(s: CyberGymState) -> int:
+    """Dynamic step limit based on description informativeness.
+
+    Minimum is 8 (up from 5) to ensure enough steps for callee
+    exploration after identifying an initial sink candidate.
+    """
+    conf = float(getattr(s, "task_spec_confidence", 0.5) or 0.5)
+    if conf >= 0.6:
+        return 8  # description is rich, but still need callee tracing
+    elif conf < 0.4:
+        return 12  # description is vague, need more steps to mine
+    return 10
+
+
 def cybergym_phase_engine() -> PhaseEngine:
     """Build the four-phase state machine for CyberGym PoC generation."""
     return PhaseEngine(
@@ -44,9 +58,29 @@ def cybergym_phase_engine() -> PhaseEngine:
                 transitions=[
                     # P40: require structured analysis, not just description existence
                     TransitionRule(
-                        target="investigation",
+                        target="exploration",
                         condition=lambda s: _ingestion_ready(s),
                         priority=10,
+                    ),
+                ],
+            ),
+            PhaseSpec(
+                name="exploration",
+                max_steps=None,
+                transitions=[
+                    # Agent-driven: agent sets exploration_complete when it has
+                    # enough understanding to start PoC construction.
+                    TransitionRule(
+                        target="investigation",
+                        condition=lambda s: getattr(s, "exploration_complete", False),
+                        priority=10,
+                    ),
+                    # Safety fallback: dynamic step limit based on description
+                    # detail.  Vague descriptions get more exploration budget.
+                    TransitionRule(
+                        target="investigation",
+                        condition=lambda s: phase_local_steps(s) >= _exploration_step_limit(s),
+                        priority=0,
                     ),
                 ],
             ),

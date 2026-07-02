@@ -106,6 +106,24 @@ def _symbol_mentions(text: str) -> List[str]:
     return _uniq(candidates[:12])
 
 
+def _extract_search_anchors(text: str) -> List[str]:
+    """Extract searchable code identifiers from vulnerability description."""
+    anchors: List[str] = []
+    # Function calls: func_name()
+    for m in re.finditer(r'([a-zA-Z_]\w+)\s*\(\)', text):
+        anchors.append(m.group(1))
+    # File references: name.c, name.cpp, etc.
+    for m in re.finditer(r'(\w+\.[ch](?:pp|xx)?)\b', text):
+        anchors.append(m.group(1))
+    # "in the X module/component" pattern
+    for m in re.finditer(r'in\s+(?:the\s+)?(\w+)\s+(?:module|component|subsystem)', text, re.IGNORECASE):
+        anchors.append(m.group(1))
+    # CamelCase identifiers
+    for m in re.finditer(r'\b([a-z]+[A-Z][a-zA-Z]+)\b', text):
+        anchors.append(m.group(1))
+    return _uniq(anchors[:12])
+
+
 def extract_task_spec_deterministic(
     description: str,
     *,
@@ -150,6 +168,7 @@ def extract_task_spec_deterministic(
         "source_files_mentioned": source_files,
         "symbols_mentioned": symbols,
         "task_spec_confidence": max(0.0, min(confidence, 1.0)),
+        "search_anchors": _extract_search_anchors(description or ""),
     }
 
 

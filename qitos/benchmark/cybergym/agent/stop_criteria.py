@@ -73,3 +73,32 @@ class PoCVerificationCriteria(StopCriteria):
             )
         return False, None, None
 
+
+class PhaseExitCriteria(StopCriteria):
+    """Stop when agent has exited the specified phase.
+
+    Used for evaluation pipelines that only need to run through a
+    specific phase (e.g., exploration) without completing the full
+    PoC generation cycle.
+    """
+
+    def __init__(self, phase: str = "exploration"):
+        self.target_phase = phase
+
+    def should_stop(
+        self,
+        state: Any,
+        step_count: int,
+        runtime_info: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[bool, Optional[StopReason], Optional[str]]:
+        if step_count <= 0:
+            return False, None, None
+        current = getattr(state, "current_phase", "")
+        if current != self.target_phase:
+            return (
+                True,
+                StopReason.AGENT_CONDITION,
+                f"Exited {self.target_phase} phase (now: {current})",
+            )
+        return False, None, None
+

@@ -1,5 +1,7 @@
 # CyberGym Agent
 
+The agent includes a bounded Tree-sitter C/C++ interprocedural analysis service. Structured sink candidates automatically receive a compact caller-path, constraint, binding, and argument-provenance brief; stable paginated tools can then expand paths or unresolved callsites. See `ARCHITECTURE.md` and `LIMITATIONS.md`.
+
 > A specialized LLM agent for **automated vulnerability reproduction** (PoC generation) on the
 > [CyberGym](https://github.com/sunblaze-ucb/cybergym) benchmark, built on the QitOS agent runtime
 > and driven by `GLM-5.1`.

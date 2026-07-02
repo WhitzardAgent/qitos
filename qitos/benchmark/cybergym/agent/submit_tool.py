@@ -120,18 +120,18 @@ class SubmitPoCTool(BaseTool):
                     },
                     "task_id": {
                         "type": "string",
-                        "description": "The task identifier for this run",
+                        "description": "Task ID (auto-filled from state — omit unless explicitly needed)",
                     },
                     "agent_id": {
                         "type": "string",
-                        "description": "The agent identifier for this run",
+                        "description": "Agent ID (auto-filled from state — omit unless explicitly needed)",
                     },
                     "checksum": {
                         "type": "string",
-                        "description": "Task verification checksum",
+                        "description": "Verification checksum (auto-filled from state — omit unless explicitly needed)",
                     },
                 },
-                required=["poc_path", "task_id", "agent_id", "checksum"],
+                required=["poc_path"],
                 permissions=ToolPermission(network=True, filesystem_read=True),
                 # Verification is side-effect-free w.r.t. the agent's workspace
                 # (it only POSTs a candidate to the grading server). Marking it

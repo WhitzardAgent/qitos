@@ -9,7 +9,8 @@ from .context import (
     CyberGymContextHistory,
 )
 from .submit_tool import SubmitPoCTool
-from .tracking_tools import RecordAttemptTool, RecordReflectionTool, RecordHypothesisTool, RecordChainNodeTool, RecordGateTool
+from .tracking_tools import RecordAttemptTool, RecordReflectionTool, RecordHypothesisTool, RecordChainNodeTool, RecordGateTool, RecordSinkCandidateTool
+from .analysis import AnalysisService, AnalysisConfig
 from .env import CyberGymEnv
 from .adapter import CyberGymAdapter
 from .agent import CyberGymAgent
@@ -34,6 +35,9 @@ __all__ = [
     "RecordReflectionTool",
     "RecordChainNodeTool",
     "RecordGateTool",
+    "RecordSinkCandidateTool",
+    "AnalysisService",
+    "AnalysisConfig",
     "CyberGymEnv",
     "CyberGymAdapter",
     "PoCVerificationCriteria",

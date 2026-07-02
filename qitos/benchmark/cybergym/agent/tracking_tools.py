@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -137,6 +138,145 @@ def _append_exploration_note(
     root = _workspace_root(runtime_context)
     if root is not None:
         _append_jsonl(root / ".cybergym" / "exploration_notes.jsonl", payload)
+
+
+def _validate_phase_transition(current: str, target: str, state: Any) -> tuple[bool, str]:
+    """Check if a phase transition is allowed given current state."""
+    ALLOWED = {
+        ("exploration", "investigation"): None,       # always OK
+        ("exploration", "formulation"): "exploration_to_formulation",
+        ("investigation", "exploration"): None,        # always OK (re-explore)
+        ("investigation", "formulation"): None,        # always OK
+        ("formulation", "investigation"): "formulation_to_investigation",
+        ("formulation", "exploration"): "formulation_to_exploration",
+        ("verification", "investigation"): None,       # already exists
+        ("verification", "formulation"): None,         # already exists
+    }
+
+    key = (current, target)
+    if key not in ALLOWED:
+        return False, f"Transition {current} → {target} is not allowed"
+
+    constraint = ALLOWED[key]
+    if constraint is None:
+        return True, ""
+
+    # Check specific constraints
+    if constraint == "exploration_to_formulation":
+        nodes = list(getattr(state, "call_chain_nodes", []) or [])
+        gates = list(getattr(state, "call_chain_gates", []) or [])
+        has_chain = len(nodes) >= 2
+        has_gate = any(g.status == "confirmed" for g in gates)
+        has_hypothesis = bool(getattr(state, "trigger_hypothesis", ""))
+        if not (has_chain and has_gate):
+            return False, "Need 2+ chain nodes and 1+ confirmed gate to skip investigation"
+        if not has_hypothesis:
+            return False, "Set trigger_hypothesis first (call record_hypothesis)"
+
+    if constraint == "formulation_to_investigation":
+        has_result = bool(getattr(state, "last_verification_result", ""))
+        if not has_result and not getattr(state, "poc_attempts", 0):
+            return False, "Can only return to investigation after at least one PoC attempt"
+
+    if constraint == "formulation_to_exploration":
+        attempts = int(getattr(state, "poc_attempts", 0) or 0)
+        best = float(getattr(state, "best_poc_score", 0) or 0)
+        if attempts < 2 or best > 0:
+            return False, "Can only return to exploration after 2+ failed attempts with score 0"
+
+    return True, ""
+
+
+class SwitchPhaseTool(BaseTool):
+    """Switch the agent to a different phase of the workflow.
+
+    The LLM calls this when it realizes the current phase is wrong for what
+    it needs to do next — e.g., going back to exploration when investigation
+    reveals it needs more code understanding, or skipping ahead to formulation
+    when auto-analysis has already built a complete chain.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(
+            ToolSpec(
+                name="switch_phase",
+                description=(
+                    "Switch to a different phase of the agent workflow. Use this when "
+                    "you realize the current phase is not the right one for what you "
+                    "need to do next. Examples: go back to exploration when investigation "
+                    "reveals you need more code understanding, or skip ahead to formulation "
+                    "when auto-analysis has already built a complete chain."
+                ),
+                parameters={
+                    "target_phase": {
+                        "type": "string",
+                        "enum": ["exploration", "investigation", "formulation"],
+                        "description": "Target phase to switch to",
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": "Why you need to switch phase (e.g., 'Need to re-read code to understand the dispatch path')",
+                    },
+                },
+                required=["target_phase", "reason"],
+                permissions=ToolPermission(filesystem_write=True),
+            )
+        )
+
+    def validate_input(
+        self, args: Dict[str, Any], runtime_context: Optional[Dict[str, Any]] = None
+    ) -> ToolValidationResult:
+        target = str(args.get("target_phase", "")).strip()
+        if target not in ("exploration", "investigation", "formulation"):
+            return ToolValidationResult.fail("target_phase must be exploration, investigation, or formulation")
+        if not str(args.get("reason", "")).strip():
+            return ToolValidationResult.fail("reason is required")
+        return ToolValidationResult.ok()
+
+    def execute(
+        self, args: Dict[str, Any], runtime_context: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        state = (runtime_context or {}).get("state")
+        target = str(args.get("target_phase", "")).strip()
+        reason = str(args.get("reason", "")).strip()
+        current = str(getattr(state, "current_phase", "") or "")
+
+        # Validate transition
+        allowed, block_reason = _validate_phase_transition(current, target, state)
+        if not allowed:
+            return {"status": "rejected", "reason": block_reason}
+
+        # Apply transition
+        state.current_phase = target
+        state.phase_enter_step = int(getattr(state, "current_step", 0) or 0)
+        state.phase_local_steps = 0
+        state.phase_submissions = 0
+        state.phase_read_actions = 0
+        state.repeated_read_target = ""
+        state.repeated_read_count = 0
+
+        # Set phase-specific flags
+        if target == "exploration":
+            state.exploration_complete = False
+        if target == "investigation":
+            state.reinvestigate_requested = False
+        if target == "formulation":
+            if not state.trigger_hypothesis:
+                state.trigger_hypothesis = reason
+
+        # Signal to reduce() that a manual switch happened this step
+        # so PhaseEngine.advance() does not overwrite it.
+        state.metadata["_manual_phase_switch"] = target
+
+        # Append exploration note
+        _append_exploration_note(state, runtime_context, {
+            "note_type": "phase_switch",
+            "from": current,
+            "to": target,
+            "reason": _clip(reason, 120),
+        })
+
+        return {"status": "success", "from": current, "to": target, "reason": reason}
 
 
 class RecordHypothesisTool(BaseTool):
@@ -367,6 +507,10 @@ class RecordChainNodeTool(BaseTool):
                         "type": "string",
                         "description": "'confirmed' (verified from source) or 'inferred' (best guess)",
                     },
+                    "sink_id": {
+                        "type": "string",
+                        "description": "Optional sink candidate identifier (function@location). Defaults to primary sink.",
+                    },
                 },
                 required=["function", "location", "role", "description"],
                 permissions=ToolPermission(filesystem_write=True),
@@ -399,22 +543,29 @@ class RecordChainNodeTool(BaseTool):
         role = str(args.get("role") or "parser").strip()
         description = str(args.get("description") or "").strip()
         status = str(args.get("status") or "inferred").strip()
+        sink_id = str(args.get("sink_id") or "").strip()
+        if not sink_id and state is not None:
+            sink_id = state._primary_sink_id()
 
         if state is not None:
-            # Deduplicate by function@location
-            existing_keys = {f"{n.function}@{n.location}" for n in state.call_chain_nodes}
-            key = f"{function}@{location}"
+            # Deduplicate by function@location (within same sink_id)
+            existing_keys = {f"{n.function}@{n.location}@{n.sink_id}" for n in state.call_chain_nodes}
+            key = f"{function}@{location}@{sink_id}"
             if key in existing_keys:
                 # Update existing node
                 for n in state.call_chain_nodes:
-                    if f"{n.function}@{n.location}" == key:
+                    if f"{n.function}@{n.location}@{n.sink_id}" == key:
                         n.role = role
                         n.description = description
                         n.status = status
                         break
             else:
-                # Assign order: max existing + 1
-                max_order = max((n.order for n in state.call_chain_nodes), default=-1)
+                # Assign order: max existing + 1 within same sink_id
+                same_sink_orders = [
+                    n.order for n in state.call_chain_nodes
+                    if n.sink_id == sink_id or (not n.sink_id and sink_id == state._primary_sink_id())
+                ]
+                max_order = max(same_sink_orders, default=-1)
                 state.call_chain_nodes.append(ChainNode(
                     location=location,
                     function=function,
@@ -423,10 +574,48 @@ class RecordChainNodeTool(BaseTool):
                     status=status,
                     evidence=f"record_chain_node by agent",
                     order=max_order + 1,
+                    sink_id=sink_id,
                 ))
             # Cap
             if len(state.call_chain_nodes) > 20:
                 state.call_chain_nodes = state.call_chain_nodes[-20:]
+
+            # Auto-populate sink candidate when role="sink" and no
+            # matching SinkCandidate exists yet.  This catches the common
+            # case where the agent records record_chain_node(role="sink")
+            # but forgets to call record_sink_candidate.
+            if role == "sink":
+                existing = None
+                for c in state.sink_candidates:
+                    if c.function.lower() == function.lower() and c.status != "eliminated":
+                        existing = c
+                        break
+                if existing is None:
+                    from .state import SinkCandidate
+                    raw_file, sep, raw_line = location.rpartition(":")
+                    file_name = raw_file if sep and raw_line.isdigit() else location
+                    line_num = int(raw_line) if sep and raw_line.isdigit() else 0
+                    state.sink_candidates.append(SinkCandidate(
+                        function=function,
+                        location=location,
+                        confidence=0.6,
+                        evidence=f"Auto-created from chain node: {description}",
+                        status="candidate",
+                        source="model_candidate",
+                        file=file_name,
+                        line=line_num,
+                        reason=description,
+                        metadata={"requires_review": False, "confirmed_via": "record_chain_node"},
+                    ))
+                    created = state.sink_candidates[-1]
+                    import hashlib
+                    material = f"{created.repository_id}|{created.file}|{created.line}|{created.function}||"
+                    created.candidate_id = "sink_" + hashlib.blake2s(material.encode(), digest_size=6).hexdigest()
+                    state.active_sink_candidate_id = created.candidate_id
+                    state.active_sink_id = state._primary_sink_id()
+                    state.analysis_status = "TARGET_PROPOSED"
+                    state.metadata["_pending_sink_analysis"] = created.candidate_id
+                    state.pending_sink_checkpoint = False
 
             # Persist to exploration notes (like record_hypothesis/reflection)
             _append_exploration_note(
@@ -486,6 +675,22 @@ class RecordGateTool(BaseTool):
                         "type": "string",
                         "description": "'confirmed' (verified from source code), 'inferred' (best guess from context)",
                     },
+                    "role": {
+                        "type": "string",
+                        "description": "Optional analyzer role: reachability, trigger, safety_invariant, dataflow, or hazard",
+                    },
+                    "path_id": {
+                        "type": "string",
+                        "description": "Optional callsite/sink path identifier from Suggested Constraints",
+                    },
+                    "source_span": {
+                        "type": "object",
+                        "description": "Optional source span copied from a source-backed suggestion",
+                    },
+                    "sink_id": {
+                        "type": "string",
+                        "description": "Optional sink candidate identifier (function@location). Defaults to primary sink.",
+                    },
                 },
                 required=["node_function", "gate_type", "description", "required_condition"],
                 permissions=ToolPermission(filesystem_write=True),
@@ -518,12 +723,23 @@ class RecordGateTool(BaseTool):
         description = str(args.get("description") or "").strip()
         required_condition = str(args.get("required_condition") or "").strip()
         status = str(args.get("status") or "inferred").strip()
+        role = str(args.get("role") or "reachability").strip()
+        path_id = str(args.get("path_id") or "").strip()
+        source_span = args.get("source_span") if isinstance(args.get("source_span"), dict) else {}
+        sink_id = str(args.get("sink_id") or "").strip()
+        if not sink_id and state is not None:
+            sink_id = state._primary_sink_id()
 
         if state is not None:
-            # Find the node_order for the matching chain node
+            # Find the node_order for the matching chain node (consider sink_id)
             node_order = 0
+            primary = state._primary_sink_id()
             for n in state.call_chain_nodes:
-                if n.function == node_function:
+                if n.function == node_function and (
+                    n.sink_id == sink_id
+                    or (not n.sink_id and sink_id == primary)
+                    or not sink_id
+                ):
                     node_order = n.order
                     break
 
@@ -537,6 +753,9 @@ class RecordGateTool(BaseTool):
                         g.required_condition = required_condition
                         g.status = status
                         g.node_order = node_order
+                        g.role = role
+                        g.path_id = path_id
+                        g.source_span = dict(source_span)
                         break
             else:
                 state.call_chain_gates.append(ChainGate(
@@ -547,6 +766,10 @@ class RecordGateTool(BaseTool):
                     status=status,
                     evidence=f"record_gate by agent",
                     repair_hint="",
+                    role=role,
+                    path_id=path_id,
+                    source_span=dict(source_span),
+                    sink_id=sink_id,
                 ))
             # Cap
             if len(state.call_chain_gates) > 40:
@@ -560,7 +783,218 @@ class RecordGateTool(BaseTool):
                     "gate_type": gate_type,
                     "description": _clip(description, 120),
                     "status": status,
+                    "role": role,
+                    "path_id": path_id,
                 },
             )
 
-        return {"status": "success", "gate_type": gate_type, "description": _clip(description, 100)}
+        return {
+            "status": "success",
+            "gate_type": gate_type,
+            "description": _clip(description, 100),
+            "required_condition": required_condition,
+            "role": role,
+            "path_id": path_id,
+        }
+
+
+class RecordSinkCandidateTool(BaseTool):
+    """Record a sink candidate proposed by the LLM after reading code.
+
+    The LLM calls this when it identifies a function that is likely the
+    vulnerability entry point.  This replaces the noisy regex-based extraction
+    from description text with code-informed proposals.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(
+            ToolSpec(
+                name="record_sink_candidate",
+                description=(
+                    "Record a sink candidate — a function you believe is the "
+                    "vulnerability entry point — after reading and understanding "
+                    "the code. Use this when you identify a vulnerable function "
+                    "that is not already in the Sink Candidates list, or to "
+                    "upgrade confidence/evidence for an existing candidate."
+                ),
+                parameters={
+                    "function": {
+                        "type": "string",
+                        "description": "Function name that is the vulnerability sink",
+                    },
+                    "evidence": {
+                        "type": "string",
+                        "description": "Why this function is a sink (e.g., 'READ attribute.c:1905 — unchecked memcpy with user-controlled size')",
+                    },
+                    "location": {
+                        "type": "string",
+                        "description": "Source location (e.g., 'attribute.c:1880')",
+                    },
+                    "confidence": {
+                        "type": "number",
+                        "description": "Confidence 0.0-1.0. Suggested: 0.7 for confirmed from source, 0.5 for strong evidence, 0.4 for plausible.",
+                    },
+                    "callee": {"type": "string", "description": "Optional target callee at the sink callsite"},
+                    "expression": {"type": "string", "description": "Optional sink expression"},
+                    "category": {"type": "string", "description": "Optional vulnerability/sink category"},
+                },
+                required=["function", "evidence"],
+                permissions=ToolPermission(filesystem_write=True),
+            )
+        )
+
+    def validate_input(
+        self, args: Dict[str, Any], runtime_context: Optional[Dict[str, Any]] = None
+    ) -> ToolValidationResult:
+        _ = runtime_context
+        if not str(args.get("function") or "").strip():
+            return ToolValidationResult.fail("function is required")
+        if not str(args.get("evidence") or "").strip():
+            return ToolValidationResult.fail("evidence is required")
+        conf = args.get("confidence")
+        if conf is not None:
+            try:
+                c = float(conf)
+                if not (0.0 <= c <= 1.0):
+                    return ToolValidationResult.fail("confidence must be between 0.0 and 1.0")
+            except (TypeError, ValueError):
+                return ToolValidationResult.fail("confidence must be a number")
+        return ToolValidationResult.ok()
+
+    def execute(
+        self, args: Dict[str, Any], runtime_context: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        from .state import SinkCandidate
+
+        state = (runtime_context or {}).get("state")
+        func_name = str(args.get("function") or "").strip()
+        evidence = str(args.get("evidence") or "").strip()
+        location = str(args.get("location") or "").strip()
+        confidence = float(args.get("confidence") or 0.5)
+        confidence = max(0.0, min(1.0, confidence))
+        callee = str(args.get("callee") or "").strip()
+        expression = str(args.get("expression") or "").strip()
+        category = str(args.get("category") or "").strip()
+        file_name, line = "", 0
+        raw_file, sep, raw_line = location.rpartition(":")
+        if sep and raw_line.isdigit():
+            file_name, line = raw_file, int(raw_line)
+        elif location:
+            file_name = location
+
+        action = "created"
+
+        if state is not None:
+            # Clear sink checkpoint on successful recording
+            state.pending_sink_checkpoint = False
+            # Case-insensitive lookup for existing candidate
+            live = [c for c in state.sink_candidates if c.status != "eliminated"]
+            existing = next((c for c in live if c.function.lower() == func_name.lower()), None)
+            if existing is None:
+                leaf_matches = [
+                    c for c in live
+                    if c.function.rsplit("::", 1)[-1].lower() == func_name.rsplit("::", 1)[-1].lower()
+                ]
+                if len(leaf_matches) == 1:
+                    existing = leaf_matches[0]
+
+            if existing is not None:
+                action = "updated"
+                if file_name:
+                    existing.file, existing.line = file_name, line
+                    existing.location = location
+                if callee:
+                    existing.callee = callee
+                if expression:
+                    existing.expression = expression
+                if category:
+                    existing.category = category
+                existing.reason = evidence
+                if existing.source in {"description", "description_symbol", "harness_chain", "static_navigation", "graph_auto_deepen"}:
+                    # Upgrade noisy regex candidate to LLM-proposed
+                    existing.source = "model_candidate"
+                    existing.evidence = evidence
+                    if location:
+                        existing.location = location
+                    existing.confidence = max(existing.confidence, confidence)
+                else:
+                    # Update existing candidate — upgrade confidence if higher
+                    if confidence > existing.confidence:
+                        existing.confidence = confidence
+                    # Append evidence if different
+                    if evidence not in existing.evidence:
+                        existing.evidence = (
+                            existing.evidence + "; " + evidence
+                            if existing.evidence
+                            else evidence
+                        )
+                    if location and not existing.location:
+                        existing.location = location
+                existing.status = "candidate"
+                existing.metadata = dict(existing.metadata or {})
+                existing.metadata.update({"requires_review": False, "reviewed": True, "confirmed_via": "record_sink_candidate"})
+            else:
+                state.sink_candidates.append(SinkCandidate(
+                    function=func_name,
+                    location=location,
+                    confidence=confidence,
+                    evidence=evidence,
+                    status="candidate",
+                    source="model_candidate",
+                    file=file_name,
+                    line=line,
+                    callee=callee,
+                    expression=expression,
+                    category=category,
+                    reason=evidence,
+                    metadata={"requires_review": False, "reviewed": True, "confirmed_via": "record_sink_candidate"},
+                ))
+
+            confirmed = existing if existing is not None else state.sink_candidates[-1]
+            confirmed.source = "model_candidate"
+            confirmed.status = "candidate"
+            confirmed.metadata = dict(confirmed.metadata or {})
+            confirmed.metadata.update({"requires_review": False, "reviewed": True, "confirmed_via": "record_sink_candidate"})
+
+            # Recalculate active sink if top candidate changed
+            state.active_sink_id = state._primary_sink_id()
+            selected = confirmed
+            if not selected.candidate_id:
+                import hashlib
+                material = f"{selected.repository_id}|{selected.file}|{selected.line}|{selected.function}|{selected.callee}|{selected.expression}"
+                selected.candidate_id = "sink_" + hashlib.blake2s(material.encode(), digest_size=6).hexdigest()
+            state.active_sink_candidate_id = selected.candidate_id
+            state.analysis_status = "TARGET_PROPOSED"
+            # A structured sink candidate is the authoritative trigger for
+            # repository-level analysis.  Do not depend on deployment-specific
+            # environment flags: that caused most remote candidates to receive
+            # no enrichment at all.
+            state.metadata["_pending_sink_analysis"] = selected.candidate_id
+
+            # Cap at 12 candidates
+            if len(state.sink_candidates) > 12:
+                # Keep eliminated ones at the end, then trim
+                active = [c for c in state.sink_candidates if c.status != "eliminated"]
+                eliminated = [c for c in state.sink_candidates if c.status == "eliminated"]
+                state.sink_candidates = active[-12:] + eliminated
+
+            _append_exploration_note(
+                state, runtime_context,
+                {
+                    "note_type": "sink_candidate",
+                    "function": func_name,
+                    "confidence": confidence,
+                    "action": action,
+                    "evidence": _clip(evidence, 120),
+                },
+            )
+
+        return {
+            "status": "success",
+            "function": func_name,
+            "confidence": confidence,
+            "action": action,
+            "evidence": _clip(evidence, 100),
+            "candidate_id": getattr(selected, "candidate_id", "") if state is not None else "",
+            "analysis_triggered": state is not None,
+        }

@@ -11,7 +11,7 @@ from typing import Any, Dict, Optional
 
 DEFAULT_MAX_TOKENS = 8192
 GLM_DEFAULT_MAX_TOKENS = 20000
-DEFAULT_API_TIMEOUT = 1200  # standard benchmark timeout: GLM responses can be long (max_tokens 20000); a short timeout cuts legit generations
+DEFAULT_API_TIMEOUT = 360  # standard benchmark timeout: GLM responses can be long (max_tokens 20000); a short timeout cuts legit generations
 
 
 def infer_family_id(model: str) -> str | None:

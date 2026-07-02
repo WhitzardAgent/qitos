@@ -252,11 +252,19 @@ def render_GREP(payload: Dict[str, Any]) -> str:
     file_str = f" in {file_count} file{'s' if file_count != 1 else ''}" if file_count else ""
     result_parts.append(f"  {match_count} match{('es' if match_count != 1 else '')}{file_str}")
 
-    # Matches — show file:line with preview
+    # Matches — show file:line with preview, group by file for graph_summary
+    last_file = ""
     for item in matches:
         path = str(item.get("path") or "")
         line_number = int(item.get("line_number") or 0)
         preview = str(item.get("preview") or item.get("line") or "")
+
+        # File-level graph summary annotation
+        if path != last_file:
+            graph_summary = str(item.get("graph_summary") or "")
+            if graph_summary:
+                result_parts.append(f"  {path} [{graph_summary}]")
+            last_file = path
 
         loc = f"{path}:{line_number}" if line_number else path
         result_parts.append(f"  {loc}  | {preview}")
@@ -418,7 +426,13 @@ def render_FindSymbols(payload: Dict[str, Any]) -> str:
 
                 # match_id enables instant READ jump
                 id_str = f" [id={match_id}]" if match_id else ""
-                result_parts.append(f"  {tag}  {loc}{id_str}  | {display}")
+                # Reachability tag from graph analysis
+                reach_tag = ""
+                if item.get("reachable") is True:
+                    reach_tag = " [REACHABLE]"
+                elif item.get("reachable") is False:
+                    reach_tag = " [UNREACHABLE]"
+                result_parts.append(f"  {tag}  {loc}{id_str}{reach_tag}  | {display}")
 
     # -- References section --
     if references:

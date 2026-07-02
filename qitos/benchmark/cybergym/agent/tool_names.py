@@ -44,6 +44,16 @@ RECORD_ATTEMPT = "record_attempt"
 RECORD_REFLECTION = "record_reflection"
 RECORD_CHAIN_NODE = "record_chain_node"
 RECORD_GATE = "record_gate"
+RECORD_SINK_CANDIDATE = "record_sink_candidate"
+SWITCH_PHASE = "switch_phase"
+ANALYZE_SINK_CANDIDATE = "analyze_sink_candidate"
+ANALYSIS_QUERY_TOOLS = frozenset({
+    "discover_sink_navigation_leads", "expand_candidate_neighborhood",
+    "get_sink_search_brief", "mark_navigation_lead_reviewed",
+    "index_repository", "find_callers", "find_paths_to_target", "summarize_function",
+    "extract_constraints", "trace_value", "get_path_details", "explain_path",
+    "resolve_callsite_candidates", "get_analysis_result",
+})
 
 # ---------------------------------------------------------------------------
 # Delegate tools (snake_case — sub-agent dispatch)
@@ -72,6 +82,8 @@ TRACKING_TOOLS = frozenset({
     RECORD_REFLECTION,
     RECORD_CHAIN_NODE,
     RECORD_GATE,
+    RECORD_SINK_CANDIDATE,
+    SWITCH_PHASE,
 })
 
 READ_ONLY_TOOLS = frozenset({

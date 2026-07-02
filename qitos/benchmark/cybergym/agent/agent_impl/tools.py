@@ -136,7 +136,7 @@ class ToolMixin:
         :param line: Optional absolute line number to center the read around.
         :param radius: Optional line radius when line or match_id is used.
         :param match_id: Optional stable match id returned by GREP/FindSymbols/CallsiteSearch.
-        :param blocking_question: Required only in candidate_required when a targeted read is still necessary.
+        :param blocking_question: Internal guard parameter — do not use.
         :param runtime_context: Runtime state provided by the engine.
         """
         if self._coding_tools is None:
@@ -249,14 +249,14 @@ class ToolMixin:
         :param exclude: Exclude globs, for example ["build/**", "*.o"].
         :param fixed: Treat pattern as literal text.
         :param case_sensitive: Whether matching is case-sensitive.
-        :param output_mode: files_with_matches (default), content, or count.
+        :param output_mode: Output mode: 'content' (default, shows matching lines), 'files_with_matches' (just file paths), or 'count'.
         :param type: Optional ripgrep file type filter such as "py", "c", "rust".
         :param context: Number of context lines before/after each match in content mode.
         :param head_limit: Limit result lines/entries after search. Set 0 for unlimited.
         :param offset: Skip the first N result lines/entries before applying head_limit.
         :param multiline: Enable ripgrep multiline mode.
         :param max_matches: Backward-compatible alias for head_limit.
-        :param blocking_question: Required only for targeted searches in candidate_required.
+        :param blocking_question: Internal guard parameter — do not use.
         """
         search_guard = self._validate_tool_access(
             runtime_context=runtime_context,
@@ -328,6 +328,24 @@ class ToolMixin:
                 multiline=bool(multiline),
             )
         self._remember_evidence_matches(runtime_context, result)
+        # ── GREP graph enrichment: file-level function summary
+        state = self._state_from_runtime(runtime_context)
+        svc = self._get_analysis_service(state) if state else None
+        if svc and svc.index_status in {"GRAPH_READY", "PARTIAL_INDEX"}:
+            matches = result.get("matches") or result.get("results") or []
+            file_funcs: dict[str, list] = {}
+            for sym in svc.symbols:
+                file_funcs.setdefault(sym.file, []).append(sym)
+            annotated = 0
+            for item in matches[:20]:
+                if annotated >= 5:
+                    break
+                fpath = str(item.get("path", "") or "").removeprefix("repo-vul/")
+                funcs = file_funcs.get(fpath)
+                if funcs and not item.get("graph_summary"):
+                    reachable = sum(1 for f in funcs if f.symbol_id in svc.entry_paths)
+                    item["graph_summary"] = f"{len(funcs)} funcs, {reachable} reachable"
+                    annotated += 1
         return self._render_output(self.GREP_TOOL, _sanitize_tool_payload(result), runtime_context)
 
     # ------------------------------------------------------------------
@@ -359,7 +377,7 @@ class ToolMixin:
         :param path: Directory under the workspace to search.
         :param max_results: Maximum results to return.
         :param include_dirs: Include matching directories as well as files.
-        :param blocking_question: Required only in candidate_required when this directly unblocks a candidate.
+        :param blocking_question: Internal guard parameter — do not use.
         """
         guard = self._validate_tool_access(
             runtime_context=runtime_context,
@@ -461,10 +479,10 @@ class ToolMixin:
         only, then trace callers with CallsiteSearch.
 
         :param query: Symbol or substring to locate.
-        :param kind: Optional kind filter: function, macro, struct, enum, constant, or file.
+        :param kind: Optional kind filter: function, macro, struct, enum, constant, typedef, reference, or file.
         :param path: File or directory under the workspace.
         :param max_results: Maximum number of results to return.
-        :param blocking_question: Required only in candidate_required when this directly unblocks a candidate.
+        :param blocking_question: Internal guard parameter — do not use.
         """
         guard = self._validate_tool_access(
             runtime_context=runtime_context,
@@ -548,6 +566,23 @@ class ToolMixin:
         limited = results[:limit]
         limited = self._attach_read_refs_to_hits(limited)
 
+        # ── Reachability tagging: mark top-5 functions as [REACHABLE]/[UNREACHABLE]
+        state = self._state_from_runtime(runtime_context)
+        svc = self._get_analysis_service(state) if state else None
+        if svc is not None and getattr(svc, "index_status", "") in {"GRAPH_READY", "PARTIAL_INDEX"}:
+            checked = 0
+            for item in limited:
+                if item.get("kind") != "function" or checked >= 5:
+                    break
+                name = str(item.get("name", "") or "")
+                if name:
+                    reachable = svc.is_reachable_from_entry(name)
+                    if reachable is True:
+                        item["reachable"] = True
+                    elif reachable is False:
+                        item["reachable"] = False
+                    checked += 1
+
         # Build summary counts for quick overview
         summary = {
             "functions": sum(1 for r in limited if r.get("kind") == "function"),
@@ -611,12 +646,15 @@ class ToolMixin:
         a callsite in parallel to trace the full input→crash chain.
         Use after FindSymbols to go from "where is this defined?" to
         "how does data reach this function?".
+        For multi-hop caller chains across files, prefer find_callers
+        instead — it uses the structural index and can trace deeper
+        call hierarchies with confidence scores.
 
         :param symbol: Symbol name to trace.
         :param path: File or directory under the workspace.
         :param max_results: Maximum callsite results.
         :param include_definition: Include definition-like hits.
-        :param blocking_question: Required only in candidate_required when this directly unblocks a candidate.
+        :param blocking_question: Internal guard parameter — do not use.
         """
         guard = self._validate_tool_access(
             runtime_context=runtime_context,
@@ -762,7 +800,7 @@ class ToolMixin:
 
         :param path: Repository directory under the workspace.
         :param max_entries: Maximum entries per major section.
-        :param blocking_question: Required only in candidate_required when this directly unblocks a candidate.
+        :param blocking_question: Internal guard parameter — do not use.
         """
         guard = self._validate_tool_access(
             runtime_context=runtime_context,
@@ -803,6 +841,8 @@ class ToolMixin:
         format_parsers = []
         dispatch_tables = []
         include_chains = {}
+        harness_resolution = {}
+        harness_candidates = []
 
         if idx:
             from .repo_index import find_format_parsers, find_dispatch_tables
@@ -821,6 +861,29 @@ class ToolMixin:
                 incs = finfo.get("includes", [])
                 if incs:
                     include_chains[hpath] = incs[:10]
+            current_state = self._state_from_runtime(runtime_context)
+            if current_state is not None:
+                resolution = getattr(current_state, "harness_resolution", None)
+                harness_resolution = {
+                    "status": getattr(resolution, "status", "unresolved"),
+                    "selected_candidate_id": getattr(resolution, "selected_candidate_id", ""),
+                    "selected_binary": getattr(resolution, "selected_binary", ""),
+                    "reasons": list(getattr(resolution, "reasons", []) or []),
+                    "conflicts": list(getattr(resolution, "conflicts", []) or []),
+                    "next_action": getattr(resolution, "next_action", ""),
+                }
+                harness_candidates = [
+                    {
+                        "candidate_id": item.candidate_id,
+                        "binary_names": list(item.binary_names),
+                        "source_path": item.source_path,
+                        "entry_function": item.entry_function,
+                        "line": item.line,
+                        "reachable_symbols": list(item.reachable_symbols),
+                        "status": item.status,
+                    }
+                    for item in list(getattr(current_state, "harness_candidates", []) or [])[:20]
+                ]
 
         return self._render_output(self.REPO_MAP_TOOL, _sanitize_tool_payload(
             {
@@ -834,6 +897,8 @@ class ToolMixin:
                 "truncated": len(top_level) >= limit,
                 # New fields from structural index
                 "harness_detail": harness_detail[:5],
+                "harness_candidates": harness_candidates,
+                "harness_resolution": harness_resolution,
                 "entry_point_signatures": entry_point_signatures,
                 "format_parsers": format_parsers[:15],
                 "dispatch_tables": dispatch_tables[:10],
@@ -865,7 +930,7 @@ class ToolMixin:
         StructProbe to inspect the relevant region.
 
         :param path: File path under the workspace.
-        :param blocking_question: Required only in candidate_required when this directly unblocks a candidate.
+        :param blocking_question: Internal guard parameter — do not use.
         """
         guard = self._validate_tool_access(
             runtime_context=runtime_context,
@@ -916,7 +981,7 @@ class ToolMixin:
         :param offset: Byte offset.
         :param length: Number of bytes to read, capped to 4096.
         :param width: Bytes per row, from 8 to 32.
-        :param blocking_question: Required only in candidate_required when this directly unblocks a candidate.
+        :param blocking_question: Internal guard parameter — do not use.
         """
         guard = self._validate_tool_access(
             runtime_context=runtime_context,
@@ -988,9 +1053,9 @@ class ToolMixin:
 
         :param path: File path under the workspace.
         :param offset: Byte offset to start decoding.
-        :param formats: Sequential field formats such as u8, u16, i32, u64, bytes:8, cstring:32.
+        :param formats: Sequential field formats — each entry is one of: u8, i8, u16, i16, u32, i32, u64, i64, bytes:N, cstring:N. At least one format required.
         :param endian: little or big.
-        :param blocking_question: Required only in candidate_required when this directly unblocks a candidate.
+        :param blocking_question: Internal guard parameter — do not use.
         """
         guard = self._validate_tool_access(
             runtime_context=runtime_context,
@@ -1064,7 +1129,7 @@ class ToolMixin:
         :param path: Repository directory under the workspace.
         :param max_dirs: Maximum corpus directories.
         :param max_files_per_dir: Maximum example files per directory.
-        :param blocking_question: Required only in candidate_required when this directly unblocks a candidate.
+        :param blocking_question: Internal guard parameter — do not use.
         """
         guard = self._validate_tool_access(
             runtime_context=runtime_context,
@@ -1125,6 +1190,7 @@ class ToolMixin:
         write_guard = self._validate_candidate_ready_non_submit(
             runtime_context=runtime_context,
             tool_name=self.WRITE_TOOL,
+            path=path,
         )
         if write_guard:
             return self._render_output(self.WRITE_TOOL, {
@@ -1167,7 +1233,7 @@ class ToolMixin:
         and patch specific offsets.
 
         :param command: Shell command to execute.
-        :param blocking_question: Reserved for candidate_required guard explanations.
+        :param blocking_question: Internal guard parameter — do not use.
         :param runtime_context: Runtime state provided by the engine.
         """
         if self._coding_tools is None:
@@ -1631,6 +1697,21 @@ class ToolMixin:
             from .repo_index import build_repo_index
             idx = build_repo_index(root)
             state.metadata["repo_index_v2"] = idx
+            repo_root_text = str(getattr(state, "repo_dir", "") or "")
+            repo_root = Path(repo_root_text) if repo_root_text else None
+            if repo_root is not None and repo_root.exists() and root.resolve() == repo_root.resolve():
+                target_records = self._discover_fuzzer_targets(str(repo_root))
+                state.metadata["fuzzer_targets"] = target_records
+                state.harness_candidates = self._build_harness_candidates(
+                    idx, target_records, list(state.submit_harness_targets or []),
+                )
+                self._resolve_harness_candidates(state, idx)
+                state.likely_fuzz_targets = sorted({
+                    name
+                    for candidate in state.harness_candidates
+                    for name in candidate.binary_names
+                }, key=str.lower)[:12]
+                state.input_format = self._build_input_format_model(state)
             return idx
         except Exception:
             return None
@@ -1645,6 +1726,18 @@ class ToolMixin:
             return None
         cached = state.metadata.get("repo_index_v2")
         return cached if isinstance(cached, dict) else None
+
+    def _get_analysis_service(self, state: Any):
+        """Return the cached AnalysisService for state's repo_dir, or None."""
+        from ..analysis.service import AnalysisService
+        repo = str(getattr(state, "repo_dir", "") or "")
+        if not repo or not Path(repo).is_dir():
+            return None
+        services = getattr(self, "_static_analysis_services", None)
+        if services is None:
+            return None
+        key = str(Path(repo).resolve())
+        return services.get(key)
 
     @staticmethod
     def _state_from_runtime(runtime_context: Optional[Dict[str, Any]] = None):

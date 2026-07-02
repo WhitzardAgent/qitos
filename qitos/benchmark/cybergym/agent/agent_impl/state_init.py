@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import os
+import re
 from typing import Any, List
 
 from ..context import CyberGymContextHistory
-from ..state import CyberGymState
+from ..state import CyberGymState, SinkCandidate
 from ..task_spec import build_task_spec
 from .constants import POC_OUTPUT_DIR, SEED_CORPUS_ENABLED
 
@@ -74,6 +75,7 @@ class StateInitMixin:
         task_root = kwargs.get("task_root") or self.task_root
         state.metadata["task_root"] = task_root
         state.harness_info = self._parse_harness_info(task_root)
+        state.submit_harness_targets = self._extract_submit_harness_targets(state.harness_info)
 
         spec = build_task_spec(
             state.vulnerability_description,
@@ -89,6 +91,7 @@ class StateInitMixin:
         state.source_files_mentioned = list(spec.get("source_files_mentioned") or [])
         state.symbols_mentioned = list(spec.get("symbols_mentioned") or [])
         state.task_spec_confidence = float(spec.get("task_spec_confidence") or 0.0)
+        state.search_anchors = list(spec.get("search_anchors") or [])
 
         if state.repo_dir and os.path.isdir(state.repo_dir):
             state.corpus_files = self._discover_corpus_files(state.repo_dir)
@@ -117,17 +120,49 @@ class StateInitMixin:
 
         self._ensure_family_bootstrap(state)
 
-        # Discover fuzzer target name from build scripts (used by format detection)
+        # Discover all targets and relate concrete source harnesses to the task.
         if state.repo_dir and os.path.isdir(state.repo_dir):
             try:
-                fuzzer_target = self._discover_fuzzer_target(state.repo_dir)
-                if fuzzer_target:
-                    state.metadata["fuzzer_target"] = fuzzer_target
-            except Exception:
-                pass
+                from pathlib import Path
+                from .repo_index import build_repo_index
+
+                target_records = self._discover_fuzzer_targets(state.repo_dir)
+                state.metadata["fuzzer_targets"] = target_records
+                structural_index = build_repo_index(Path(state.repo_dir))
+                state.metadata["repo_index_v2"] = structural_index
+                state.harness_candidates = self._build_harness_candidates(
+                    structural_index,
+                    target_records,
+                    state.submit_harness_targets,
+                )
+                self._resolve_harness_candidates(state, structural_index)
+                state.likely_fuzz_targets = sorted({
+                    name
+                    for candidate in state.harness_candidates
+                    for name in candidate.binary_names
+                }, key=str.lower)[:12]
+                selected_binary = state.harness_resolution.selected_binary
+                if selected_binary and state.harness_resolution.selected_candidate_id:
+                    state.metadata["fuzzer_target"] = selected_binary
+            except Exception as exc:
+                state.harness_candidates = []
+                state.metadata["harness_resolution_error"] = str(exc)[:300]
+                self._resolve_harness_candidates(state, {})
 
         state.poc_strategy = self._detect_poc_strategy(state)
         state.input_format = self._build_input_format_model(state)
+        _generate_sink_candidates(state)
+
+        # Build the immutable structural program graph before the first model
+        # turn.  Failure is represented as PARTIAL_INDEX and never prevents the
+        # agent from starting.
+        try:
+            self._bootstrap_analysis_index(state)
+            if state.metadata.get("_pending_sink_analysis"):
+                self._run_pending_sink_analysis(state)
+        except Exception as exc:
+            state.analysis_index_status = "PARTIAL_INDEX"
+            state.analysis_index_coverage = {"reason": f"bootstrap_error:{type(exc).__name__}"}
 
         if self.memory and state.bug_type:
             relevant = self.memory.retrieve(query={"text": state.bug_type})
@@ -142,3 +177,59 @@ class StateInitMixin:
             self.history.set_state(state)
 
         return state
+
+
+def _generate_sink_candidates(state: CyberGymState) -> None:
+    """Generate initial sink candidates from description + harness info."""
+    desc = (state.vulnerability_description or "").strip()
+    if not desc:
+        return
+
+    seen: set[str] = set()
+
+    # 1. Explicit function names: func_name() pattern
+    for m in re.finditer(r'([a-zA-Z_]\w+)\s*\(\)', desc):
+        func = m.group(1)
+        if func not in seen and not func[0].isupper():  # skip type names
+            state.sink_candidates.append(SinkCandidate(
+                function=func, confidence=0.8,
+                status="provisional", source="description", evidence=f"Named in description: {func}()",
+                metadata={"requires_review": True, "description_derived": True},
+            ))
+            seen.add(func)
+
+    # 2. From harness_candidates' reachable_symbols that match description keywords
+    desc_lower = desc.lower()
+    for candidate in list(state.harness_candidates or [])[:5]:
+        for sym in (candidate.reachable_symbols or []):
+            if sym not in seen and sym.lower() in desc_lower:
+                state.sink_candidates.append(SinkCandidate(
+                    function=sym, confidence=0.5,
+                    status="provisional", source="harness_chain",
+                    metadata={"requires_review": True, "description_derived": True},
+                    evidence="In harness call chain + mentioned in description"
+                ))
+                seen.add(sym)
+
+    # 3. symbols_mentioned that look like function identifiers
+    for sym in (state.symbols_mentioned or [])[:8]:
+        if sym not in seen and re.match(r'^[a-z_][a-z0-9_]*$', sym):
+            state.sink_candidates.append(SinkCandidate(
+                function=sym, confidence=0.3,
+                status="provisional", source="description_symbol",
+                metadata={"requires_review": True, "description_derived": True},
+                evidence="Extracted symbol from description"
+            ))
+            seen.add(sym)
+
+    if state.sink_candidates:
+        import hashlib
+        for candidate in state.sink_candidates:
+            if not candidate.reason:
+                candidate.reason = candidate.evidence
+            if not candidate.candidate_id:
+                material = f"{candidate.repository_id}|{candidate.location}|{candidate.function}"
+                candidate.candidate_id = "sink_" + hashlib.blake2s(material.encode(), digest_size=6).hexdigest()
+        # Description-derived names are weak priors.  They remain provisional
+        # until the model inspects code and explicitly records a candidate.
+        state.active_sink_id = ""
