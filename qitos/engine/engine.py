@@ -580,6 +580,8 @@ class Engine(Generic[StateT, ObservationT, ActionT]):
                 interrupt_info=info,
             )
         except Exception as exc:
+            import traceback as _tb
+            _tb.print_exc()
             failed_phase = self._infer_failed_phase(record)
             if self._recover(state, failed_phase, exc):
                 self._finalize_step(record, state)
@@ -643,6 +645,8 @@ class Engine(Generic[StateT, ObservationT, ActionT]):
         try:
             action_results = self._run_act(state, decision, record)
         except Exception as exc:
+            import traceback as _tb
+            _tb.print_exc()
             failed_phase = self._infer_failed_phase(record)
             if self._recover(state, failed_phase, exc):
                 self._finalize_step(record, state)
