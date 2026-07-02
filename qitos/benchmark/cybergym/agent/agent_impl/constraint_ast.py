@@ -38,6 +38,21 @@ from .constraint_ir import (
 _LOG = logging.getLogger(__name__)
 
 
+def _byte_offset_line_col(source: bytes, byte_offset: int) -> tuple[int, int]:
+    """Compute (1-based line, 1-based column) from source bytes and byte offset.
+
+    Never uses node.start_point which is unstable in tree-sitter 0.25.x.
+    """
+    line = 1
+    last_nl = -1
+    for i in range(min(byte_offset, len(source))):
+        if source[i] == ord('\n'):
+            line += 1
+            last_nl = i
+    col = byte_offset - last_nl  # 1-based
+    return line, col
+
+
 @dataclass(frozen=True)
 class SourceSpan:
     """Stable byte/line coordinates for one piece of source evidence."""
@@ -87,16 +102,18 @@ class ParsedSource:
                 end_line=self.line_offset + el,
                 end_column=ec,
             )
-        # Fallback for ParsedSource objects created without a _LineTable
-        # (e.g. in tests or legacy code paths).  Access Point attributes
-        # only in this safe fallback path.
+        # Fallback: compute from source bytes (never use node.start_point
+        # which is unstable in tree-sitter 0.25.x — can SIGSEGV)
+        src = self.source
+        sl, sc = _byte_offset_line_col(src, node.start_byte)
+        el, ec = _byte_offset_line_col(src, node.end_byte)
         return SourceSpan(
             start_byte=node.start_byte,
             end_byte=node.end_byte,
-            start_line=self.line_offset + node.start_point.row + 1,
-            start_column=node.start_point.column + 1,
-            end_line=self.line_offset + node.end_point.row + 1,
-            end_column=node.end_point.column + 1,
+            start_line=self.line_offset + sl,
+            start_column=sc,
+            end_line=self.line_offset + el,
+            end_column=ec,
         )
 
     def local_error_count(self, node: Any) -> int:

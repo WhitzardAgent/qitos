@@ -9,6 +9,31 @@ from __future__ import annotations
 from typing import Any, Optional, cast
 
 # ---------------------------------------------------------------------------
+# Byte-offset → line/column helper
+# ---------------------------------------------------------------------------
+
+def _byte_offset_to_line_col(source: str, byte_offset: int, line_table: Any = None) -> tuple[int, int]:
+    """Convert byte offset to (1-based line, 1-based column).
+
+    Uses line_table if available (pre-computed, fast).  Falls back to
+    counting newlines in source bytes — never accesses node.start_point
+    which is unstable in tree-sitter 0.25.x.
+    """
+    if line_table is not None:
+        return line_table.line_col(byte_offset)
+    # Fallback: compute from source string
+    src = source.encode("utf-8") if isinstance(source, str) else source
+    line = 1
+    last_nl = -1
+    for i in range(min(byte_offset, len(src))):
+        if src[i] == ord('\n'):
+            line += 1
+            last_nl = i
+    col = byte_offset - last_nl  # 1-based column
+    return line, col
+
+
+# ---------------------------------------------------------------------------
 # Node types — C/C++ only
 # ---------------------------------------------------------------------------
 
@@ -73,11 +98,7 @@ def _call_info_c(node: Any, source: str, line_table: Any = None) -> dict[str, An
     func_node = node.child_by_field_name("function")
     if func_node is not None:
         name = _node_text(func_node, source)
-        if line_table is not None:
-            line, col = line_table.line_col(node.start_byte)
-        else:
-            line = node.start_point[0] + 1
-            col = node.start_point[1]
+        line, col = _byte_offset_to_line_col(source, node.start_byte, line_table)
         return {
             "name": name,
             "full_name": name,
@@ -87,7 +108,7 @@ def _call_info_c(node: Any, source: str, line_table: Any = None) -> dict[str, An
         }
     for child in node.children:
         if child.type == "identifier":
-            return _call_from_text(_node_text(child, source), node, line_table)
+            return _call_from_text(_node_text(child, source), node, source, line_table)
     return None
 
 
@@ -124,14 +145,8 @@ def _extract_recursive(
     if node_type in _FUNC_DEF_TYPES.get(language, set()):
         func_name = get_func_name(node, language)
         if func_name:
-            if line_table is not None:
-                sl, sc = line_table.line_col(node.start_byte)
-                el, ec = line_table.line_col(node.end_byte)
-            else:
-                sl = node.start_point[0] + 1
-                sc = node.start_point[1]
-                el = node.end_point[0] + 1
-                ec = node.end_point[1]
+            sl, sc = _byte_offset_to_line_col(source, node.start_byte, line_table)
+            el, ec = _byte_offset_to_line_col(source, node.end_byte, line_table)
             definitions.append(
                 {
                     "name": func_name,
@@ -213,18 +228,14 @@ def find_parent_class_cpp(node: Any) -> str | None:
 # ---------------------------------------------------------------------------
 
 
-def _call_from_text(text: str, node: Any, line_table: Any = None) -> dict[str, Any]:
+def _call_from_text(text: str, node: Any, source: str = "", line_table: Any = None) -> dict[str, Any]:
     receiver = None
     name = text
     if "." in name:
         receiver, name = name.rsplit(".", 1)
     elif "->" in name:
         receiver, name = name.rsplit("->", 1)
-    if line_table is not None:
-        line, col = line_table.line_col(node.start_byte)
-    else:
-        line = node.start_point[0] + 1
-        col = node.start_point[1]
+    line, col = _byte_offset_to_line_col(source, node.start_byte, line_table)
     return {
         "name": name,
         "full_name": text,
