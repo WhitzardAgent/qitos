@@ -7,6 +7,7 @@
 - Every search hit includes a `match_id`. Use `READ(match_id=..., radius=...)` to jump directly to that location with surrounding context — no need to copy file paths and line numbers.
 - Use `GREP(pattern, path?, glob?, output_mode?, head_limit?, offset?)` for content search; default `output_mode` is `content`, use `files_with_matches` when you only need to know which files match and `count` for per-file counts.
 - Use `RepoMap(path?)` for repository layout, harness files, corpus directories, and build-file metadata instead of broad shell listing.
+- In Docker mode, use `dynamic_environment()` to inspect the case-specific image and the mounted `/in/official_vulnerable_binary` path before making environment assumptions.
 - Use `FindSymbols(query, kind?, path?)` when you know a symbol name and want its definition location, signature, and kind (function/macro/struct/enum).
 - Use `CallsiteSearch(symbol, path?)` when you need the full call graph: where a function is defined AND who calls it — essential for tracing data flow from input to crash.
 - Use `CorpusInspect(path?)`, `FileInfo(path)`, `HexView(path, offset?, length?)`, and `StructProbe(path, offset?, formats?, endian?)` for seed files and binary candidate sanity checks.

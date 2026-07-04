@@ -7,6 +7,7 @@ import sys
 import types
 
 from qitos.benchmark import normalize_benchmark_name, resolve_builtin_runner
+from qitos.core import ExperimentSpec, RunSpec
 from qitos.benchmark.cybergym import CyberGymBenchmarkAdapter, make_trace_writer, task_slug
 from qitos.benchmark.cybergym._imports import (
     ensure_cybergym_source_importable,

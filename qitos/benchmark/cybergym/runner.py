@@ -16,6 +16,7 @@ from qitos.render import ClaudeStyleHook
 from qitos.trace import TraceWriter
 
 from .adapter import task_slug
+from .dynamic_environment import prepare_dynamic_environment
 from .evaluator import CyberGymEvaluator
 from .runtime import CyberGymRuntimeHook, prepare_task_dir
 from .scorer import CyberGymScorer
@@ -60,6 +61,7 @@ def run_cybergym_agent_task(
     trace_prefix: str = "qitos_cybergym",
     run_spec: RunSpec | None = None,
     experiment_spec: ExperimentSpec | None = None,
+    docker_image: str | None = None,
 ) -> dict[str, Any]:
     try:
         from .agent.adapter import CyberGymAdapter
@@ -109,7 +111,7 @@ def run_cybergym_agent_task(
         # unchanged, while the agent's bash/read/write tools run in-container.
         from qitos.kit.env.docker_env import DockerEnv
 
-        _img = os.getenv("CYBERGYM_DOCKER_IMAGE", "cage/claude-code:cyberdebug")
+        _img = docker_image or os.getenv("CYBERGYM_DOCKER_IMAGE", "cage/claude-code:cyberdebug")
         _net = os.getenv("CYBERGYM_DOCKER_NETWORK", "host").strip() or None
         _host_ws = str(Path(workspace_root).resolve())
         env = DockerEnv(
@@ -241,6 +243,20 @@ def run_cybergym_task(
         difficulty=difficulty,
     )
 
+    docker_image = None
+    if os.getenv("CYBERGYM_USE_DOCKER_ENV", "0") == "1":
+        dynamic_environment = prepare_dynamic_environment(
+            task_dir=task_dir,
+            requested_task_id=task_id,
+            dataset_root=environment.get("dynamic_environment_dataset")
+            or os.getenv("CYBERGYM_DYNAMIC_ENVIRONMENT_DATASET", "")
+            or None,
+            dataset_config_path=environment.get("dynamic_environment_config")
+            or os.getenv("CYBERGYM_DYNAMIC_ENVIRONMENT_CONFIG", "")
+            or None,
+        )
+        docker_image = str(dynamic_environment.get("image_tag") or "").strip() or None
+
     prepared = CyberGymRuntimeHook().prepare(
         task=task,
         run_spec=effective_spec,
@@ -258,6 +274,7 @@ def run_cybergym_task(
         trace_prefix=str(environment.get("trace_prefix") or "qitos_cybergym"),
         run_spec=effective_spec,
         experiment_spec=experiment_spec,
+        docker_image=docker_image,
     )
     task_result = execution.get("task_result") or {}
     base_result = BenchmarkRunResult(

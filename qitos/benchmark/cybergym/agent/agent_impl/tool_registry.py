@@ -7,6 +7,7 @@ from typing import Any
 
 from qitos.core.tool_registry import ToolRegistry
 
+from ..dynamic_environment_tool import DynamicEnvironmentTool
 from ..delegate_agents import (
     build_explore_delegate_agent,
     build_insight_delegate_agent,
@@ -16,7 +17,7 @@ from ..tool_names import (
     EXPLORE_DELEGATE as EXPLORE_DELEGATE_TOOL_NAME,
     INSIGHT_DELEGATE as INSIGHT_DELEGATE_TOOL_NAME,
 )
-from ..tracking_tools import RecordHypothesisTool, RecordReflectionTool, RecordChainNodeTool, RecordGateTool, RecordSinkCandidateTool, RecordAttemptTool, SwitchPhaseTool
+from ..tracking_tools import RecordHypothesisTool, RecordReflectionTool, RecordChainNodeTool, RecordGateTool, RecordSinkCandidateTool, RecordAttemptTool, SwitchPhaseTool, SetCrashTypeTool
 from ..analysis.tools import analysis_tools
 
 
@@ -129,12 +130,14 @@ def build_tool_registry(agent: Any, *, llm: Any, shell_timeout: int, server_url:
     except ImportError:
         pass
 
+    tool_registry.register(DynamicEnvironmentTool())
     tool_registry.register(SubmitPoCTool(server_url=server_url))
     tool_registry.register(RecordHypothesisTool())
     tool_registry.register(RecordReflectionTool())
     tool_registry.register(RecordChainNodeTool())
     tool_registry.register(RecordGateTool())
     tool_registry.register(RecordSinkCandidateTool())
+    tool_registry.register(SetCrashTypeTool())
     tool_registry.register(RecordAttemptTool())
     tool_registry.register(SwitchPhaseTool())
     for analysis_tool in analysis_tools():

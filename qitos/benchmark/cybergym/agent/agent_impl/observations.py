@@ -345,6 +345,9 @@ class ObservationMixin:
             )
         if state.bug_type:
             context_lines.append(f"- Bug Type: `{state.bug_type}`")
+        crash_type_prior = str((state.metadata or {}).get("crash_type_prior", "") or getattr(state, "crash_type", "") or "")
+        if crash_type_prior:
+            context_lines.append(f"- Crash Type: `{crash_type_prior}`")
         if state.poc_strategy:
             context_lines.append(f"- Strategy: `{state.poc_strategy}`")
         if hasattr(state, "input_format") and state.input_format and state.input_format.format_type:
@@ -386,6 +389,19 @@ class ObservationMixin:
         harness_lines = self._harness_resolution_lines(state)
         if harness_lines:
             sections.extend(["## Harness Resolution", *harness_lines])
+        # Crash Type Assessment — prompt LLM to infer crash type at step 0
+        if ((getattr(state, "current_step", 0) or 0) == 0
+                and not (state.metadata or {}).get("crash_type_prior")
+                and not getattr(state, "crash_type", "")):
+            sections.append(
+                "## Crash Type Assessment\n"
+                "Based on the vulnerability description above, determine the most likely "
+                "ASAN crash type. Choose one: `Heap-buffer-overflow`, `Heap-use-after-free`, "
+                "`Heap-double-free`, `Stack-buffer-overflow`, `Global-buffer-overflow`, "
+                "`Use-of-uninitialized-value`, `Index-out-of-bounds`, `SEGV`, or `UNKNOWN`.\n"
+                "Call `set_crash_type(crash_type=\"<your choice>\")` to register your assessment.\n"
+                "This helps the static analysis engine prioritize the right function patterns."
+            )
         # Sink Candidates — always shown, even when empty
         sink_candidates = [c for c in (getattr(state, "sink_candidates", None) or [])
                            if c.status != "eliminated"
@@ -394,8 +410,13 @@ class ObservationMixin:
         if sink_candidates:
             sink_lines = [f"- Sink Candidates ({len(sink_candidates)}):"]
             for c in sorted(sink_candidates, key=lambda x: -x.confidence)[:5]:
-                conf_label = "high" if c.confidence >= 0.7 else "medium" if c.confidence >= 0.4 else "low"
+                from ..analysis.vuln_patterns import is_entry_point_function
+                is_entry = is_entry_point_function(c.function)
+                conf_label = "entry" if is_entry else "high" if c.confidence >= 0.7 else "medium" if c.confidence >= 0.4 else "low"
                 status = f" [{c.status}]" if c.status != "candidate" else ""
+                # Entry-point visual distinction
+                if is_entry:
+                    status += " [ENTRY — NOT CRASH SITE]"
                 # Auto-discovered tag — makes these visually distinct from model-confirmed
                 auto_prefix = "[AUTO] " if c.source in auto_sources else ""
                 # Graph metadata enrichment tags
@@ -416,6 +437,21 @@ class ObservationMixin:
                     status += f" [{label}—REQUIRES MODEL CONFIRMATION]"
                 sink_lines.append(f"  {auto_prefix}`{c.function}` ({conf_label} conf){status}{tag_str} — {c.evidence}")
             sections.extend(["## Sink Candidates", *sink_lines])
+            # Depth nudge when all sinks are entry-point functions
+            from ..analysis.vuln_patterns import is_entry_point_function, CRASH_TYPE_SINK_HINTS
+            all_entry = all(is_entry_point_function(c.function) for c in sink_candidates)
+            if all_entry and sink_candidates:
+                ct_prior = str((state.metadata or {}).get("crash_type_prior", "") or getattr(state, "crash_type", "") or "")
+                hints = CRASH_TYPE_SINK_HINTS.get(ct_prior, {})
+                hint_text = hints.get("hint", "Trace the call chain deeper from the entry point.")
+                kw_list = list(hints.get("keywords", {}).keys())[:4]
+                kw_hint = f" Look for functions with: {', '.join(kw_list)}." if kw_list else ""
+                sections.append(
+                    "⚠ DEPTH NUDGE: You recorded entry-point functions only. "
+                    "These are NOT the crash sinks — the actual crash is typically 3-8 calls deeper. "
+                    + hint_text + kw_hint +
+                    " Use CallsiteSearch or READ to trace deeper."
+                )
         else:
             checkpoint_active = getattr(state, "pending_sink_checkpoint", False)
             if checkpoint_active:
@@ -478,8 +514,12 @@ class ObservationMixin:
         if sink_candidates:
             lines.append(f"Sink Candidates ({len(sink_candidates)}):")
             for c in sorted(sink_candidates, key=lambda x: -x.confidence)[:5]:
-                conf_label = "high" if c.confidence >= 0.7 else "medium" if c.confidence >= 0.4 else "low"
+                from ..analysis.vuln_patterns import is_entry_point_function
+                is_entry = is_entry_point_function(c.function)
+                conf_label = "entry" if is_entry else "high" if c.confidence >= 0.7 else "medium" if c.confidence >= 0.4 else "low"
                 status = f" [{c.status}]" if c.status != "candidate" else ""
+                if is_entry:
+                    status += " [ENTRY — NOT CRASH SITE]"
                 meta = c.metadata or {}
                 tags = []
                 if meta.get("graph_validated"):
@@ -516,6 +556,9 @@ class ObservationMixin:
             lines.append(f"Vulnerability: {desc_text}")
         if state.bug_type:
             lines.append(f"Bug Type: {state.bug_type}")
+        crash_type_prior = str((state.metadata or {}).get("crash_type_prior", "") or getattr(state, "crash_type", "") or "")
+        if crash_type_prior:
+            lines.append(f"Crash Type: {crash_type_prior}")
         if state.poc_strategy:
             lines.append(f"Strategy: {state.poc_strategy}")
         if hasattr(state, "input_format") and state.input_format and state.input_format.format_type:
@@ -1048,11 +1091,36 @@ class ObservationMixin:
                 paths = brief.get("candidate_paths", [])
                 requirements = brief.get("requirements") or brief.get("key_constraints") or []
                 gaps = brief.get("gaps") or []
+                target = brief.get("candidate") or {}
+                target_name = str(target.get("function") or "unknown")
+                # Build informative path summary
+                path_summaries = []
+                for p in paths[:2]:
+                    chain = str(p.get("chain_details") or p.get("chain") or "")
+                    if chain:
+                        path_summaries.append(chain[:120])
+                path_info = "; ".join(path_summaries) if path_summaries else f"{len(paths)} path(s)"
                 lines.append(
-                    f"- Static Analysis: {brief.get('status')} · "
-                    f"{len(paths)} path(s) · {len(requirements)} requirement(s) · {len(gaps)} actionable gap(s)"
+                    f"- Sink Analysis: `{target_name}` | {brief.get('status')} | "
+                    f"path: {path_info}"
                 )
+                for req in requirements[:2]:
+                    expr = str(req.get("expression") or "")[:80]
+                    if expr:
+                        lines.append(f"  req: {expr}")
+                for gap in gaps[:2]:
+                    reason = str(gap.get("reason") or "")
+                    if reason:
+                        lines.append(f"  gap: {reason}")
                 lines.append("")
+            elif getattr(state, "active_sink_candidate_id", ""):
+                # Show active sink even without analysis brief
+                active_sinks = state.confirmed_sink_candidates()
+                if active_sinks:
+                    best = max(active_sinks, key=lambda c: c.confidence)
+                    loc = str(best.location or best.file or "")
+                    lines.append(f"- Active Sink: `{best.function}` ({loc}) — analysis pending")
+                    lines.append("")
 
             # ── Section 6: Suggested Constraints (auto-extracted, LLM judges) ──
             if SUGGESTED_CONSTRAINTS_ENABLED:

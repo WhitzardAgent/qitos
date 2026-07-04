@@ -224,6 +224,98 @@ def risk_signals_for_call(func_name: str, *, caller: str = "", location: str = "
     return results
 
 
+# ---------------------------------------------------------------------------
+# 4. Crash-type → sink keyword hints (derived from GT analysis)
+# ---------------------------------------------------------------------------
+
+# Maps ASAN crash types to keyword boosts for navigation scoring and depth nudges.
+# Derived from 1,368-row GT CSV analysis of sink function name patterns.
+# Keyword values are additive boosts to _navigation_rows() scores.
+
+CRASH_TYPE_SINK_HINTS: Dict[str, Dict[str, Any]] = {
+    "heap-buffer-overflow": {
+        "keywords": {"read": 0.08, "get": 0.08, "parse": 0.08, "decode": 0.06,
+                     "process": 0.06, "dissect": 0.06, "compress": 0.05},
+        "vuln_categories": {"buffer_overflow": 0.12},
+        "hint": "Focus on input-consuming code — read/parse/decode paths.",
+    },
+    "use-of-uninitialized-value": {
+        "keywords": {"check": 0.12, "init": 0.08, "set": 0.04,
+                     "validate": 0.06, "verify": 0.06},
+        "vuln_categories": {},
+        "hint": "Focus on check/init/validate functions — uninit values propagate to these.",
+    },
+    "heap-use-after-free": {
+        "keywords": {"free": 0.10, "destroy": 0.08, "release": 0.06,
+                     "finalize": 0.06, "cleanup": 0.06, "remove": 0.04},
+        "vuln_categories": {"use_after_free": 0.12},
+        "hint": "Focus on deallocation code — free/destroy/release paths.",
+    },
+    "heap-double-free": {
+        "keywords": {"free": 0.18, "destroy": 0.10, "cleanup": 0.08, "alloc": 0.04},
+        "vuln_categories": {"double_free": 0.15, "use_after_free": 0.10},
+        "hint": "The crash function very likely has 'free' in its name (72.7% of cases).",
+    },
+    "index-out-of-bounds": {
+        "keywords": {"decode": 0.12, "parse": 0.10, "index": 0.08, "process": 0.06},
+        "vuln_categories": {},
+        "hint": "Focus on decode/parse functions with indexing logic.",
+    },
+    "stack-buffer-overflow": {
+        "keywords": {"get": 0.08, "read": 0.08, "parse": 0.06, "check": 0.06, "decode": 0.05},
+        "vuln_categories": {"buffer_overflow": 0.10},
+        "hint": "Focus on functions with local arrays that read input.",
+    },
+    "global-buffer-overflow": {
+        "keywords": {"parse": 0.10, "dissect": 0.10, "lookup": 0.06, "decode": 0.05},
+        "vuln_categories": {},
+        "hint": "Focus on parse/dissect functions accessing global lookup tables.",
+    },
+    "segv": {
+        "keywords": {"access": 0.06, "deref": 0.06, "read": 0.05, "write": 0.05, "get": 0.04},
+        "vuln_categories": {"null_deref": 0.08},
+        "hint": "Focus on pointer dereference and memory access paths.",
+    },
+}
+
+# Entry-point function names that should never be treated as real crash sinks.
+ENTRY_POINT_NAMES: FrozenSet[str] = frozenset({"main", "LLVMFuzzerTestOneInput"})
+
+# Known ASAN crash type strings for normalization
+_CRASH_TYPE_ALIASES: Dict[str, str] = {
+    "heap-buffer-overflow": "heap-buffer-overflow",
+    "heap_use_after_free": "heap-use-after-free",
+    "heap-use-after-free": "heap-use-after-free",
+    "use-after-free": "heap-use-after-free",
+    "use_of_uninitialized_value": "use-of-uninitialized-value",
+    "use-of-uninitialized-value": "use-of-uninitialized-value",
+    "uninitialized-value": "use-of-uninitialized-value",
+    "heap_double_free": "heap-double-free",
+    "heap-double-free": "heap-double-free",
+    "double-free": "heap-double-free",
+    "index-out-of-bounds": "index-out-of-bounds",
+    "index_out_of_bounds": "index-out-of-bounds",
+    "stack-buffer-overflow": "stack-buffer-overflow",
+    "stack_buffer_overflow": "stack-buffer-overflow",
+    "global-buffer-overflow": "global-buffer-overflow",
+    "global_buffer_overflow": "global-buffer-overflow",
+    "segv": "segv",
+    "sigsegv": "segv",
+    "signal-11": "segv",
+}
+
+
+def normalize_crash_type(raw: str) -> str:
+    """Normalize a raw crash type string to a canonical key in CRASH_TYPE_SINK_HINTS."""
+    key = raw.strip().lower().replace(" ", "-")
+    return _CRASH_TYPE_ALIASES.get(key, key)
+
+
+def is_entry_point_function(func_name: str) -> bool:
+    """True if func_name is an entry-point function (main, LLVMFuzzerTestOneInput)."""
+    return func_name.strip() in ENTRY_POINT_NAMES
+
+
 __all__ = [
     "VulnPattern",
     "VULN_PATTERNS",
@@ -236,4 +328,8 @@ __all__ = [
     "classify_call",
     "risk_signals_for_call",
     "vuln_risk_score",
+    "CRASH_TYPE_SINK_HINTS",
+    "ENTRY_POINT_NAMES",
+    "normalize_crash_type",
+    "is_entry_point_function",
 ]

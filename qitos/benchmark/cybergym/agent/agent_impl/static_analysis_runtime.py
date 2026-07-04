@@ -63,9 +63,11 @@ class StaticAnalysisRuntimeMixin:
             if key in report
         }
         try:
+            crash_type = str(getattr(state, "crash_type", "") or "") or str((getattr(state, "metadata", None) or {}).get("crash_type_prior", "") or "")
             search = service.discover_sink_navigation_leads(
                 limit=5,
                 description=str(getattr(state, "vulnerability_description", "") or ""),
+                crash_type=crash_type,
             )
             self._sync_navigation_leads(state, search)
         except Exception as exc:
@@ -137,6 +139,37 @@ class StaticAnalysisRuntimeMixin:
                 candidate.evidence = candidate.reason = evidence
                 candidate.metadata.update(metadata)
 
+        # ── Auto-promote: guarantee every trace has an active sink ──
+        # If no confirmed sink exists yet, promote the top navigation lead
+        # (skipping entry-point functions) so the formulation phase has a target.
+        if leads and not state.confirmed_sink_candidates():
+            from ..analysis.vuln_patterns import is_entry_point_function
+            for lead in leads:
+                top_func = str(lead.get("function") or "").strip()
+                top_score = float(lead.get("score") or 0)
+                top_lead_id = str(lead.get("lead_id") or "")
+                if not top_func or is_entry_point_function(top_func) or top_score < 0.3:
+                    continue
+                # Find the provisional candidate created above and promote it
+                for candidate in state.sink_candidates:
+                    if candidate.candidate_id == top_lead_id:
+                        candidate.source = "model_candidate"
+                        candidate.status = "candidate"
+                        candidate.metadata = dict(candidate.metadata or {})
+                        candidate.metadata["requires_review"] = False
+                        candidate.metadata["reviewed"] = True
+                        candidate.metadata["auto_promoted"] = True
+                        candidate.metadata["confirmed_via"] = "auto_promotion"
+                        break
+                else:
+                    continue  # Candidate not found, try next lead
+                # Update active sink
+                state.active_sink_id = state._primary_sink_id()
+                state.active_sink_candidate_id = top_lead_id
+                state.analysis_status = "TARGET_PROPOSED"
+                state.metadata["_pending_sink_analysis"] = top_lead_id
+                break  # Promoted one, done
+
     @staticmethod
     def _validate_description_symbols(state: Any, content: str, service: AnalysisService) -> None:
         """Validate description-derived names against the graph without activating them."""
@@ -199,10 +232,12 @@ class StaticAnalysisRuntimeMixin:
         state.latest_read_analysis_fingerprint = fingerprint
         state.analysis_graph_id = service.graph_id or getattr(state, "analysis_graph_id", "")
         state.analysis_index_status = service.index_status
+        crash_type = str(getattr(state, "crash_type", "") or "") or str((getattr(state, "metadata", None) or {}).get("crash_type_prior", "") or "")
         navigation = service.discover_sink_navigation_leads(
             limit=5,
             description=str(getattr(state, "vulnerability_description", "") or ""),
             focus_symbol_ids=[str(item.get("symbol_id") or "") for item in result.get("focus", [])],
+            crash_type=crash_type,
         )
         self._sync_navigation_leads(state, navigation)
 

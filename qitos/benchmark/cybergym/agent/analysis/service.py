@@ -834,7 +834,7 @@ class AnalysisService:
             "reason": item.get("reason") or item.get("description") or "source control dependence",
         }
 
-    def _navigation_rows(self, *, description: str = "", focus_symbol_ids: set[str] | None = None) -> list[dict[str, Any]]:
+    def _navigation_rows(self, *, description: str = "", focus_symbol_ids: set[str] | None = None, crash_type: str = "") -> list[dict[str, Any]]:
         by_id = {item.symbol_id: item for item in self.symbols}
         summaries = {item.function_id: item for item in self.summaries}
         incoming: dict[str, list[CallEdge]] = {}
@@ -901,7 +901,25 @@ class AnalysisService:
                         parameter_dependencies=sorted(controlled),
                     )
                     signals.append(vuln_signal)
-            score = max(0.0, min(1.0, input_score + risk_score + reach_score + direct_score + utility_score + focus_score + description_score - penalty))
+            # Entry-point functions are never the actual crash sink
+            from .vuln_patterns import is_entry_point_function
+            if is_entry_point_function(leaf_name):
+                penalty += 0.30
+            # Crash-type-aware keyword boosts
+            crash_type_boost = 0.0
+            if crash_type:
+                from .vuln_patterns import CRASH_TYPE_SINK_HINTS
+                hints = CRASH_TYPE_SINK_HINTS.get(crash_type)
+                if hints:
+                    name_lower = symbol.name.lower()
+                    for kw, boost in hints["keywords"].items():
+                        if kw in name_lower:
+                            crash_type_boost += boost
+                    cat_boosts = hints.get("vuln_categories", {})
+                    for sig in signals:
+                        if sig.kind in cat_boosts:
+                            crash_type_boost += cat_boosts[sig.kind]
+            score = max(0.0, min(1.0, input_score + risk_score + reach_score + direct_score + utility_score + focus_score + description_score + crash_type_boost - penalty))
             if score < .10:
                 continue
             if signals and signals[0].kind == "lifecycle":
@@ -943,7 +961,8 @@ class AnalysisService:
                     "input_control": round(input_score, 3), "risk": round(risk_score, 3),
                     "reachability": round(reach_score, 3), "directness": round(direct_score, 3),
                     "utility": round(utility_score, 3), "read_focus": round(focus_score, 3),
-                    "description_prior": round(description_score, 3), "penalty": round(penalty, 3),
+                    "description_prior": round(description_score, 3), "crash_type_prior": round(crash_type_boost, 3),
+                    "penalty": round(penalty, 3),
                 },
                 "incoming": [item.caller_id for item in incoming.get(symbol.symbol_id, [])[:4]],
                 "outgoing": [item.callee_id for item in outgoing.get(symbol.symbol_id, [])[:4]],
@@ -974,11 +993,12 @@ class AnalysisService:
     def discover_sink_navigation_leads(
         self, entrypoint: str | None = None, limit: int = 5,
         description: str = "", focus_symbol_ids: list[str] | None = None,
+        crash_type: str = "",
     ) -> dict[str, Any]:
         """Return source-backed places to inspect; never claims a true sink."""
         self._ensure(self.config.automatic_timeout_seconds)
         limit = max(1, min(int(limit or 5), 20))
-        rows = self._navigation_rows(description=description, focus_symbol_ids=set(focus_symbol_ids or []))
+        rows = self._navigation_rows(description=description, focus_symbol_ids=set(focus_symbol_ids or []), crash_type=crash_type)
         if entrypoint:
             matched = {item.symbol_id for item in self._symbols_matching(entrypoint)}
             rows = [row for row in rows if not matched or any(item in matched for item in self.entry_paths.get(row["symbol_id"], [])[:1])]

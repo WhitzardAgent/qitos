@@ -45,8 +45,10 @@ RECORD_REFLECTION = "record_reflection"
 RECORD_CHAIN_NODE = "record_chain_node"
 RECORD_GATE = "record_gate"
 RECORD_SINK_CANDIDATE = "record_sink_candidate"
+SET_CRASH_TYPE = "set_crash_type"
 SWITCH_PHASE = "switch_phase"
 ANALYZE_SINK_CANDIDATE = "analyze_sink_candidate"
+DYNAMIC_ENVIRONMENT = "dynamic_environment"
 ANALYSIS_QUERY_TOOLS = frozenset({
     "discover_sink_navigation_leads", "expand_candidate_neighborhood",
     "get_sink_search_brief", "mark_navigation_lead_reviewed",
@@ -83,6 +85,7 @@ TRACKING_TOOLS = frozenset({
     RECORD_CHAIN_NODE,
     RECORD_GATE,
     RECORD_SINK_CANDIDATE,
+    SET_CRASH_TYPE,
     SWITCH_PHASE,
 })
 
@@ -90,6 +93,7 @@ READ_ONLY_TOOLS = frozenset({
     READ,
     GREP,
     GLOB,
+    DYNAMIC_ENVIRONMENT,
     *EVIDENCE_TOOLS,
 })
 

@@ -1449,6 +1449,12 @@ class CyberGymAgent(StaticAnalysisRuntimeMixin, StateInitMixin, TaskAnalysisMixi
 
         self._run_pending_sink_analysis(state)
 
+        # ── Step 4+ fallback: guarantee active sink ──
+        # If no confirmed sink exists by step 4, force-promote the best available
+        # candidate so the formulation phase has a target.
+        if (getattr(state, "current_step", 0) or 0) >= 4 and not state.confirmed_sink_candidates():
+            self._auto_promote_sink(state)
+
         # Deepen analysis after repeated failures
         if (getattr(state, "poc_attempts", 0) >= 2
             and getattr(state, "best_poc_score", 0) == 0
@@ -1893,6 +1899,10 @@ class CyberGymAgent(StaticAnalysisRuntimeMixin, StateInitMixin, TaskAnalysisMixi
                 crash_source = vul_stderr if vul_stderr else raw_output
                 state.crash_type = self._parse_crash_type(crash_source)
                 state.crash_location = self._parse_crash_location(crash_source)
+                # Update crash_type_prior with ground-truth from ASAN output
+                if state.crash_type:
+                    from .analysis.vuln_patterns import normalize_crash_type
+                    state.metadata["crash_type_prior"] = normalize_crash_type(state.crash_type)
 
                 if output.get("status") == "error":
                     state.last_error_trace = output.get("error", "Unknown error")
@@ -2832,6 +2842,62 @@ class CyberGymAgent(StaticAnalysisRuntimeMixin, StateInitMixin, TaskAnalysisMixi
         best = active[0]
         state.active_sink_id = f"{best.function}@{best.location}"
         return True
+
+    def _auto_promote_sink(self, state: CyberGymState) -> None:
+        """Force-promote the best available candidate to a confirmed sink.
+
+        Called when step >= 4 and no confirmed sink exists yet. This guarantees
+        the formulation phase always has a target, even when the LLM never
+        called record_sink_candidate explicitly.
+        """
+        from .analysis.vuln_patterns import is_entry_point_function
+
+        # First try: promote a static_navigation candidate that isn't an entry point
+        candidates = [
+            c for c in state.sink_candidates
+            if c.status != "eliminated"
+            and not is_entry_point_function(c.function)
+            and c.source in {"static_navigation", "graph_auto_deepen"}
+        ]
+        candidates.sort(key=lambda c: -c.confidence)
+
+        if candidates:
+            best = candidates[0]
+            best.source = "model_candidate"
+            best.status = "candidate"
+            best.metadata = dict(best.metadata or {})
+            best.metadata["requires_review"] = False
+            best.metadata["reviewed"] = True
+            best.metadata["auto_promoted"] = True
+            best.metadata["confirmed_via"] = "auto_promotion_step4"
+            state.active_sink_id = state._primary_sink_id()
+            state.active_sink_candidate_id = best.candidate_id
+            state.analysis_status = "TARGET_PROPOSED"
+            state.metadata["_pending_sink_analysis"] = best.candidate_id
+            return
+
+        # Second try: promote a description-derived candidate
+        desc_candidates = [
+            c for c in state.sink_candidates
+            if c.status != "eliminated"
+            and not is_entry_point_function(c.function)
+            and c.source in {"description", "description_symbol"}
+        ]
+        desc_candidates.sort(key=lambda c: -c.confidence)
+
+        if desc_candidates:
+            best = desc_candidates[0]
+            best.source = "model_candidate"
+            best.status = "candidate"
+            best.metadata = dict(best.metadata or {})
+            best.metadata["requires_review"] = False
+            best.metadata["reviewed"] = True
+            best.metadata["auto_promoted"] = True
+            best.metadata["confirmed_via"] = "auto_promotion_desc"
+            state.active_sink_id = state._primary_sink_id()
+            state.active_sink_candidate_id = best.candidate_id
+            state.analysis_status = "TARGET_PROPOSED"
+            state.metadata["_pending_sink_analysis"] = best.candidate_id
 
     def _save_success_memory(self, state: CyberGymState) -> None:
         """Save a feedback-type memory after successful PoC generation."""

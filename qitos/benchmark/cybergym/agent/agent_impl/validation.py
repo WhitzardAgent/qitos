@@ -51,6 +51,7 @@ from ..tool_names import (
     RECORD_GATE,
     RECORD_SINK_CANDIDATE,
     ANALYZE_SINK_CANDIDATE,
+    DYNAMIC_ENVIRONMENT,
     ANALYSIS_QUERY_TOOLS,
 )
 
@@ -719,6 +720,7 @@ class ValidationMixin:
             RECORD_REFLECTION,
             RECORD_CHAIN_NODE,
             RECORD_GATE,
+            DYNAMIC_ENVIRONMENT,
             *DELEGATE_TOOLS,
         }
         advanced_context = (

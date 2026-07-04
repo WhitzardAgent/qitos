@@ -885,8 +885,15 @@ class RecordSinkCandidateTool(BaseTool):
         action = "created"
 
         if state is not None:
-            # Clear sink checkpoint on successful recording
-            state.pending_sink_checkpoint = False
+            # Entry-point sink suppression: cap confidence and don't clear checkpoint
+            from .analysis.vuln_patterns import is_entry_point_function
+            is_entry = is_entry_point_function(func_name)
+            if is_entry:
+                confidence = min(confidence, 0.2)
+                state.metadata["entry_point_sink_recorded"] = True
+            else:
+                # Clear sink checkpoint on successful recording of a real sink
+                state.pending_sink_checkpoint = False
             # Case-insensitive lookup for existing candidate
             live = [c for c in state.sink_candidates if c.status != "eliminated"]
             existing = next((c for c in live if c.function.lower() == func_name.lower()), None)
@@ -997,4 +1004,67 @@ class RecordSinkCandidateTool(BaseTool):
             "evidence": _clip(evidence, 100),
             "candidate_id": getattr(selected, "candidate_id", "") if state is not None else "",
             "analysis_triggered": state is not None,
+        }
+
+
+class SetCrashTypeTool(BaseTool):
+    """Set the inferred crash type from the vulnerability description.
+
+    The LLM calls this at step 0-1 after reading description.txt to register
+    its assessment of the likely ASAN crash type. This feeds into crash-type-
+    aware navigation scoring to prioritize the right function patterns.
+    After the first submit_poc, the exact crash_type from ASAN output
+    overrides this LLM-inferred prior.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(
+            ToolSpec(
+                name="set_crash_type",
+                description=(
+                    "Set the inferred ASAN crash type based on the vulnerability "
+                    "description. Choose one: Heap-buffer-overflow, "
+                    "Heap-use-after-free, Heap-double-free, Stack-buffer-overflow, "
+                    "Global-buffer-overflow, Use-of-uninitialized-value, "
+                    "Index-out-of-bounds, SEGV, or UNKNOWN. "
+                    "This helps the static analysis engine prioritize the right "
+                    "function patterns for navigation."
+                ),
+                parameters={
+                    "crash_type": {
+                        "type": "string",
+                        "description": "Inferred crash type (e.g., 'Heap-buffer-overflow')",
+                    },
+                },
+                required=["crash_type"],
+            )
+        )
+
+    def validate_input(
+        self, args: Dict[str, Any], runtime_context: Optional[Dict[str, Any]] = None
+    ) -> ToolValidationResult:
+        _ = runtime_context
+        if not str(args.get("crash_type") or "").strip():
+            return ToolValidationResult.fail("crash_type is required")
+        return ToolValidationResult.ok()
+
+    def execute(
+        self, args: Dict[str, Any], runtime_context: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        from .analysis.vuln_patterns import normalize_crash_type
+
+        state = (runtime_context or {}).get("state")
+        raw = str(args.get("crash_type") or "").strip()
+        normalized = normalize_crash_type(raw)
+
+        if state is not None:
+            state.metadata["crash_type_prior"] = normalized
+            # Don't overwrite crash_type from ASAN output (that's the ground truth)
+            if not getattr(state, "crash_type", ""):
+                state.crash_type = normalized
+
+        return {
+            "status": "success",
+            "crash_type": normalized,
+            "original_input": raw,
         }

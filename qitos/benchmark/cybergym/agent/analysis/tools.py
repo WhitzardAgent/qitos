@@ -360,6 +360,10 @@ class AnalysisQueryTool(BaseTool):
         else:
             if name == "discover_sink_navigation_leads" and not call_args.get("description") and state is not None:
                 call_args["description"] = str(getattr(state, "vulnerability_description", "") or "")
+            if name == "discover_sink_navigation_leads" and state is not None and not call_args.get("crash_type"):
+                crash_type = str(getattr(state, "crash_type", "") or "") or str((getattr(state, "metadata", None) or {}).get("crash_type_prior", "") or "")
+                if crash_type:
+                    call_args["crash_type"] = crash_type
             method = getattr(service, name)
             result = method(**call_args)
         if state is not None and name == "analyze_sink_candidate" and result.get("brief"):

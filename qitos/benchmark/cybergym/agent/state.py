@@ -447,6 +447,7 @@ class CyberGymState(StateSchema):
         return f"{best.function}@{best.location}"
 
     def confirmed_sink_candidates(self) -> List[SinkCandidate]:
+        from .analysis.vuln_patterns import is_entry_point_function
         provisional_sources = {
             "static_navigation", "description", "description_symbol",
             "harness_chain", "graph_auto_deepen",
@@ -457,6 +458,7 @@ class CyberGymState(StateSchema):
             and candidate.status != "provisional"
             and candidate.source not in provisional_sources
             and not bool((candidate.metadata or {}).get("requires_review"))
+            and not is_entry_point_function(candidate.function)
         ]
 
     def navigation_candidates(self) -> List[SinkCandidate]:
