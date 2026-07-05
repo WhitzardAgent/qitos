@@ -47,6 +47,46 @@ def make_trace_writer(
     )
 
 
+def _vul_binary_mounts(binary_dir: str, task_id: str, mode: str = "vul") -> list[str]:
+    """Read-only ``docker run -v`` args that stage the prebuilt VULNERABLE target
+    into the agent container at the SAME paths the grading server uses, so the
+    agent can run / gdb / strace the crash exactly like the grader does
+    (``server_utils.run_container_binary``):
+
+      ARVO      (``arvo:<id>``):     out/* -> /out/<name>, libs -> /out-libs, arvo -> /arvo
+                run with:            env LD_LIBRARY_PATH=/out-libs /bin/bash /arvo   (poc at /tmp/poc)
+                or directly:         env LD_LIBRARY_PATH=/out-libs gdb --args /out/<fuzzer> <poc>
+      oss-fuzz  (``oss-fuzz:<id>``): out/* -> /out/<name>   (run with: reproduce <fuzz_target>)
+
+    Binaries live under BINARY_DIR (``/home/pgroup/cybergym-bin/...`` on 146), NOT the
+    task ``data_dir`` (which only has source tarballs). Returns [] (staging skipped,
+    agent still runs) when binary_dir is unset or the task's ``<mode>/out`` is absent.
+    """
+    if not binary_dir or ":" not in task_id:
+        return []
+    subset, subid = task_id.split(":", 1)
+    base = Path(binary_dir)
+    args: list[str] = []
+    if subset == "arvo":
+        bin_dir = base / "arvo" / subid / mode
+        out_dir = bin_dir / "out"
+        if not out_dir.is_dir():
+            return []
+        if (bin_dir / "arvo").exists():
+            args += ["-v", f"{bin_dir / 'arvo'}:/arvo:ro"]
+        if (bin_dir / "libs").is_dir():
+            args += ["-v", f"{bin_dir / 'libs'}:/out-libs:ro"]
+        for f in sorted(out_dir.iterdir()):
+            args += ["-v", f"{f}:/out/{f.name}:ro"]
+    elif subset == "oss-fuzz":
+        out_dir = base / "oss-fuzz" / subid / mode / "out"
+        if not out_dir.is_dir():
+            return []
+        for f in sorted(out_dir.iterdir()):
+            args += ["-v", f"{f}:/out/{f.name}:ro"]
+    return args
+
+
 def run_cybergym_agent_task(
     *,
     task_dir: str | Path,
@@ -112,6 +152,16 @@ def run_cybergym_agent_task(
         _img = os.getenv("CYBERGYM_DOCKER_IMAGE", "cage/claude-code:cyberdebug")
         _net = os.getenv("CYBERGYM_DOCKER_NETWORK", "host").strip() or None
         _host_ws = str(Path(workspace_root).resolve())
+        # Dynamic-analysis: stage the prebuilt vulnerable target into the container
+        # (same paths as the grader) so the agent can actually run/gdb the crash.
+        _extra: list[str] = []
+        if os.getenv("CYBERGYM_STAGE_VUL_BINARY", "1") == "1":
+            _tid = str(task.inputs.get("task_id") or task.id)
+            _extra = _vul_binary_mounts(os.getenv("CYBERGYM_BINARY_DIR", "").strip(), _tid)
+            if _extra:
+                # A target was staged -> give gdb real ptrace (breakpoints/stepping;
+                # also lets it disable ASLR). Only when we actually mounted a binary.
+                _extra += ["--cap-add=SYS_PTRACE"]
         env = DockerEnv(
             workspace_root=_host_ws,          # container workdir == host path
             image=_img,
@@ -119,6 +169,7 @@ def run_cybergym_agent_task(
             auto_create=True,
             remove_on_close=True,
             network=_net,
+            extra_run_args=_extra or None,    # ro mounts: /out/<bin>, /out-libs, /arvo
         )
         # container lifecycle (setup/teardown) is driven by the engine
     else:
