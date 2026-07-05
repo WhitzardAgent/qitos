@@ -356,7 +356,7 @@ class SubmitPoCTool(BaseTool):
         # Store the structured dict for _process_action_result, then
         # return a rendered string for the LLM.
         _stash_submit_structured(agent_id, structured)
-        from .agent_impl.tool_render import render_tool_output, TOOL_RENDERING_ENABLED
+        from .agent_impl.tools.render import render_tool_output, TOOL_RENDERING_ENABLED
         if TOOL_RENDERING_ENABLED:
             return render_tool_output("submit_poc", structured)
         return structured
@@ -422,7 +422,7 @@ class SubmitPoCTool(BaseTool):
         """Render a submit_poc error result, storing the dict for reduce()."""
         sanitized = _sanitize_payload(payload)
         _stash_submit_structured(agent_id, sanitized)
-        from .agent_impl.tool_render import render_tool_output, TOOL_RENDERING_ENABLED
+        from .agent_impl.tools.render import render_tool_output, TOOL_RENDERING_ENABLED
         if TOOL_RENDERING_ENABLED:
             return render_tool_output("submit_poc", sanitized)
         return sanitized

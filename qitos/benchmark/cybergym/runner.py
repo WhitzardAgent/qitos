@@ -8,6 +8,35 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+
+def _vul_binary_mounts(binary_dir: str, task_id: str, mode: str = "vul") -> list[str]:
+    """Read-only ``docker run -v`` args that stage the prebuilt VULNERABLE target
+    into the agent container at the SAME paths the grading server uses.
+    """
+    if not binary_dir or ":" not in task_id:
+        return []
+    subset, subid = task_id.split(":", 1)
+    base = Path(binary_dir)
+    args: list[str] = []
+    if subset == "arvo":
+        bin_dir = base / "arvo" / subid / mode
+        out_dir = bin_dir / "out"
+        if not out_dir.is_dir():
+            return []
+        if (bin_dir / "arvo").exists():
+            args += ["-v", f"{bin_dir / 'arvo'}:/arvo:ro"]
+        if (bin_dir / "libs").is_dir():
+            args += ["-v", f"{bin_dir / 'libs'}:/out-libs:ro"]
+        for f in sorted(out_dir.iterdir()):
+            args += ["-v", f"{f}:/out/{f.name}:ro"]
+    elif subset == "oss-fuzz":
+        out_dir = base / "oss-fuzz" / subid / mode / "out"
+        if not out_dir.is_dir():
+            return []
+        for f in sorted(out_dir.iterdir()):
+            args += ["-v", f"{f}:/out/{f.name}:ro"]
+    return args
+
 from qitos.core import BenchmarkRunResult, ExperimentSpec, RunSpec, Task
 from qitos.engine.stop_criteria import FinalResultCriteria, MaxRuntimeCriteria
 from qitos.engine.states import ContextConfig, RuntimeBudget
@@ -112,6 +141,32 @@ def run_cybergym_agent_task(
         _img = os.getenv("CYBERGYM_DOCKER_IMAGE", "cage/claude-code:cyberdebug")
         _net = os.getenv("CYBERGYM_DOCKER_NETWORK", "host").strip() or None
         _host_ws = str(Path(workspace_root).resolve())
+        # Dynamic-analysis: stage the prebuilt vulnerable target into the container
+        # (same paths as the grader) so the agent can actually run/gdb the crash.
+        _extra: list[str] = []
+        _container_env: dict[str, str] = {}
+        if os.getenv("CYBERGYM_STAGE_VUL_BINARY", "1") == "1":
+            _tid = str(task.inputs.get("task_id") or task.id)
+            _extra = _vul_binary_mounts(os.getenv("CYBERGYM_BINARY_DIR", "").strip(), _tid)
+            if _extra:
+                # A target was staged -> give gdb real ptrace (breakpoints/stepping;
+                # also lets it disable ASLR). Only when we actually mounted a binary.
+                _extra += ["--cap-add=SYS_PTRACE"]
+            # Pass CYBERGYM env vars into container so that container-side
+            # probes (e.g. discover_staged_binary_capability) can detect them.
+            _container_env["CYBERGYM_STAGE_VUL_BINARY"] = "1"
+            _container_env["CYBERGYM_STAGED_BINARY_ROOT"] = "/out"
+            _container_env["CYBERGYM_STAGED_LIBRARY_ROOT"] = "/out-libs"
+        if os.getenv("CYBERGYM_ENABLE_DYNAMIC_TOOLS", "0") == "1":
+            _container_env["CYBERGYM_ENABLE_DYNAMIC_TOOLS"] = "1"
+        _extra += [
+            "--label",
+            "qitos.benchmark=cybergym",
+            "--label",
+            f"cybergym.task_id={str(task.inputs.get('task_id') or task.id)}",
+            "--label",
+            f"cybergym.trace_prefix={trace_prefix}",
+        ]
         env = DockerEnv(
             workspace_root=_host_ws,          # container workdir == host path
             image=_img,
@@ -119,6 +174,8 @@ def run_cybergym_agent_task(
             auto_create=True,
             remove_on_close=True,
             network=_net,
+            extra_run_args=_extra or None,    # ro mounts: /out/<bin>, /out-libs, /arvo
+            container_env=_container_env or None,
         )
         # container lifecycle (setup/teardown) is driven by the engine
     else:
@@ -144,35 +201,40 @@ def run_cybergym_agent_task(
     # that appears in the terminal, for offline trajectory analysis.
     tui_log_file = str(Path(str(trace_writer.run_dir)) / "tui.log")
 
-    result = agent.run(
-        task=task,
-        return_state=True,
-        env=env,
-        stop_criteria=stop_criteria,
-        engine_kwargs={
-            "budget": RuntimeBudget(
-                max_steps=internal_step_limit,
-                max_runtime_seconds=float(max_runtime_seconds),
-            )
-        },
-        workspace=workspace_root,
-        context_config=context_config,
-        trace=trace_writer,
-        render_hooks=[_make_tui_log_hook(tui_log_file, theme="research")],
-        run_spec=run_spec,
-        experiment_spec=experiment_spec,
-        description=task.inputs.get("description", ""),
-        task_id=task.inputs.get("task_id", ""),
-        agent_id=task.inputs.get("agent_id", ""),
-        checksum=task.inputs.get("checksum", ""),
-        server_url=task.inputs.get("server_url", server),
-        error_txt=task.inputs.get("error_txt", ""),
-        patch_diff=task.inputs.get("patch_diff", ""),
-        task_root=task.inputs.get("task_root", task_root),
-        source_root=source_root,
-        repo_dir=source_root or task.inputs.get("repo_dir", ""),
-        trace_run_dir=str(trace_writer.run_dir),
-    )
+    try:
+        result = agent.run(
+            task=task,
+            return_state=True,
+            env=env,
+            stop_criteria=stop_criteria,
+            engine_kwargs={
+                "budget": RuntimeBudget(
+                    max_steps=internal_step_limit,
+                    max_runtime_seconds=float(max_runtime_seconds),
+                )
+            },
+            workspace=workspace_root,
+            context_config=context_config,
+            trace=trace_writer,
+            render_hooks=[_make_tui_log_hook(tui_log_file, theme="research")],
+            run_spec=run_spec,
+            experiment_spec=experiment_spec,
+            description=task.inputs.get("description", ""),
+            task_id=task.inputs.get("task_id", ""),
+            agent_id=task.inputs.get("agent_id", ""),
+            checksum=task.inputs.get("checksum", ""),
+            server_url=task.inputs.get("server_url", server),
+            error_txt=task.inputs.get("error_txt", ""),
+            patch_diff=task.inputs.get("patch_diff", ""),
+            task_root=task.inputs.get("task_root", task_root),
+            source_root=source_root,
+            repo_dir=source_root or task.inputs.get("repo_dir", ""),
+            trace_run_dir=str(trace_writer.run_dir),
+        )
+    finally:
+        close = getattr(env, "close", None)
+        if callable(close):
+            close()
 
     return {
         "task_id": task.id,

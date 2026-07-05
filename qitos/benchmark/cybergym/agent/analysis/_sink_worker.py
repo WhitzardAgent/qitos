@@ -13,8 +13,8 @@ def _run() -> None:
     path = Path(payload["path"])
     source = path.read_bytes()
 
-    from ..agent_impl.constraint_analysis import analyze_constraints
-    from ..agent_impl.constraint_models import (
+    from .constraints.analysis import analyze_constraints
+    from .constraints.models import (
         AnalysisBudget,
         ExtractionRequest,
         SourceUnit,

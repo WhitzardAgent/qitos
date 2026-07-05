@@ -63,6 +63,7 @@ class FeedbackRecord:
 class FailureType(str, Enum):
     SUBMISSION_ERROR = "SUBMISSION_ERROR"
     NO_TRIGGER = "NO_TRIGGER"
+    NO_CRASH_UNKNOWN = "NO_CRASH_UNKNOWN"
     VUL_ONLY_TRIGGERED = "VUL_ONLY_TRIGGERED"
     REJECTED_AFTER_TRIGGER = "REJECTED_AFTER_TRIGGER"
     TIMEOUT = "TIMEOUT"
@@ -147,6 +148,8 @@ def apply_family_queue_discipline(
     *,
     current_step: int,
     repeated_no_progress_limit: int = 2,
+    negative_evidence: Sequence[dict] | None = None,
+    poc_recipe: dict | None = None,
 ) -> bool:
     if family.state in {"cooldown", "retired"}:
         return False
@@ -174,8 +177,31 @@ def apply_family_queue_discipline(
     if consecutive_no_progress < repeated_no_progress_limit:
         return False
 
+    # Determine cooldown reason from negative evidence and recipe state
+    cooldown_reason = "repeated_no_progress"
+
+    if negative_evidence:
+        family_ne = [
+            ev for ev in negative_evidence
+            if ev.get("family_id") == family.family_id and ev.get("ttl", 0) > 0
+        ]
+        no_trigger_kinds = {"path_reached_no_trigger", "no_crash_unknown"}
+        same_no_trigger = [ev for ev in family_ne if ev.get("kind") in no_trigger_kinds]
+        if len(same_no_trigger) >= 3:
+            cooldown_reason = "repeated_no_crash_same_recipe"
+        elif any(ev.get("kind") == "carrier_sanity_fail" for ev in family_ne):
+            cooldown_reason = "format_carrier_failed"
+        elif any(ev.get("kind") in ("format_error", "bad_seed") for ev in family_ne):
+            cooldown_reason = "format_carrier_failed"
+
+    # Check for candidate_set_miss: no recipe mutations at all after 3+ no-progress
+    if poc_recipe is not None and cooldown_reason == "repeated_no_progress":
+        mutations = poc_recipe.get("trigger_mutations", []) if isinstance(poc_recipe, dict) else []
+        if not mutations and consecutive_no_progress >= 3:
+            cooldown_reason = "candidate_set_miss_suspected"
+
     family.state = "cooldown"
-    family.cooldown_reason = "repeated_no_progress"
+    family.cooldown_reason = cooldown_reason
     return True
 
 
@@ -205,6 +231,7 @@ def _is_no_progress_signal(signal: str) -> bool:
         "submitted",
         "submission_error",
         "no_trigger",
+        "no_crash_unknown",
         "weak_progress",
         "sideways",
         "misleading_progress",

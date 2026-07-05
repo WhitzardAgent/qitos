@@ -9,6 +9,41 @@ _FILE_RE = re.compile(
 )
 _SYMBOL_RE = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]{2,}\b")
 
+# Common English words that should never be treated as code identifiers.
+# These are extracted from vulnerability descriptions by _symbol_mentions()
+# but are never real function/variable names.
+_ENGLISH_BLOCKLIST = frozenset({
+    # Articles, pronouns, prepositions, conjunctions
+    "the", "and", "for", "not", "are", "but", "can", "has", "use", "via",
+    "may", "all", "any", "its", "also", "into", "from", "that", "this",
+    "then", "will", "such", "than", "too", "few", "one", "two", "off",
+    "out", "how", "who", "did", "get", "set", "put", "let", "own", "way",
+    "does", "each", "very", "just", "some", "more", "over", "only",
+    "same", "been", "have", "were", "they", "them", "what", "when",
+    "with", "where", "which", "there", "their", "about",
+    # Verbs common in vulnerability descriptions
+    "occurs", "exists", "occurred", "causes", "triggers", "results",
+    "allows", "leads", "arises", "happens", "fails", "returns",
+    "contains", "requires", "involves", "affects", "produces",
+    # Adjectives/adverbs common in descriptions
+    "after", "before", "while", "during", "since", "until",
+    "vulnerable", "malicious", "invalid", "incorrect", "wrong",
+    "proper", "certain", "specific", "given", "multiple",
+    # Nouns common in descriptions but not code identifiers
+    "function", "variable", "object", "value", "buffer", "memory",
+    "input", "output", "error", "handler", "process", "method",
+    "crash", "parser", "binary", "file", "data", "code", "user",
+    "size", "length", "index", "offset", "number", "count", "type",
+    "case", "point", "field", "element", "component", "module",
+    "version", "padding", "mode", "reference", "handling", "broken",
+    "processing", "decompression", "literals", "relevant",
+    # Sanitizer / testing terms
+    "asan", "ubsan", "msan", "heap", "stack", "crafted", "malformed",
+    "fuzzer", "fuzzing", "trigger", "uninitialized", "under",
+    # Other noise
+    "delete", "free", "null", "overflow", "read", "write",
+})
+
 _MEMORY_TERMS = (
     "heap-buffer-overflow",
     "stack-buffer-overflow",
@@ -86,24 +121,32 @@ def _source_file_mentions(text: str) -> List[str]:
 
 
 def _symbol_mentions(text: str) -> List[str]:
-    blocked = {
-        "crash",
-        "parser",
-        "binary",
-        "file",
-        "asan",
-        "ubsan",
-        "msan",
-        "heap",
-        "stack",
-        "crafted",
-        "under",
-        "when",
-        "with",
-        "malformed",
-    }
-    candidates = [token for token in _SYMBOL_RE.findall(text) if token.lower() not in blocked]
-    return _uniq(candidates[:12])
+    """Extract likely code identifiers from vulnerability description.
+
+    Only returns tokens that look like programmatic identifiers:
+    - snake_case with 2+ underscores (e.g., on_mesh_prefix, LLVMFuzzerTestOneInput)
+    - tokens adjacent to () in the text (function calls)
+    - CamelCase identifiers
+
+    Common English words are blocked via _ENGLISH_BLOCKLIST. The old regex
+    matched every 3+ char word, producing noise like "the", "occurs", "after".
+    """
+    # Strategy 1: Function call syntax — func_name()
+    call_names = [m.group(1) for m in re.finditer(r'([a-zA-Z_]\w+)\s*\(\)', text)]
+
+    # Strategy 2: Multi-underscore snake_case — very likely code identifiers
+    snake_deep = [m.group(0) for m in re.finditer(r'\b([a-z_][a-z0-9]*(?:_[a-z0-9]+){1,})\b', text)
+                  if m.group(0).lower() not in _ENGLISH_BLOCKLIST]
+
+    # Strategy 3: CamelCase — likely type/function names
+    camel = [m.group(1) for m in re.finditer(r'\b([a-z]+[A-Z][a-zA-Z]+)\b', text)]
+
+    # Merge: call names first (highest signal), then snake_deep, then camel
+    merged = _uniq(call_names + snake_deep + camel)
+
+    # Filter remaining English words
+    filtered = [t for t in merged if t.lower() not in _ENGLISH_BLOCKLIST]
+    return _uniq(filtered[:12])
 
 
 def _extract_search_anchors(text: str) -> List[str]:

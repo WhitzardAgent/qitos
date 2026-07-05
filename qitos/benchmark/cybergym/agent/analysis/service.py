@@ -3,197 +3,29 @@
 from __future__ import annotations
 
 import hashlib
-import html
 import json
 import logging
 import math
 import os
 import re
-import sqlite3
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from .indexer import index_file, index_file_isolated, resolve_calls, scan_files
 from .models import (
-    AnalysisPath, CallCandidate, CallEdge, CallSite, ConstraintIR, DefinitionIR,
-    ExprIR, FunctionSummary, FunctionSymbol, Parameter, RiskSignal, SinkAnalysisBrief,
+    AnalysisPath, CallEdge, ConstraintIR,
+    ExprIR, FunctionSummary, FunctionSymbol, RankedVulnerabilityPath,
+    RiskSignal, SinkAnalysisBrief,
     SinkCandidateInput, SourceLocation, stable_value,
 )
-
-ANALYSIS_VERSION = "4-navigation"
-GRAMMAR_VERSION = "tree-sitter-c-cpp-v2"
+from .store import AnalysisStore, AnalysisConfig, ANALYSIS_VERSION, GRAMMAR_VERSION, _summary, _symbol
+from .structured_bundle import StructuredBundleService
+from .navigation_service import NavigationService, _description_value, _identifier_key, _expr_identifiers as _expr_identifiers_fn, _estimate_tokens as _estimate_tokens_fn
+from .path_ranking import PathRankingService, _requirement_from_constraint as _requirement_from_constraint_fn, _target_resolution as _target_resolution_fn
 
 _LOG = logging.getLogger(__name__)
-
-
-@dataclass(frozen=True)
-class AnalysisConfig:
-    max_files: int = 50_000
-    max_file_size_mb: int = 5
-    max_call_depth: int = 8
-    max_paths: int = 20
-    max_candidates_per_call: int = 10
-    max_constraints_per_path: int = 100
-    analysis_timeout_seconds: int = 120
-    automatic_top_paths: int = 3
-    automatic_max_call_depth: int = 6
-    automatic_max_constraints: int = 12
-    automatic_max_dataflow_steps: int = 8
-    automatic_token_budget: int = 1500
-    automatic_timeout_seconds: int = 60
-    minimum_candidate_confidence: float = .30
-    excludes: tuple[str, ...] = ()
-
-    def hash(self) -> str:
-        return hashlib.sha256(json.dumps(stable_value(self), sort_keys=True).encode()).hexdigest()[:16]
-
-
-def _loc(v: dict[str, Any] | None) -> SourceLocation | None:
-    return SourceLocation(**v) if v else None
-
-
-def _expr(v: dict[str, Any]) -> ExprIR:
-    return ExprIR(v.get("kind", "unknown"), v.get("value"), tuple(_expr(x) for x in v.get("children", [])), v.get("source_text", ""), _loc(v.get("location")))
-
-
-def _constraint(v: dict[str, Any]) -> ConstraintIR:
-    return ConstraintIR(
-        _expr(v["expression"]), v["source_text"], v["normalized_text"],
-        bool(v["polarity"]), v["origin_function"],
-        _loc(v["origin_location"]) or SourceLocation("", 0), v["reason"],
-        float(v["confidence"]), v.get("role", "reachability"),
-        v.get("gate_type", "path_gate"), v.get("safe_formula", ""),
-        v.get("violation_formula", ""), v.get("input_mapping", ""),
-    )
-
-
-def _call(v: dict[str, Any]) -> CallSite:
-    return CallSite(v["callsite_id"], v["caller_id"], v["callee_text"], _expr(v["receiver"]) if v.get("receiver") else None, [_expr(x) for x in v.get("arguments", [])], _loc(v["location"]) or SourceLocation("", 0), [_constraint(x) for x in v.get("local_guards", [])], [CallCandidate(**x) for x in v.get("candidates", [])], v.get("resolution_status", "unresolved"), v.get("receiver_type", ""))
-
-
-def _summary(v: dict[str, Any]) -> FunctionSummary:
-    return FunctionSummary(v["function_id"], list(v.get("parameters", [])), [_call(x) for x in v.get("calls", [])], [_expr(x) for x in v.get("returns", [])], [DefinitionIR(x["target"], _expr(x["expression"]), _loc(x["location"]) or SourceLocation("", 0), [_constraint(g) for g in x.get("guards", [])]) for x in v.get("local_definitions", [])], [DefinitionIR(x["target"], _expr(x["expression"]), _loc(x["location"]) or SourceLocation("", 0), [_constraint(g) for g in x.get("guards", [])]) for x in v.get("field_writes", [])], [_loc(x) for x in v.get("early_exits", []) if _loc(x)], list(v.get("unresolved_nodes", [])), [RiskSignal(x["signal_id"], x["kind"], x.get("expression", ""), _loc(x.get("location")) or SourceLocation("", 0), float(x.get("severity", 0)), list(x.get("parameter_dependencies", [])), x.get("reason", "")) for x in v.get("risk_signals", [])])
-
-
-def _symbol(v: dict[str, Any]) -> FunctionSymbol:
-    return FunctionSymbol(v["symbol_id"], v["name"], v["qualified_name"], v["file"], v.get("scope"), [Parameter(**x) for x in v.get("parameters", [])], bool(v.get("is_static")), v.get("language", "c"), _loc(v["body_location"]) or SourceLocation("", 0), v.get("source_text", ""))
-
-
-class AnalysisStore:
-    def __init__(self, path: Path) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        self.db = sqlite3.connect(path)
-        self.db.execute("CREATE TABLE IF NOT EXISTS kv (kind TEXT, key TEXT, value TEXT, updated REAL, PRIMARY KEY(kind,key))")
-        self.db.execute("CREATE TABLE IF NOT EXISTS metadata (graph_key TEXT, name TEXT, value TEXT, updated REAL, PRIMARY KEY(graph_key,name))")
-        self.db.execute("CREATE TABLE IF NOT EXISTS files (graph_key TEXT, path TEXT, digest TEXT, status TEXT, unresolved TEXT, updated REAL, PRIMARY KEY(graph_key,path))")
-        self.db.execute("CREATE TABLE IF NOT EXISTS symbols (graph_key TEXT, symbol_id TEXT, file TEXT, value TEXT, PRIMARY KEY(graph_key,symbol_id))")
-        self.db.execute("CREATE TABLE IF NOT EXISTS function_summaries (graph_key TEXT, function_id TEXT, file TEXT, value TEXT, PRIMARY KEY(graph_key,function_id))")
-        self.db.execute("CREATE TABLE IF NOT EXISTS callsites (graph_key TEXT, callsite_id TEXT, function_id TEXT, file TEXT, value TEXT, PRIMARY KEY(graph_key,callsite_id))")
-        self.db.execute("CREATE TABLE IF NOT EXISTS call_edges (graph_key TEXT, callsite_id TEXT, caller_id TEXT, callee_id TEXT, value TEXT, PRIMARY KEY(graph_key,callsite_id,callee_id))")
-        self.db.execute("CREATE TABLE IF NOT EXISTS query_results (graph_key TEXT, query_key TEXT, value TEXT, updated REAL, PRIMARY KEY(graph_key,query_key))")
-        self.db.execute("CREATE TABLE IF NOT EXISTS analysis_results (result_id TEXT PRIMARY KEY, value TEXT, updated REAL)")
-        self.db.execute("CREATE TABLE IF NOT EXISTS briefs (brief_id TEXT PRIMARY KEY, candidate_id TEXT, value TEXT, updated REAL)")
-        self.db.commit()
-
-    def get(self, kind: str, key: str) -> Any:
-        row = self.db.execute("SELECT value FROM kv WHERE kind=? AND key=?", (kind, key)).fetchone()
-        return json.loads(row[0]) if row else None
-
-    def put(self, kind: str, key: str, value: Any) -> None:
-        raw = json.dumps(stable_value(value), ensure_ascii=False, sort_keys=True)
-        self.db.execute("INSERT OR REPLACE INTO kv(kind,key,value,updated) VALUES(?,?,?,?)", (kind, key, raw, time.time()))
-        if kind == "analysis":
-            self.db.execute(
-                "INSERT OR REPLACE INTO analysis_results(result_id,value,updated) VALUES(?,?,?)",
-                (key, raw, time.time()),
-            )
-        elif kind == "brief":
-            candidate_id = str(value.get("candidate_id", "")) if isinstance(value, dict) else ""
-            self.db.execute(
-                "INSERT OR REPLACE INTO briefs(brief_id,candidate_id,value,updated) VALUES(?,?,?,?)",
-                (key, candidate_id, raw, time.time()),
-            )
-        elif kind in {"path", "candidate_fingerprint"}:
-            self.db.execute(
-                "INSERT OR REPLACE INTO query_results(graph_key,query_key,value,updated) VALUES(?,?,?,?)",
-                ("runtime", f"{kind}:{key}", raw, time.time()),
-            )
-        self.db.commit()
-
-    def file(self, graph_key: str, path: str) -> dict[str, Any] | None:
-        row = self.db.execute(
-            "SELECT digest,status,unresolved FROM files WHERE graph_key=? AND path=?",
-            (graph_key, path),
-        ).fetchone()
-        if not row:
-            return None
-        symbols = [json.loads(item[0]) for item in self.db.execute(
-            "SELECT value FROM symbols WHERE graph_key=? AND file=? ORDER BY symbol_id",
-            (graph_key, path),
-        )]
-        summaries = [json.loads(item[0]) for item in self.db.execute(
-            "SELECT value FROM function_summaries WHERE graph_key=? AND file=? ORDER BY function_id",
-            (graph_key, path),
-        )]
-        return {
-            "digest": row[0], "status": row[1],
-            "unresolved": json.loads(row[2] or "[]"),
-            "symbols": symbols, "summaries": summaries,
-        }
-
-    def put_file(
-        self,
-        graph_key: str,
-        path: str,
-        digest: str,
-        symbols: list[FunctionSymbol],
-        summaries: list[FunctionSummary],
-        unresolved: list[dict[str, Any]],
-    ) -> None:
-        status = "partial" if unresolved else "success"
-        now = time.time()
-        self.db.execute("DELETE FROM callsites WHERE graph_key=? AND file=?", (graph_key, path))
-        self.db.execute("DELETE FROM function_summaries WHERE graph_key=? AND file=?", (graph_key, path))
-        self.db.execute("DELETE FROM symbols WHERE graph_key=? AND file=?", (graph_key, path))
-        self.db.execute(
-            "INSERT OR REPLACE INTO files(graph_key,path,digest,status,unresolved,updated) VALUES(?,?,?,?,?,?)",
-            (graph_key, path, digest, status, json.dumps(unresolved, ensure_ascii=False, sort_keys=True), now),
-        )
-        for symbol in symbols:
-            self.db.execute(
-                "INSERT OR REPLACE INTO symbols(graph_key,symbol_id,file,value) VALUES(?,?,?,?)",
-                (graph_key, symbol.symbol_id, path, json.dumps(stable_value(symbol), ensure_ascii=False, sort_keys=True)),
-            )
-        for summary in summaries:
-            self.db.execute(
-                "INSERT OR REPLACE INTO function_summaries(graph_key,function_id,file,value) VALUES(?,?,?,?)",
-                (graph_key, summary.function_id, path, json.dumps(stable_value(summary), ensure_ascii=False, sort_keys=True)),
-            )
-            for call in summary.calls:
-                self.db.execute(
-                    "INSERT OR REPLACE INTO callsites(graph_key,callsite_id,function_id,file,value) VALUES(?,?,?,?,?)",
-                    (graph_key, call.callsite_id, summary.function_id, path, json.dumps(stable_value(call), ensure_ascii=False, sort_keys=True)),
-                )
-        self.db.commit()
-
-    def put_edges(self, graph_key: str, edges: list[CallEdge]) -> None:
-        self.db.execute("DELETE FROM call_edges WHERE graph_key=?", (graph_key,))
-        for edge in edges:
-            self.db.execute(
-                "INSERT OR REPLACE INTO call_edges(graph_key,callsite_id,caller_id,callee_id,value) VALUES(?,?,?,?,?)",
-                (graph_key, edge.callsite_id, edge.caller_id, edge.callee_id, json.dumps(stable_value(edge), ensure_ascii=False, sort_keys=True)),
-            )
-        self.db.commit()
-
-    def put_metadata(self, graph_key: str, name: str, value: Any) -> None:
-        self.db.execute(
-            "INSERT OR REPLACE INTO metadata(graph_key,name,value,updated) VALUES(?,?,?,?)",
-            (graph_key, name, json.dumps(stable_value(value), ensure_ascii=False, sort_keys=True), time.time()),
-        )
-        self.db.commit()
 
 
 class AnalysisService:
@@ -220,6 +52,9 @@ class AnalysisService:
         self.entry_paths: dict[str, list[str]] = {}
         self._call_graph: Any | None = None
         self._path_finder: Any | None = None
+        self._bundle = StructuredBundleService(self)
+        self._navigation = NavigationService(self)
+        self._ranking = PathRankingService(self, self._navigation)
 
     def _refresh_graph_metadata(self) -> None:
         by_caller: dict[str, list[str]] = {}
@@ -262,10 +97,7 @@ class AnalysisService:
 
     @staticmethod
     def _expr_identifiers(expression: ExprIR) -> set[str]:
-        values = {str(expression.value)} if expression.kind == "identifier" and expression.value else set()
-        for child in expression.children:
-            values.update(AnalysisService._expr_identifiers(child))
-        return values
+        return _expr_identifiers_fn(expression)
 
     def _compute_input_control(self) -> None:
         """Propagate harness-derived values through bindings with a bounded fixpoint."""
@@ -591,6 +423,153 @@ class AnalysisService:
         self._ensure(); q = query.strip()
         return [s for s in self.symbols if s.symbol_id == q or s.qualified_name == q or s.name == q or s.symbol_id.endswith(q)]
 
+    @staticmethod
+    def _description_value(analysis: Any, name: str) -> list[str]:
+        return _description_value(analysis, name)
+
+    @staticmethod
+    def _identifier_key(value: str) -> str:
+        return _identifier_key(value)
+
+    def verify_description_references(
+        self, analysis: Any, limit_per_hint: int = 5,
+    ) -> dict[str, Any]:
+        """Resolve description priors to bounded source-backed references.
+
+        This method deliberately does not create or promote sink candidates.
+        A hit means only that a description-derived string exists in indexed
+        source; reachability and vulnerability semantics are separate evidence.
+        """
+        self._ensure(self.config.automatic_timeout_seconds)
+        per_hint = max(1, min(int(limit_per_hint or 5), 10))
+        function_queries = self._description_value(analysis, "suspect_functions")
+        hint_queries = self._description_value(analysis, "search_hints")
+        file_queries = self._description_value(analysis, "suspect_files")
+        all_queries = list(dict.fromkeys(function_queries + hint_queries + file_queries))[:48]
+        indexed_files = sorted(set(self.file_hashes) | {item.file for item in self.symbols})
+
+        refs: list[dict[str, Any]] = []
+        unresolved: list[str] = []
+        seen: set[tuple[str, str, str, int]] = set()
+        truncated = False
+
+        def add_ref(
+            query: str, *, symbol: FunctionSymbol | None = None, file: str = "",
+            line: int = 0, match_kind: str, confidence: float, evidence: str,
+        ) -> bool:
+            nonlocal truncated
+            target_file = symbol.file if symbol is not None else file
+            symbol_id = symbol.symbol_id if symbol is not None else ""
+            key = (query.casefold(), symbol_id, target_file, int(line or 0))
+            if key in seen:
+                return False
+            query_count = sum(item[0] == query.casefold() for item in seen)
+            if query_count >= per_hint:
+                truncated = True
+                return False
+            seen.add(key)
+            material = f"{self.graph_id}|{query}|{symbol_id}|{target_file}|{line}|{match_kind}"
+            refs.append({
+                "query": query,
+                "ref_id": "ref_" + hashlib.blake2s(material.encode(), digest_size=7).hexdigest(),
+                "symbol_id": symbol_id,
+                "symbol": symbol.qualified_name if symbol is not None else "",
+                "file": target_file,
+                "line": int(line or (symbol.body_location.start_line if symbol is not None else 0)),
+                "match_kind": match_kind,
+                "confidence": round(float(confidence), 3),
+                "evidence": evidence[:180],
+                "status": "verified",
+            })
+            return True
+
+        # Function-like priors: exact qualified/name, then casefold, then a
+        # conservative normalized-identifier equality (never substring).
+        for query in list(dict.fromkeys(function_queries + hint_queries)):
+            before = len(refs)
+            exact = [s for s in self.symbols if query in {s.name, s.qualified_name, s.symbol_id}]
+            for symbol in exact:
+                add_ref(query, symbol=symbol, line=symbol.body_location.start_line,
+                        match_kind="exact_symbol", confidence=.96,
+                        evidence="exact indexed symbol match")
+            if len(refs) == before:
+                folded = query.casefold()
+                matches = [s for s in self.symbols if folded in {s.name.casefold(), s.qualified_name.casefold()}]
+                for symbol in matches:
+                    add_ref(query, symbol=symbol, line=symbol.body_location.start_line,
+                            match_kind="casefold_symbol", confidence=.90,
+                            evidence="case-insensitive indexed symbol match")
+            if len(refs) == before:
+                normalized = self._identifier_key(query)
+                if len(normalized) >= 3:
+                    matches = [s for s in self.symbols if normalized in {
+                        self._identifier_key(s.name), self._identifier_key(s.qualified_name)
+                    }]
+                    for symbol in matches:
+                        add_ref(query, symbol=symbol, line=symbol.body_location.start_line,
+                                match_kind="normalized_symbol", confidence=.84,
+                                evidence="token-normalized indexed symbol match")
+
+        # File priors: exact relative path, basename, or path suffix.
+        for query in file_queries:
+            before = len(refs)
+            normalized = query.replace("\\", "/").lstrip("./").casefold()
+            for rel in indexed_files:
+                rel_folded = rel.casefold()
+                if rel_folded == normalized or Path(rel).name.casefold() == Path(normalized).name.casefold() or rel_folded.endswith("/" + normalized):
+                    add_ref(query, file=rel, line=1, match_kind="file", confidence=.92,
+                            evidence="indexed file path match")
+            if len(refs) == before:
+                unresolved.append(query)
+
+        # Literal fallback searches only indexed source files and only after a
+        # symbol/file miss. re.escape makes model-provided metacharacters data.
+        resolved_queries = {item["query"].casefold() for item in refs}
+        literal_queries = [q for q in all_queries if q.casefold() not in resolved_queries]
+        source_suffixes = {".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx", ".m", ".mm"}
+        for query in literal_queries:
+            if len(query) < 2:
+                unresolved.append(query)
+                continue
+            pattern = re.compile(re.escape(query), re.IGNORECASE)
+            matched = False
+            for rel in indexed_files:
+                if Path(rel).suffix.lower() not in source_suffixes:
+                    continue
+                path = self.root / rel
+                try:
+                    if not path.is_file() or path.stat().st_size > self.config.max_file_size_mb * 1024 * 1024:
+                        continue
+                    text = path.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    continue
+                for match in pattern.finditer(text):
+                    line = text.count("\n", 0, match.start()) + 1
+                    matched |= add_ref(query, file=rel, line=line, match_kind="literal_text",
+                                       confidence=.68, evidence="bounded literal text match in indexed source")
+                    if sum(item[0] == query.casefold() for item in seen) >= per_hint:
+                        break
+                if sum(item[0] == query.casefold() for item in seen) >= per_hint:
+                    break
+            if not matched:
+                unresolved.append(query)
+
+        unresolved = list(dict.fromkeys(item for item in unresolved if item.casefold() not in {
+            ref["query"].casefold() for ref in refs
+        }))[:24]
+        partial = self.index_status != "GRAPH_READY"
+        gaps = []
+        if partial and unresolved:
+            gaps.append("index is partial; unresolved hints are unknown, not evidence of absence")
+        return {
+            "status": "partial" if partial else "success",
+            "refs": refs[:24],
+            "unresolved_hints": unresolved,
+            "truncated": truncated or len(refs) > 24,
+            "gaps": gaps,
+            "graph_id": self.graph_id,
+        }
+
     def summarize_function(self, symbol_id: str) -> dict[str, Any]:
         matches = self._symbols_matching(symbol_id)
         if not matches: return {"status": "not_found", "symbol": symbol_id}
@@ -731,66 +710,7 @@ class AnalysisService:
         return matches[0] if len(matches) == 1 else rel
 
     def _resolve_target(self, candidate: SinkCandidateInput) -> tuple[FunctionSymbol | None, dict[str, Any]]:
-        """Resolve function/call-expression candidates without inventing uniqueness."""
-        file = self._resolve_file_name(candidate.file)
-        symbols = list(self.symbols)
-        by_id = {item.symbol_id: item for item in symbols}
-        evidence: list[str] = []
-
-        if file and candidate.line:
-            located = [
-                item for item in symbols
-                if item.file == file
-                and item.body_location.start_line <= candidate.line <= item.body_location.end_line
-            ]
-            if len(located) == 1:
-                target = located[0]
-                evidence.append("file+line resolved enclosing function")
-                return target, self._target_resolution(candidate, target, "enclosing_function", evidence)
-
-        query = str(candidate.function or "").strip()
-        if query:
-            matches = [
-                item for item in symbols
-                if item.symbol_id == query or item.qualified_name == query or item.name == query
-            ]
-            file_matches = [item for item in matches if not file or item.file == file]
-            selected = file_matches or matches
-            if len(selected) == 1:
-                evidence.append("exact function symbol")
-                return selected[0], self._target_resolution(candidate, selected[0], "function_symbol", evidence)
-
-        expressions = [str(x or "").strip() for x in (candidate.callee, candidate.expression, candidate.function) if str(x or "").strip()]
-        call_matches: list[tuple[FunctionSymbol, CallSite]] = []
-        for summary in self.summaries:
-            caller = by_id.get(summary.function_id)
-            if caller is None or (file and caller.file != file):
-                continue
-            for call in summary.calls:
-                if candidate.line and abs(call.location.start_line - candidate.line) > 2:
-                    continue
-                leaf = call.callee_text.rsplit("::", 1)[-1].rsplit("->", 1)[-1].rsplit(".", 1)[-1]
-                if any(expr == call.callee_text or expr == leaf or expr in call.callee_text for expr in expressions):
-                    call_matches.append((caller, call))
-        callers = {caller.symbol_id: caller for caller, _call in call_matches}
-        if len(callers) == 1:
-            target = next(iter(callers.values()))
-            call = call_matches[0][1]
-            evidence.append(f"call expression {call.callee_text} resolved to enclosing function")
-            value = self._target_resolution(candidate, target, "callsite_enclosing_function", evidence)
-            value["sink_expression"] = call.callee_text
-            value["sink_location"] = stable_value(call.location)
-            value["callsite_id"] = call.callsite_id
-            return target, value
-
-        candidates = sorted({item.symbol_id for item in (file_matches if query and 'file_matches' in locals() else [])})
-        if not candidates:
-            candidates = sorted(callers)[:8]
-        return None, {
-            "status": "unresolved", "requested": stable_value(candidate),
-            "reason": "target_not_uniquely_located", "candidate_symbol_ids": candidates,
-            "evidence": evidence,
-        }
+        return self._ranking._resolve_target(candidate)
 
     @staticmethod
     def _target_resolution(
@@ -799,276 +719,110 @@ class AnalysisService:
         method: str,
         evidence: list[str],
     ) -> dict[str, Any]:
-        return {
-            "status": "confirmed" if method in {"enclosing_function", "function_symbol"} else "inferred",
-            "method": method,
-            "requested": {
-                "function": candidate.function, "callee": candidate.callee,
-                "expression": candidate.expression, "file": candidate.file, "line": candidate.line,
-            },
-            "symbol_id": target.symbol_id,
-            "function": target.qualified_name,
-            "file": target.file,
-            "location": stable_value(target.body_location),
-            "evidence": evidence,
-        }
+        return _target_resolution_fn(candidate, target, method, evidence)
 
     @staticmethod
     def _requirement_from_constraint(item: dict[str, Any], path_id: str, order: int) -> dict[str, Any]:
-        expression = str(item.get("normalized_text") or item.get("expression") or "").strip()
-        origin = item.get("origin_location") or item.get("origin") or {}
-        material = json.dumps([path_id, order, expression, origin], sort_keys=True, default=str)
-        return {
-            "requirement_id": "req_" + hashlib.blake2s(material.encode(), digest_size=6).hexdigest(),
-            "path_id": path_id,
-            "order": order,
-            "role": item.get("role", "reachability"),
-            "gate_type": item.get("gate_type", "path_gate"),
-            "expression": expression,
-            "safe_formula": item.get("safe_formula", ""),
-            "violation_formula": item.get("violation_formula", ""),
-            "input_mapping": item.get("input_mapping", ""),
-            "status": item.get("status", "inferred"),
-            "confidence": float(item.get("confidence", item.get("confidence_score", .5)) or .5),
-            "origin": origin,
-            "reason": item.get("reason") or item.get("description") or "source control dependence",
-        }
+        return _requirement_from_constraint_fn(item, path_id, order)
 
-    def _navigation_rows(self, *, description: str = "", focus_symbol_ids: set[str] | None = None) -> list[dict[str, Any]]:
-        by_id = {item.symbol_id: item for item in self.symbols}
-        summaries = {item.function_id: item for item in self.summaries}
-        incoming: dict[str, list[CallEdge]] = {}
-        outgoing: dict[str, list[CallEdge]] = {}
-        for edge in self.edges:
-            incoming.setdefault(edge.callee_id, []).append(edge)
-            outgoing.setdefault(edge.caller_id, []).append(edge)
-        description_tokens = {
-            token.lower() for token in re.findall(r"[A-Za-z_][A-Za-z0-9_]{2,}", description)
-            if token.lower() not in {"the", "and", "with", "from", "that", "this", "function"}
-        }
-        utility_tokens = ("mem", "byte", "copy", "insert", "append", "read", "write", "free", "release", "destroy", "convert", "decode")
-        rows: list[dict[str, Any]] = []
-        for symbol in self.symbols:
-            summary = summaries.get(symbol.symbol_id)
-            if summary is None:
-                continue
-            signals = sorted(summary.risk_signals, key=lambda item: -item.severity)
-            controlled = self.input_control.get(symbol.symbol_id, {})
-            reachable = symbol.symbol_id in self.entry_paths
-            if not signals and not reachable and symbol.symbol_id not in (focus_symbol_ids or set()):
-                continue
-            direct_dependencies = {
-                name for signal in signals for name in signal.parameter_dependencies
-            } & set(controlled)
-            input_score = .30 if direct_dependencies else .22 if controlled else 0.0
-            risk_score = .25 * (signals[0].severity if signals else 0.0)
-            reach_score = .15 if reachable else 0.0
-            direct_score = .10 if signals and signals[0].kind not in {"utility_call", "loop_progress", "input_arithmetic"} else .04 if signals else 0.0
-            utility = any(token in symbol.name.lower() for token in utility_tokens) or any(
-                item.kind in {"memory_copy", "io", "lifecycle", "allocation", "utility_call"} for item in signals
-            )
-            utility_score = .10 if utility else 0.0
-            focus_score = .05 if symbol.symbol_id in (focus_symbol_ids or set()) else 0.0
-            name_tokens = set(re.findall(r"[a-z0-9]+", symbol.qualified_name.lower().replace("_", " ")))
-            description_score = .05 if description_tokens & name_tokens else 0.0
-            penalty = 0.0
-            if not reachable and self.entrypoints:
-                penalty += .15
-            if summary.unresolved_nodes:
-                penalty += min(.08, .02 * len(summary.unresolved_nodes))
-            # Stdlib functions without vulnerability patterns are very unlikely sinks
-            from .vuln_patterns import classify_call
-            leaf_name = symbol.name.rsplit("::", 1)[-1]
-            call_class = classify_call(leaf_name)
-            if call_class == "stdlib":
-                penalty += .50  # Safe libc — very unlikely to be the sink
-            elif call_class == "vuln_stdlib":
-                risk_score += .10  # Boost unsafe libc calls (strcpy, memcpy, etc.)
-                utility_score += .05
-                # Add vuln-specific risk signal if not already present
-                from .vuln_patterns import get_vuln_pattern
-                vp = get_vuln_pattern(leaf_name)
-                if vp is not None and not any(s.kind == "unsafe_api" for s in signals):
-                    from .models import RiskSignal, SourceLocation
-                    vuln_signal = RiskSignal(
-                        signal_id=f"vuln_{leaf_name}",
-                        kind="unsafe_api",
-                        severity=float({"critical": .95, "high": .85, "medium": .65, "low": .40}.get(vp.severity, .50)),
-                        expression=leaf_name,
-                        location=SourceLocation(symbol.file, symbol.body_location.start_line, 0,
-                                                symbol.body_location.end_line, 0),
-                        reason=f"unsafe {vp.category}: {vp.description} — prefer {vp.safe_alternative}",
-                        parameter_dependencies=sorted(controlled),
-                    )
-                    signals.append(vuln_signal)
-            score = max(0.0, min(1.0, input_score + risk_score + reach_score + direct_score + utility_score + focus_score + description_score - penalty))
-            if score < .10:
-                continue
-            if signals and signals[0].kind == "lifecycle":
-                role = "lifecycle"
-            elif signals and direct_score >= .10:
-                role = "direct_operation"
-            elif utility:
-                role = "utility"
-            elif len(outgoing.get(symbol.symbol_id, [])) >= 3:
-                role = "dispatch"
-            else:
-                role = "wrapper"
-            path_ids = self.entry_paths.get(symbol.symbol_id, [])
-            chain = [by_id[item].name for item in path_ids if item in by_id]
-            top_signals = [{
-                "signal_id": item.signal_id, "kind": item.kind,
-                "expression": item.expression, "severity": item.severity,
-                "location": stable_value(item.location), "reason": item.reason,
-                "input_dependencies": item.parameter_dependencies,
-            } for item in signals[:3]]
-            material = f"{self.graph_id}|{symbol.symbol_id}"
-            rows.append({
-                "lead_id": "lead_" + hashlib.blake2s(material.encode(), digest_size=7).hexdigest(),
-                "symbol_id": symbol.symbol_id, "function": symbol.qualified_name,
-                "file": symbol.file, "line": symbol.body_location.start_line,
-                "end_line": symbol.body_location.end_line, "score": round(score, 4),
-                "role": role, "reachable_from_entry": reachable,
-                "input_controlled_parameters": sorted(controlled),
-                "input_path": chain, "risk_signals": top_signals,
-                "why_inspect": (
-                    top_signals[0]["reason"] if top_signals
-                    else "reachable from the fuzz entry and useful for following input flow"
-                ),
-                "next_read": {
-                    "path": symbol.file, "offset": max(0, symbol.body_location.start_line - 1),
-                    "limit": min(240, max(1, symbol.body_location.end_line - symbol.body_location.start_line + 1)),
-                },
-                "evidence": {
-                    "input_control": round(input_score, 3), "risk": round(risk_score, 3),
-                    "reachability": round(reach_score, 3), "directness": round(direct_score, 3),
-                    "utility": round(utility_score, 3), "read_focus": round(focus_score, 3),
-                    "description_prior": round(description_score, 3), "penalty": round(penalty, 3),
-                },
-                "incoming": [item.caller_id for item in incoming.get(symbol.symbol_id, [])[:4]],
-                "outgoing": [item.callee_id for item in outgoing.get(symbol.symbol_id, [])[:4]],
-            })
-        return sorted(rows, key=lambda item: (-item["score"], -len(item["risk_signals"]), item["file"], item["line"]))
+    def _navigation_rows(self, *, description: str = "", focus_symbol_ids: set[str] | None = None, crash_type: str = "") -> list[dict[str, Any]]:
+        return self._navigation._navigation_rows(description=description, focus_symbol_ids=focus_symbol_ids, crash_type=crash_type)
 
     @staticmethod
     def _diversify_navigation(rows: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
-        selected: list[dict[str, Any]] = []
-        remaining = list(rows)
-        while remaining and len(selected) < limit:
-            def adjusted(row: dict[str, Any]) -> float:
-                penalty = 0.0
-                for prior in selected:
-                    adjacent = row["symbol_id"] in prior.get("incoming", []) + prior.get("outgoing", [])
-                    if adjacent:
-                        penalty = max(penalty, .14)
-                    elif row["file"] == prior["file"] and row["role"] == prior["role"]:
-                        penalty = max(penalty, .08)
-                return float(row["score"]) - penalty
-            best = max(remaining, key=adjusted)
-            selected.append(best)
-            remaining.remove(best)
-        for row in selected:
-            row.pop("incoming", None); row.pop("outgoing", None)
-        return selected
+        return NavigationService._diversify_navigation(rows, limit)
 
     def discover_sink_navigation_leads(
         self, entrypoint: str | None = None, limit: int = 5,
         description: str = "", focus_symbol_ids: list[str] | None = None,
+        crash_type: str = "",
     ) -> dict[str, Any]:
-        """Return source-backed places to inspect; never claims a true sink."""
-        self._ensure(self.config.automatic_timeout_seconds)
-        limit = max(1, min(int(limit or 5), 20))
-        rows = self._navigation_rows(description=description, focus_symbol_ids=set(focus_symbol_ids or []))
-        if entrypoint:
-            matched = {item.symbol_id for item in self._symbols_matching(entrypoint)}
-            rows = [row for row in rows if not matched or any(item in matched for item in self.entry_paths.get(row["symbol_id"], [])[:1])]
-        leads = self._diversify_navigation(rows, limit)
-        mentioned = [item for item in self.symbols if item.name.lower() in description.lower()]
-        lead_ids = {item["symbol_id"] for item in leads}
-        warnings = []
-        for symbol in mentioned[:5]:
-            if symbol.symbol_id not in lead_ids:
-                warnings.append({
-                    "kind": "description_anchor_stale", "function": symbol.qualified_name,
-                    "reason": "description match did not outrank input reachability and direct operation evidence",
-                })
-        material = json.dumps({"graph": self.graph_id, "entrypoint": entrypoint, "description": description, "leads": [x["lead_id"] for x in leads]}, sort_keys=True)
-        brief_id = "search_" + hashlib.blake2s(material.encode(), digest_size=8).hexdigest()
-        entry_names = [next((s.name for s in self.symbols if s.symbol_id == item), item) for item in self.entrypoints]
-        lines = [f'<sink_search_brief brief_id="{brief_id}">', "Static navigation leads; inspect and explicitly confirm one with record_sink_candidate."]
-        if entry_names:
-            lines.append("entries=" + ", ".join(entry_names[:3]))
-        for index, lead in enumerate(leads, 1):
-            signal = lead["risk_signals"][0] if lead["risk_signals"] else {}
-            path = " -> ".join(lead["input_path"][-5:]) if lead["input_path"] else "unverified"
-            lines.append(f'{index}. {lead["function"]} @{lead["file"]}:{lead["line"]} role={lead["role"]} score={lead["score"]:.2f}')
-            lines.append(f'   input_path={path}; signal={signal.get("kind", "none")}: {signal.get("expression", "")[:160]}')
-            lines.append(f'   next_read=READ(path="{lead["file"]}", offset={lead["next_read"]["offset"]}, limit={lead["next_read"]["limit"]})')
-        for warning in warnings[:2]:
-            lines.append(f'warning={warning["kind"]}: {warning["function"]} — {warning["reason"]}')
-        lines.append("</sink_search_brief>")
-        payload = "\n".join(lines)
-        while self._estimate_tokens(payload) > self.config.automatic_token_budget and len(leads) > 1:
-            leads.pop(); lines = lines[:2 + len(leads) * 3] + ["</sink_search_brief>"]; payload = "\n".join(lines)
-        result = {
-            "status": "success" if leads else "partial", "brief_id": brief_id,
-            "graph_id": self.graph_id, "entrypoints": entry_names, "leads": leads,
-            "warnings": warnings, "context_payload": payload,
-            "truncated": len(rows) > len(leads),
-        }
-        self.store.put("sink_search_brief", brief_id, result)
-        return result
+        return self._navigation.discover_sink_navigation_leads(
+            entrypoint=entrypoint, limit=limit, description=description,
+            focus_symbol_ids=focus_symbol_ids, crash_type=crash_type,
+        )
+
+    @staticmethod
+    def _description_values(analysis: Any, field_name: str) -> list[str]:
+        from .navigation_service import _description_values as _dv
+        return _dv(analysis, field_name)
+
+    def _selected_entry_ids(self, harness: dict[str, Any] | None) -> tuple[set[str], list[dict[str, Any]]]:
+        return self._ranking._selected_entry_ids(harness)
+
+    def _path_to_endpoint(self, entry_ids: set[str], endpoint_id: str, max_depth: int) -> tuple[list[str], list[CallEdge], str, list[dict[str, Any]]]:
+        return self._ranking._path_to_endpoint(entry_ids, endpoint_id, max_depth)
+
+    @staticmethod
+    def _normalize_ranked_path_chain(
+        entry_ids: set[str],
+        endpoint_id: str,
+        chain: list[str],
+        status: str,
+    ) -> tuple[list[str], str, list[dict[str, Any]], bool]:
+        from .path_ranking import _normalize_ranked_path_chain as _nrpc
+        return _nrpc(entry_ids, endpoint_id, chain, status)
+
+    @staticmethod
+    def _signal_kind(signal: RiskSignal | dict[str, Any] | None) -> str:
+        from .path_ranking import _signal_kind as _sk
+        return _sk(signal)
+
+    @staticmethod
+    def _event_role_for_signal(signal: RiskSignal | dict[str, Any] | None) -> str:
+        from .path_ranking import _event_role_for_signal as _erfs
+        return _erfs(signal)
+
+    def _paired_endpoint_for_role(
+        self,
+        *,
+        endpoint_id: str,
+        needed_role: str,
+        semantics_family: str,
+        summaries: dict[str, FunctionSummary],
+        by_id: dict[str, FunctionSymbol],
+    ) -> dict[str, Any]:
+        return self._ranking._paired_endpoint_for_role(
+            endpoint_id=endpoint_id, needed_role=needed_role,
+            semantics_family=semantics_family, summaries=summaries, by_id=by_id,
+        )
+
+    def discover_ranked_vulnerability_paths(
+        self,
+        *,
+        description_analysis: dict[str, Any] | None = None,
+        verified_refs: list[dict[str, Any]] | None = None,
+        harness: dict[str, Any] | None = None,
+        crash_type: str = "",
+        fast_depth: int = 8,
+        deep_depth: int = 24,
+        top_k: int = 5,
+    ) -> dict[str, Any]:
+        return self._ranking.discover_ranked_vulnerability_paths(
+            description_analysis=description_analysis, verified_refs=verified_refs,
+            harness=harness, crash_type=crash_type, fast_depth=fast_depth,
+            deep_depth=deep_depth, top_k=top_k,
+        )
+
+    def reachable_functions_from_entry(
+        self, entrypoint: str = "", limit: int = 20,
+        crash_type: str = "", description: str = "",
+    ) -> dict[str, Any]:
+        return self._ranking.reachable_functions_from_entry(
+            entrypoint=entrypoint, limit=limit, crash_type=crash_type, description=description,
+        )
 
     def get_sink_search_brief(self, brief_id: str) -> dict[str, Any]:
-        return self.store.get("sink_search_brief", brief_id) or {"status": "not_found", "brief_id": brief_id}
+        return self._navigation.get_sink_search_brief(brief_id)
 
     def mark_navigation_lead_reviewed(self, lead_id: str, outcome: str) -> dict[str, Any]:
-        if outcome not in {"confirmed", "rejected", "deferred"}:
-            return {"status": "error", "reason": "outcome must be confirmed, rejected, or deferred"}
-        value = {"status": "success", "lead_id": lead_id, "outcome": outcome, "updated": time.time()}
-        self.store.put("navigation_review", lead_id, value)
-        return value
+        return self._navigation.mark_navigation_lead_reviewed(lead_id, outcome)
 
     def _expand_symbol_neighborhood(self, symbol_id: str, depth: int = 3, limit: int = 10) -> list[dict[str, Any]]:
-        rows = {item["symbol_id"]: item for item in self._navigation_rows()}
-        adjacency: dict[str, set[str]] = {}
-        for edge in self.edges:
-            adjacency.setdefault(edge.caller_id, set()).add(edge.callee_id)
-            adjacency.setdefault(edge.callee_id, set()).add(edge.caller_id)
-        distances = {symbol_id: 0}; queue = [symbol_id]
-        while queue:
-            current = queue.pop(0)
-            if distances[current] >= max(1, min(depth, 6)):
-                continue
-            for target in adjacency.get(current, set()):
-                if target not in distances:
-                    distances[target] = distances[current] + 1; queue.append(target)
-        current = rows.get(symbol_id, {})
-        alternatives = []
-        for target_id, distance in distances.items():
-            if target_id == symbol_id or target_id not in rows:
-                continue
-            row = dict(rows[target_id]); relative = "alternate"
-            if row.get("role") == "direct_operation" and current.get("role") in {"wrapper", "dispatch"}:
-                relative = "possibly_too_shallow"
-            elif current.get("role") == "utility" and row.get("role") in {"wrapper", "dispatch"}:
-                relative = "possibly_too_deep"
-            elif row.get("role") == "direct_operation":
-                relative = "direct_hazard_site"
-            row.update({"distance": distance, "diagnosis": relative})
-            alternatives.append(row)
-        return sorted(alternatives, key=lambda item: (-item["score"], item["distance"]))[:max(1, min(limit, 20))]
+        return self._navigation._expand_symbol_neighborhood(symbol_id, depth, limit)
 
     def expand_candidate_neighborhood(self, candidate_id: str, depth: int = 3, limit: int = 10) -> dict[str, Any]:
-        latest = self.store.get("brief_latest", candidate_id) or {}
-        result = latest.get("result", {}) if isinstance(latest, dict) else {}
-        symbol_id = str((result.get("brief") or {}).get("target_resolution", {}).get("symbol_id") or "")
-        if not symbol_id:
-            matches = self._symbols_matching(candidate_id)
-            symbol_id = matches[0].symbol_id if len(matches) == 1 else ""
-        if not symbol_id:
-            return {"status": "not_found", "candidate_id": candidate_id, "alternatives": []}
-        return {"status": "success", "candidate_id": candidate_id, "symbol_id": symbol_id, "alternatives": self._expand_symbol_neighborhood(symbol_id, depth, limit)}
+        return self._navigation.expand_candidate_neighborhood(candidate_id, depth, limit)
 
     def analyze_read_context(
         self,
@@ -1078,254 +832,57 @@ class AnalysisService:
         *,
         brief: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Map a model-selected READ range to the immutable full-file graph."""
-        self._ensure(self.config.automatic_timeout_seconds)
-        rel = self._resolve_file_name(file)
-        if rel not in self.file_hashes:
-            fill = self.ensure_file_indexed(rel, timeout_seconds=2.0)
-            if fill.get("status") in {"error", "not_found"}:
-                return {"status": "no_change", "reason": fill.get("reason", "file_not_indexed")}
-        focus = [
-            symbol for symbol in self.symbols
-            if symbol.file == rel
-            and symbol.body_location.start_line <= max(start_line, end_line)
-            and symbol.body_location.end_line >= min(start_line, end_line)
-        ]
-        if not focus:
-            return {"status": "no_change", "reason": "read_range_has_no_function"}
-        focus_ids = {item.symbol_id for item in focus}
-        by_id = {item.symbol_id: item for item in self.symbols}
-        caller_names: list[str] = []
-        callee_names: list[str] = []
-        guards: list[str] = []
-        focus_signals: list[dict[str, Any]] = []
-        for edge in self.edges:
-            if edge.callee_id in focus_ids and edge.caller_id in by_id:
-                caller_names.append(by_id[edge.caller_id].name)
-            if edge.caller_id in focus_ids and edge.callee_id in by_id:
-                callee_names.append(by_id[edge.callee_id].name)
-        for summary in self.summaries:
-            if summary.function_id not in focus_ids:
-                continue
-            focus_signals.extend({
-                "signal_id": item.signal_id, "kind": item.kind,
-                "expression": item.expression, "severity": item.severity,
-                "location": stable_value(item.location), "reason": item.reason,
-            } for item in summary.risk_signals[:3])
-            for call in summary.calls:
-                guards.extend(item.normalized_text for item in call.local_guards if item.confidence >= .5)
-        paths = (brief or {}).get("candidate_paths", [])
-        selected_path = next((path for path in paths if any(
-            detail.get("function") in {item.name for item in focus}
-            and detail.get("file") == rel
-            for detail in path.get("chain_details", [])
-        )), None)
-        # Classify callees by risk (common crash-site patterns)
-        _RISKY_PATTERNS = re.compile(
-            r"memcpy|memmove|memset|realloc|calloc|malloc|free|"
-            r"bebytes2|lebytes2|"
-            r"decode|parse|read|write|copy|convert|compress|decompress|"
-            r"alloc|destroy|release|insert|remove|append|push|pop|"
-            r"strcpy|strcat|strncpy|sprintf|vsprintf|scanf|sscanf|gets|fgets",
-            re.IGNORECASE,
+        return self._navigation.analyze_read_context(
+            file, start_line, end_line, brief=brief,
         )
-        # Count sub-callees per callee for depth annotation (leaf = 0 = crash site)
-        callee_sub_count: dict[str, int] = {}
-        for cr_name in dict.fromkeys(callee_names):
-            callee_sym = next((s for s in self.symbols if s.name == cr_name), None)
-            if callee_sym:
-                callee_sub_count[cr_name] = sum(
-                    1 for e in self.edges if e.caller_id == callee_sym.symbol_id
-                )
-            else:
-                callee_sub_count[cr_name] = -1
-        callee_risks = [
-            {
-                "name": n,
-                "risk": "risky" if _RISKY_PATTERNS.search(n) else "normal",
-                "sub_callees": callee_sub_count.get(n, -1),
-            }
-            for n in dict.fromkeys(callee_names)
-        ][:6]
-        base = {
-            "focus": [{
-                "symbol_id": item.symbol_id, "function": item.qualified_name,
-                "file": item.file, "start_line": item.body_location.start_line,
-                "end_line": item.body_location.end_line,
-            } for item in focus[:3]],
-            "direct_callers": list(dict.fromkeys(caller_names))[:3],
-            "relevant_callees": [c["name"] for c in callee_risks],  # backward compat
-            "callee_risks": callee_risks,
-            "notable_guards": list(dict.fromkeys(guards))[:3],
-            "risk_signals": sorted(focus_signals, key=lambda item: -item["severity"])[:5],
-            "input_controlled_parameters": {
-                by_id[sid].qualified_name: sorted(self.input_control.get(sid, {}))
-                for sid in focus_ids if sid in by_id and self.input_control.get(sid)
-            },
-        }
-        navigation = self.discover_sink_navigation_leads(
-            limit=5, focus_symbol_ids=list(focus_ids),
-        )
-        related_leads = [
-            item for item in navigation.get("leads", [])
-            if item["symbol_id"] in focus_ids
-            or item["symbol_id"] in {edge.callee_id for edge in self.edges if edge.caller_id in focus_ids}
-            or item["symbol_id"] in {edge.caller_id for edge in self.edges if edge.callee_id in focus_ids}
-        ][:3]
-        base["navigation_leads"] = related_leads
-        base["focus_role"] = related_leads[0].get("role", "structural") if related_leads else "structural"
-        if selected_path:
-            payload = {
-                "status": "success", "kind": "static_analysis_delta",
-                "path_id": selected_path.get("path_id", ""), **base,
-                "added": [f"[reachability] {item}" for item in base["notable_guards"]],
-                "revised": [], "invalidated": [],
-            }
-        else:
-            entry_names = {"LLVMFuzzerTestOneInput", "LLVMFuzzerTestOneInputEx", "main"}
-            reachable = any(item.symbol_id in self.entry_paths for item in focus)
-            payload = {"status": "success", "kind": "code_index_context", "reachable_from_entry": reachable, **base}
-        fingerprint_material = json.dumps({"graph": self.graph_id, "payload": payload}, sort_keys=True)
-        payload["fingerprint"] = hashlib.sha256(fingerprint_material.encode()).hexdigest()
-        return payload
 
     def analyze_sink_candidate(self, candidate: SinkCandidateInput | dict[str, Any], mode: str = "automatic", budget_profile: str = "default") -> dict[str, Any]:
-        candidate = candidate if isinstance(candidate, SinkCandidateInput) else SinkCandidateInput(**candidate)
-        if not candidate.reason: return {"status": "error", "reason": "candidate.reason is required"}
-        if not self.symbols:
-            self.index_repository(timeout_seconds=self.config.automatic_timeout_seconds if mode == "automatic" else self.config.analysis_timeout_seconds, priority_files=[candidate.file])
-        if candidate.file and self._resolve_file_name(candidate.file) not in self.file_hashes:
-            self.ensure_file_indexed(candidate.file, timeout_seconds=2.0)
-        fingerprint = hashlib.sha256(json.dumps({"candidate": stable_value(candidate), "graph_id": self.graph_id, "files": self.file_hashes, "grammar": GRAMMAR_VERSION, "analysis": ANALYSIS_VERSION, "config": self.config.hash(), "mode": mode}, sort_keys=True).encode()).hexdigest()
-        cached = self.store.get("candidate_fingerprint", fingerprint)
-        if cached: return {**cached, "cache_hit": True}
-        target, target_resolution = self._resolve_target(candidate)
-        path_result = self.find_paths_to_target(target.symbol_id if target else candidate.function or candidate.callee or "", max_depth=self.config.automatic_max_call_depth if mode == "automatic" else self.config.max_call_depth, top_k=self.config.automatic_top_paths if mode == "automatic" else self.config.max_paths)
-        paths = path_result.get("paths", [])
-        target_summary = next((s for s in self.summaries if target and s.function_id == target.symbol_id), None)
-        sink_names = [str(value or "") for value in (candidate.callee, candidate.expression, candidate.function) if value]
-        sink_calls = [c for c in (target_summary.calls if target_summary else []) if (not sink_names or any(name in c.callee_text for name in sink_names)) and (not candidate.line or abs(c.location.start_line-candidate.line) <= 2)]
-        provenance = []
-        for call in sink_calls[:1]:
-            for index, arg in enumerate(call.arguments):
-                trace = self.trace_value(target.symbol_id, call.location.start_line, arg.render()) if target else {"status": "unresolved"}
-                provenance.append({"sink_argument": f"{call.callee_text}.arg{index}", "expression": arg.render(), "status": trace.get("status"), "trace": trace.get("steps", []), "origin": trace.get("origin", "")})
-        if not provenance and paths:
-            for name, value in paths[0].get("edges", [])[-1].get("bindings", {}).items() if paths[0].get("edges") else []:
-                provenance.append({"sink_argument": name, "expression": _expr(value).render(), "status": "partially_resolved", "trace": []})
-        requirements: list[dict[str, Any]] = []
-        for path in paths:
-            for order, item in enumerate(path.get("constraints", []), start=1):
-                requirement = self._requirement_from_constraint(item, path.get("path_id", ""), order)
-                if requirement["expression"] and requirement["expression"] not in {x["expression"] for x in requirements}:
-                    requirements.append(requirement)
-        trigger_conditions: list[dict[str, Any]] = []
-        sink_result: dict[str, Any] = {"status": "not_run", "candidates": []}
-        if target:
-            from .sink_detector import analyze_sink_file_isolated
-            sink_result = analyze_sink_file_isolated(
-                self.root, target.file, sink_function=target.qualified_name,
-                line=candidate.line, description=" ".join(filter(None, [candidate.category, candidate.reason])),
-                timeout=2.0,
-            )
-            base_order = len(requirements) + 1
-            for offset, item in enumerate(sink_result.get("candidates", [])):
-                role = item.get("role", "trigger")
-                if role not in {"trigger", "hazard", "reachability", "binding", "structure", "dispatch", "carrier", "avoid"}:
-                    role = "trigger"
-                sink_origin = dict(item.get("source_span") or {})
-                sink_origin.setdefault("file", target.file)
-                source_item = {
-                    "expression": item.get("required_formula") or item.get("normalized_formula") or item.get("required_condition"),
-                    "origin": sink_origin,
-                    "reason": item.get("description") or item.get("origin"),
-                    "role": role,
-                    "gate_type": item.get("gate_type", "value_gate"),
-                    "safe_formula": item.get("safe_formula", ""),
-                    "violation_formula": item.get("violation_formula", ""),
-                    "confidence": item.get("confidence_score", .5),
-                    "status": "inferred",
-                }
-                req = self._requirement_from_constraint(source_item, paths[0]["path_id"] if paths else "sink_local", base_order + offset)
-                if req["expression"] and req["expression"] not in {x["expression"] for x in requirements}:
-                    requirements.append(req)
-                if role in {"trigger", "hazard"}:
-                    trigger_conditions.append(req)
-        gaps: list[dict[str, Any]] = []
-        if target is None:
-            gaps.append({
-                "id": "target_resolution_required", "reason": target_resolution.get("reason"),
-                "candidate_symbol_ids": target_resolution.get("candidate_symbol_ids", []),
-                "next_query": {"tool": "resolve_callsite_candidates", "arguments": {"callsite_id": target_resolution.get("callsite_id", "")}},
-            })
-        elif not paths:
-            gaps.append({"id": "caller_path_required", "reason": "no_verified_entry_to_target_path", "next_query": {"tool": "find_callers", "arguments": {"symbol": target.symbol_id}}})
-        if target and sink_result.get("status") == "partial" and sink_result.get("reason"):
-            gaps.append({"id": "sink_semantics_partial", "reason": sink_result.get("reason"), "next_query": {"tool": "summarize_function", "arguments": {"symbol_id": target.symbol_id}}})
-        version_key = candidate.candidate_id
-        previous = self.store.get("brief_latest", version_key) or {}; version = int(previous.get("version", 0)) + 1
-        full_id = f"analysis_{candidate.candidate_id}_v{version}"; brief_id = f"brief_{candidate.candidate_id}_v{version}"
-        alternatives = self._expand_symbol_neighborhood(target.symbol_id, depth=3, limit=10) if target else []
-        if candidate.metadata.get("description_derived") and target:
-            current_row = next((item for item in self._navigation_rows(description=candidate.reason) if item["symbol_id"] == target.symbol_id), None)
-            if current_row and current_row.get("evidence", {}).get("description_prior", 0) and current_row.get("score", 0) < .4:
-                alternatives.insert(0, {
-                    "symbol_id": target.symbol_id, "function": target.qualified_name,
-                    "file": target.file, "line": target.body_location.start_line,
-                    "diagnosis": "description_anchor", "score": current_row["score"],
-                    "why_inspect": "description match is stronger than code-path evidence; validate before selecting",
-                })
-        full = {"candidate": stable_value(candidate), "target": stable_value(target) if target else {}, "target_resolution": target_resolution, "paths": paths, "requirements": requirements, "trigger_conditions": trigger_conditions, "sink_dataflow": provenance, "gaps": gaps, "alternatives": alternatives}
-        self.store.put("analysis", full_id, full)
-        def _path_brief(p):
-            chain_details = []
-            for sid in p["symbol_ids"]:
-                sym = next((s for s in self.symbols if s.symbol_id == sid), None)
-                if sym:
-                    chain_details.append({"function": sym.name, "file": sym.file, "line": sym.body_location.start_line})
-                else:
-                    chain_details.append({"function": sid, "file": "", "line": 0})
-            return {"path_id": p["path_id"], "chain": [d["function"] for d in chain_details], "chain_details": chain_details, "confidence": p["score"]}
-        path_briefs = [_path_brief(p) for p in paths[:self.config.automatic_top_paths]]
-        suggested = ([{"tool": "get_path_details", "arguments": {"path_id": paths[0]["path_id"]}}] if paths else []) + ([{"tool": "trace_value", "arguments": {"function": target.symbol_id, "line": candidate.line, "expression": provenance[0]["expression"]}}] if target and provenance else [])
-        if alternatives:
-            suggested.append({"tool": "expand_candidate_neighborhood", "arguments": {"candidate_id": candidate.candidate_id, "depth": 3, "limit": 10}})
-        brief = SinkAnalysisBrief(
-            brief_id, candidate.candidate_id,
-            "success" if target and (paths or trigger_conditions) and not gaps else "partial",
-            {"symbol_id": target.symbol_id if target else "", "expression": candidate.expression or candidate.callee or candidate.function, "location": f"{candidate.file}:{candidate.line}"},
-            path_briefs, requirements[:self.config.automatic_max_constraints], provenance,
-            gaps[:3], suggested, {"call_chain": max((p["score"] for p in paths), default=0.0), "constraints": .8 if requirements else 0.0, "dataflow": .7 if provenance else 0.0},
-            {"paths_truncated": path_result.get("truncated", False), "token_budget": self.config.automatic_token_budget}, full_id,
-            target_resolution=target_resolution,
-            requirements=requirements[:self.config.automatic_max_constraints],
-            trigger_conditions=trigger_conditions[:6], gaps=gaps[:3],
-            alternatives=alternatives[:5],
-        )
-        brief.context_payload = self.render_brief(brief)
-        while self._estimate_tokens(brief.context_payload) > self.config.automatic_token_budget and (brief.requirements or brief.gaps or brief.alternatives or len(brief.candidate_paths) > 1):
-            if brief.gaps: brief.gaps.pop(); brief.unresolved = list(brief.gaps)
-            elif brief.alternatives: brief.alternatives.pop()
-            elif brief.requirements: brief.requirements.pop(); brief.key_constraints = list(brief.requirements)
-            else: brief.candidate_paths.pop()
-            brief.truncation["context_budget_reached"] = True; brief.context_payload = self.render_brief(brief)
-        result = {"brief_id": brief.brief_id, "candidate_id": candidate.candidate_id, "status": brief.status, "context_payload": brief.context_payload, "full_result_id": full_id, "brief": stable_value(brief), "cache_hit": False}
-        self.store.put("brief", brief.brief_id, result)
-        self.store.put("brief_latest", version_key, {"version": version, "result": result}); self.store.put("candidate_fingerprint", fingerprint, result)
-        return result
+        return self._ranking.analyze_sink_candidate(candidate, mode, budget_profile)
 
     @staticmethod
     def _estimate_tokens(text: str) -> int:
-        return max(1, sum(1 if ord(c) > 127 else .25 for c in text))
+        return _estimate_tokens_fn(text)
 
     @staticmethod
     def render_brief(brief: SinkAnalysisBrief) -> str:
-        lines = [f'<static_analysis_result type="poc_recipe" brief_id="{html.escape(brief.brief_id)}" candidate_id="{html.escape(brief.candidate_id)}" status="{brief.status}">', "<target>", html.escape(str(brief.target_resolution or brief.target)), "</target>", "<paths>"]
-        lines.extend(html.escape(str(x)) for x in brief.candidate_paths); lines.extend(["</paths>", "<requirements>"])
-        lines.extend(html.escape(str(x)) for x in brief.requirements); lines.extend(["</requirements>", "<triggers>"])
-        lines.extend(html.escape(str(x)) for x in brief.trigger_conditions); lines.extend(["</triggers>", "<provenance>"])
-        lines.extend(html.escape(str(x)) for x in brief.argument_provenance); lines.extend(["</provenance>", "<gaps>"])
-        lines.extend(html.escape(str(x)) for x in brief.gaps); lines.extend(["</gaps>", "<alternatives>"])
-        lines.extend(html.escape(str(x)) for x in brief.alternatives); lines.extend(["</alternatives>", "<suggested_queries>"])
-        lines.extend(html.escape(str(x)) for x in brief.suggested_queries); lines.extend(["</suggested_queries>", "</static_analysis_result>"])
-        return "\n".join(lines)
+        from .ir_renderer import IRRenderer
+        # Build a plain dict from the brief for the renderer
+        brief_data = {
+            "target_resolution": brief.target_resolution if brief.target_resolution else None,
+            "target": brief.target if not brief.target_resolution else None,
+            "candidate_paths": list(brief.candidate_paths or []),
+            "requirements": list(brief.requirements or []),
+            "trigger_conditions": list(brief.trigger_conditions or []),
+            "argument_provenance": list(brief.argument_provenance or []),
+            "gaps": list(brief.gaps or []),
+            "alternatives": list(brief.alternatives or []),
+            "suggested_queries": list(brief.suggested_queries or []),
+        }
+        return IRRenderer.render_brief_xml(
+            brief_data,
+            brief_id=brief.brief_id,
+            candidate_id=brief.candidate_id,
+            status=brief.status,
+        )
+
+    # ------------------------------------------------------------------
+    # Structured analysis bundle (delegate to StructuredBundleService)
+    # ------------------------------------------------------------------
+
+    def discover_structured_analysis_bundle(
+        self,
+        *,
+        ranked_paths: list[dict[str, Any]],
+        description_analysis: dict[str, Any] | None = None,
+        harness: dict[str, Any] | None = None,
+        crash_type: str = "",
+        top_k: int = 5,
+    ) -> dict[str, Any]:
+        """Build mechanism/objective/transcript/provenance summaries for active paths."""
+        return self._bundle.discover_structured_analysis_bundle(
+            ranked_paths=ranked_paths,
+            description_analysis=description_analysis,
+            harness=harness,
+            crash_type=crash_type,
+            top_k=top_k,
+        )

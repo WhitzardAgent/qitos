@@ -1,0 +1,1 @@
+- Last evidence: {{gate_evidence}}

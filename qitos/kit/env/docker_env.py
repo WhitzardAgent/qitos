@@ -5,6 +5,9 @@ from __future__ import annotations
 import shlex
 import subprocess
 import threading
+import atexit
+import os
+import signal
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, Iterator, Optional
@@ -15,6 +18,54 @@ from qitos.kit.env.host_env import HostEnv
 
 def _run(cmd: list[str], timeout: int = 60) -> subprocess.CompletedProcess[str]:
     return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+
+
+_MANAGED_CONTAINERS: dict[str, "DockerEnv"] = {}
+_CLEANUP_LOCK = threading.RLock()
+_ATEXIT_INSTALLED = False
+_SIGNALS_INSTALLED = False
+_PREVIOUS_SIGNAL_HANDLERS: dict[int, Any] = {}
+
+
+def _cleanup_managed_containers() -> None:
+    """Best-effort cleanup for DockerEnv containers created by this process."""
+    with _CLEANUP_LOCK:
+        envs = list(_MANAGED_CONTAINERS.values())
+    for env in envs:
+        try:
+            env.close()
+        except Exception:
+            pass
+
+
+def _install_cleanup_handlers() -> None:
+    global _ATEXIT_INSTALLED, _SIGNALS_INSTALLED
+    if not _ATEXIT_INSTALLED:
+        atexit.register(_cleanup_managed_containers)
+        _ATEXIT_INSTALLED = True
+    if _SIGNALS_INSTALLED or threading.current_thread() is not threading.main_thread():
+        return
+
+    def _handle_signal(signum: int, frame: Any) -> None:
+        _cleanup_managed_containers()
+        previous = _PREVIOUS_SIGNAL_HANDLERS.get(signum)
+        if callable(previous):
+            previous(signum, frame)
+            return
+        if previous == signal.SIG_IGN:
+            return
+        raise SystemExit(128 + int(signum))
+
+    for signame in ("SIGTERM", "SIGINT", "SIGHUP"):
+        signum = getattr(signal, signame, None)
+        if signum is None:
+            continue
+        try:
+            _PREVIOUS_SIGNAL_HANDLERS[signum] = signal.getsignal(signum)
+            signal.signal(signum, _handle_signal)
+            _SIGNALS_INSTALLED = True
+        except (OSError, RuntimeError, ValueError):
+            continue
 
 
 class DockerCommandCapability(CommandCapability):
@@ -127,6 +178,7 @@ class DockerEnv(HostEnv):
         remove_on_close: bool = False,
         network: Optional[str] = None,
         extra_run_args: Optional[list[str]] = None,
+        container_env: Optional[Dict[str, str]] = None,
         create_timeout: int = 60,
     ):
         self.container = str(container).strip() if container else ""
@@ -137,8 +189,10 @@ class DockerEnv(HostEnv):
         self.remove_on_close = bool(remove_on_close)
         self.network = network
         self.extra_run_args = list(extra_run_args or [])
+        self.container_env = dict(container_env) if container_env else None
         self.create_timeout = int(create_timeout)
         self._created_here = False
+        self._closed = False
 
         if not self.container and self.auto_create:
             self.container = f"qitos_{Path(self.host_workspace or 'workspace').name}_{threading.get_ident()}"
@@ -202,8 +256,11 @@ class DockerEnv(HostEnv):
         }
 
     def close(self) -> None:
-        if not self.container:
+        if not self.container or self._closed:
             return
+        self._closed = True
+        with _CLEANUP_LOCK:
+            _MANAGED_CONTAINERS.pop(self.container, None)
         if self.remove_on_close and self._created_here:
             _run(["docker", "rm", "-f", self.container], timeout=30)
 
@@ -218,14 +275,35 @@ class DockerEnv(HostEnv):
                 raise RuntimeError(
                     f"Failed to start container {self.container}: {start.stderr}"
                 )
+            # Auto-created DockerEnv names are owned by this run even if a stale
+            # container with the same name already existed.  Mark it removable so
+            # close()/atexit cleanup does not keep recycling leaked containers.
+            if self.auto_create and self.remove_on_close:
+                self._created_here = True
+                self._closed = False
+                with _CLEANUP_LOCK:
+                    _MANAGED_CONTAINERS[self.container] = self
+                _install_cleanup_handlers()
             return
 
         if not self.image:
             raise ValueError("auto_create requires `image`")
 
         run_cmd = ["docker", "run", "-d", "--name", self.container]
+        run_cmd += [
+            "--label",
+            "qitos.managed=true",
+            "--label",
+            "qitos.env=docker_env",
+            "--label",
+            f"qitos.owner_pid={os.getpid()}",
+        ]
         if self.network:
             run_cmd += ["--network", self.network]
+
+        if self.container_env:
+            for k, v in self.container_env.items():
+                run_cmd += ["-e", f"{k}={v}"]
 
         mount_src = ""
         if self.host_workspace:
@@ -243,6 +321,10 @@ class DockerEnv(HostEnv):
                 f"Failed to create container {self.container}: {proc.stderr}"
             )
         self._created_here = True
+        self._closed = False
+        with _CLEANUP_LOCK:
+            _MANAGED_CONTAINERS[self.container] = self
+        _install_cleanup_handlers()
 
 
 class DockerEnvScheduler:

@@ -17,9 +17,20 @@ TOOL_PARAMETERS: dict[str, tuple[dict[str, Any], list[str], str]] = {
             "entrypoint": {"type": "string", "description": "Optional harness entrypoint to constrain navigation"},
             "limit": {"type": "integer", "description": "Maximum leads (default 5, maximum 20)"},
             "description": {"type": "string", "description": "Optional task description used only as a weak prior"},
+            "crash_type": {"type": "string", "description": "Inferred ASAN crash type for crash-type-aware scoring"},
         },
         [],
         "Find source-backed functions worth reading from harness reachability, input flow, and risky operations. Results are navigation leads, not vulnerability verdicts.",
+    ),
+    "reachable_functions_from_entry": (
+        {
+            "entrypoint": {"type": "string", "description": "Fuzz driver entry point (default: auto-detect)"},
+            "limit": {"type": "integer", "description": "Maximum candidates (default 20, max 50)"},
+            "crash_type": {"type": "string", "description": "ASAN crash type for filtering (e.g., Heap-buffer-overflow)"},
+            "description": {"type": "string", "description": "Vulnerability description for semantic matching"},
+        },
+        [],
+        "Enumerate all functions reachable from the fuzz driver entry, ranked by crash-type relevance and dangerous operations. Use to find the actual crash sink beyond shallow navigation leads.",
     ),
     "expand_candidate_neighborhood": (
         {
@@ -91,8 +102,8 @@ TOOL_PARAMETERS: dict[str, tuple[dict[str, Any], list[str], str]] = {
         (
             "Index the repository with tree-sitter to enable path finding, constraint "
             "extraction, and value tracing. Auto-runs when you use other analysis tools — "
-            "call explicitly only if indexing hasn't happened yet (check Interprocedural "
-            "Analysis section in the Constraint Board)."
+            "call explicitly only if indexing hasn't happened yet (check Current Assessment "
+            "section)."
         ),
     ),
     "find_callers": (
@@ -360,12 +371,25 @@ class AnalysisQueryTool(BaseTool):
         else:
             if name == "discover_sink_navigation_leads" and not call_args.get("description") and state is not None:
                 call_args["description"] = str(getattr(state, "vulnerability_description", "") or "")
+            if name == "discover_sink_navigation_leads" and state is not None and not call_args.get("crash_type"):
+                crash_type = str(getattr(state, "crash_type", "") or "") or str((getattr(state, "metadata", None) or {}).get("crash_type_prior", "") or "")
+                if crash_type:
+                    call_args["crash_type"] = crash_type
+            if name == "reachable_functions_from_entry" and state is not None:
+                if not call_args.get("crash_type"):
+                    crash_type = str(getattr(state, "crash_type", "") or "") or str((getattr(state, "metadata", None) or {}).get("crash_type_prior", "") or "")
+                    if crash_type:
+                        call_args["crash_type"] = crash_type
+                if not call_args.get("description"):
+                    call_args["description"] = str(getattr(state, "vulnerability_description", "") or "")
             method = getattr(service, name)
             result = method(**call_args)
         if state is not None and name == "analyze_sink_candidate" and result.get("brief"):
             state.latest_sink_analysis_brief = result["brief"]
             state.latest_brief_id = result.get("brief_id", "")
             state.analysis_status = "BRIEF_AVAILABLE"
+        if state is not None and name == "reachable_functions_from_entry" and result.get("status") == "success":
+            state.reachable_function_candidates = result.get("candidates", [])
         return result
 
 

@@ -15,8 +15,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from cybergym_agent.agent_impl.constraint_analysis import analyze_constraints
-from cybergym_agent.agent_impl.constraint_models import (
+from cybergym_agent.analysis.constraints.analysis import analyze_constraints
+from cybergym_agent.analysis.constraints.models import (
     AnalysisBudget,
     ExtractionRequest,
     SourceUnit,

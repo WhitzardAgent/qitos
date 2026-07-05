@@ -240,7 +240,7 @@ class Parser:
         line_table = _LineTable(source)
 
         # Import here to avoid circular imports at module level.
-        from cybergym_agent.agent_impl.constraint_ast import ParsedSource
+        from cybergym_agent.analysis.constraints.ast import ParsedSource
 
         return ParsedSource(
             source=source,

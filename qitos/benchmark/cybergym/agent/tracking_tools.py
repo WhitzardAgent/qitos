@@ -837,6 +837,10 @@ class RecordSinkCandidateTool(BaseTool):
                     "callee": {"type": "string", "description": "Optional target callee at the sink callsite"},
                     "expression": {"type": "string", "description": "Optional sink expression"},
                     "category": {"type": "string", "description": "Optional vulnerability/sink category"},
+                    "candidate_role": {"type": "string", "description": "Optional role: crash_site | causal_site | path_anchor | dangerous_primitive | unknown"},
+                    "ranked_path_id": {"type": "string", "description": "Optional path_id from Vulnerability Path when reviewing a static candidate"},
+                    "source_span": {"type": "object", "description": "Optional source span {file,line,end_line}"},
+                    "paired_with": {"type": "string", "description": "Optional paired candidate/path id for UAF/uninit/integer/overlap evidence"},
                 },
                 required=["function", "evidence"],
                 permissions=ToolPermission(filesystem_write=True),
@@ -875,6 +879,12 @@ class RecordSinkCandidateTool(BaseTool):
         callee = str(args.get("callee") or "").strip()
         expression = str(args.get("expression") or "").strip()
         category = str(args.get("category") or "").strip()
+        candidate_role = str(args.get("candidate_role") or "crash_site").strip() or "crash_site"
+        if candidate_role not in {"crash_site", "causal_site", "path_anchor", "dangerous_primitive", "unknown"}:
+            candidate_role = "unknown"
+        ranked_path_id = str(args.get("ranked_path_id") or "").strip()
+        source_span = args.get("source_span") if isinstance(args.get("source_span"), dict) else {}
+        paired_with = str(args.get("paired_with") or "").strip()
         file_name, line = "", 0
         raw_file, sep, raw_line = location.rpartition(":")
         if sep and raw_line.isdigit():
@@ -885,11 +895,26 @@ class RecordSinkCandidateTool(BaseTool):
         action = "created"
 
         if state is not None:
-            # Clear sink checkpoint on successful recording
-            state.pending_sink_checkpoint = False
+            # Entry-point sink suppression: cap confidence and don't clear checkpoint
+            from .analysis.vuln_patterns import is_entry_point_function
+            is_entry = is_entry_point_function(func_name)
+            if is_entry:
+                confidence = min(confidence, 0.2)
+                state.metadata["entry_point_sink_recorded"] = True
+            else:
+                # Clear sink checkpoint on successful recording of a real sink
+                state.pending_sink_checkpoint = False
+                state.sink_hypothesis_source = "model_candidate"
             # Case-insensitive lookup for existing candidate
             live = [c for c in state.sink_candidates if c.status != "eliminated"]
-            existing = next((c for c in live if c.function.lower() == func_name.lower()), None)
+            existing = None
+            if ranked_path_id:
+                existing = next(
+                    (c for c in live if str((c.metadata or {}).get("ranked_path_id") or "") == ranked_path_id),
+                    None,
+                )
+            if existing is None:
+                existing = next((c for c in live if c.function.lower() == func_name.lower()), None)
             if existing is None:
                 leaf_matches = [
                     c for c in live
@@ -932,7 +957,17 @@ class RecordSinkCandidateTool(BaseTool):
                         existing.location = location
                 existing.status = "candidate"
                 existing.metadata = dict(existing.metadata or {})
-                existing.metadata.update({"requires_review": False, "reviewed": True, "confirmed_via": "record_sink_candidate"})
+                existing.metadata.update({
+                    "requires_review": False,
+                    "reviewed": True,
+                    "confirmed_via": "record_sink_candidate",
+                    "selection_status": "active" if candidate_role != "path_anchor" else "reviewed_anchor",
+                    "candidate_role": candidate_role,
+                    "ranked_path_id": ranked_path_id or existing.metadata.get("ranked_path_id", ""),
+                    "source_span": dict(source_span or existing.metadata.get("source_span") or {}),
+                    "paired_with": paired_with or existing.metadata.get("paired_with", ""),
+                    "needs_downstream_endpoint": candidate_role == "path_anchor",
+                })
             else:
                 state.sink_candidates.append(SinkCandidate(
                     function=func_name,
@@ -947,14 +982,34 @@ class RecordSinkCandidateTool(BaseTool):
                     expression=expression,
                     category=category,
                     reason=evidence,
-                    metadata={"requires_review": False, "reviewed": True, "confirmed_via": "record_sink_candidate"},
+                    metadata={
+                        "requires_review": False,
+                        "reviewed": True,
+                        "confirmed_via": "record_sink_candidate",
+                        "selection_status": "active" if candidate_role != "path_anchor" else "reviewed_anchor",
+                        "candidate_role": candidate_role,
+                        "ranked_path_id": ranked_path_id,
+                        "source_span": dict(source_span),
+                        "paired_with": paired_with,
+                        "needs_downstream_endpoint": candidate_role == "path_anchor",
+                    },
                 ))
 
             confirmed = existing if existing is not None else state.sink_candidates[-1]
             confirmed.source = "model_candidate"
             confirmed.status = "candidate"
             confirmed.metadata = dict(confirmed.metadata or {})
-            confirmed.metadata.update({"requires_review": False, "reviewed": True, "confirmed_via": "record_sink_candidate"})
+            confirmed.metadata.update({
+                "requires_review": False,
+                "reviewed": True,
+                "confirmed_via": "record_sink_candidate",
+                "selection_status": "active" if candidate_role != "path_anchor" else "reviewed_anchor",
+                "candidate_role": candidate_role,
+                "ranked_path_id": ranked_path_id or confirmed.metadata.get("ranked_path_id", ""),
+                "source_span": dict(source_span or confirmed.metadata.get("source_span") or {}),
+                "paired_with": paired_with or confirmed.metadata.get("paired_with", ""),
+                "needs_downstream_endpoint": candidate_role == "path_anchor",
+            })
 
             # Recalculate active sink if top candidate changed
             state.active_sink_id = state._primary_sink_id()
@@ -963,13 +1018,15 @@ class RecordSinkCandidateTool(BaseTool):
                 import hashlib
                 material = f"{selected.repository_id}|{selected.file}|{selected.line}|{selected.function}|{selected.callee}|{selected.expression}"
                 selected.candidate_id = "sink_" + hashlib.blake2s(material.encode(), digest_size=6).hexdigest()
-            state.active_sink_candidate_id = selected.candidate_id
+            if candidate_role != "path_anchor":
+                state.active_sink_candidate_id = selected.candidate_id
             state.analysis_status = "TARGET_PROPOSED"
             # A structured sink candidate is the authoritative trigger for
             # repository-level analysis.  Do not depend on deployment-specific
             # environment flags: that caused most remote candidates to receive
             # no enrichment at all.
-            state.metadata["_pending_sink_analysis"] = selected.candidate_id
+            if candidate_role in {"crash_site", "causal_site", "dangerous_primitive", "unknown"}:
+                state.metadata["_pending_sink_analysis"] = selected.candidate_id
 
             # Cap at 12 candidates
             if len(state.sink_candidates) > 12:
@@ -985,6 +1042,8 @@ class RecordSinkCandidateTool(BaseTool):
                     "function": func_name,
                     "confidence": confidence,
                     "action": action,
+                    "candidate_role": candidate_role,
+                    "ranked_path_id": ranked_path_id,
                     "evidence": _clip(evidence, 120),
                 },
             )
@@ -994,7 +1053,327 @@ class RecordSinkCandidateTool(BaseTool):
             "function": func_name,
             "confidence": confidence,
             "action": action,
+            "candidate_role": candidate_role,
+            "ranked_path_id": ranked_path_id,
             "evidence": _clip(evidence, 100),
             "candidate_id": getattr(selected, "candidate_id", "") if state is not None else "",
             "analysis_triggered": state is not None,
+        }
+
+
+class AnalyzeDescriptionTool(BaseTool):
+    """Persist a bounded, model-authored navigation prior from description.txt.
+
+    Values recorded here are explicitly *not* source-code facts.  The static
+    analysis runtime verifies names and literal hints before exposing them as
+    code references or using them as navigation anchors.
+    """
+
+    ACCESS_MODES = {"read", "write", "free", "call", "control", "unknown"}
+    MEMORY_REGIONS = {"heap", "stack", "global", "container", "unknown"}
+    MECHANISM_TAGS = {
+        "bounds_read", "bounds_write", "lifetime_use", "lifetime_free",
+        "uninitialized_origin", "uninitialized_use", "integer_wrap",
+        "negative_length", "null_deref", "type_confusion", "overlap",
+        "resource_progress", "format_routing",
+    }
+    MECHANISM_ALIASES = {
+        "bounds": ("bounds_read", "bounds_write"),
+        "bound": ("bounds_read", "bounds_write"),
+        "bounds_check": ("bounds_read",),
+        "bound_check": ("bounds_read",),
+        "index": ("bounds_read",),
+        "oob": ("bounds_read", "bounds_write"),
+        "out_of_bounds": ("bounds_read", "bounds_write"),
+        "out-of-bounds": ("bounds_read", "bounds_write"),
+        "out_of_bounds_read": ("bounds_read",),
+        "oob_read": ("bounds_read",),
+        "buffer_overread": ("bounds_read",),
+        "buffer_over_read": ("bounds_read",),
+        "out_of_bounds_write": ("bounds_write",),
+        "oob_write": ("bounds_write",),
+        "buffer_overflow": ("bounds_write",),
+        "buffer_overrun": ("bounds_write",),
+        "heap_buffer_overflow": ("bounds_write",),
+        "heap-buffer-overflow": ("bounds_write",),
+        "signedness": ("integer_wrap", "negative_length"),
+        "signed": ("integer_wrap", "negative_length"),
+        "integer_overflow": ("integer_wrap",),
+        "int_overflow": ("integer_wrap",),
+        "overflow": ("integer_wrap",),
+        "underflow": ("integer_wrap",),
+        "truncation": ("integer_wrap",),
+        "window_truncation": ("integer_wrap",),
+        "mask": ("integer_wrap",),
+        "negative_size": ("negative_length",),
+        "negative_length": ("negative_length",),
+        "negative_len": ("negative_length",),
+        "negative": ("negative_length",),
+        "size_mismatch": ("integer_wrap", "negative_length"),
+        "length_mismatch": ("integer_wrap", "negative_length"),
+        "size_confusion": ("integer_wrap", "negative_length"),
+        "use_after_free": ("lifetime_use",),
+        "uaf": ("lifetime_use",),
+        "use_after_poison": ("lifetime_use",),
+        "free": ("lifetime_free",),
+        "double_free": ("lifetime_free",),
+        "invalid_free": ("lifetime_free",),
+        "uninitialized": ("uninitialized_use",),
+        "uninitialized_value": ("uninitialized_use",),
+        "uninitialized_read": ("uninitialized_use",),
+        "uninitialized_origin": ("uninitialized_origin",),
+        "null": ("null_deref",),
+        "null_pointer": ("null_deref",),
+        "null_deref": ("null_deref",),
+        "segv": ("null_deref",),
+        "type": ("type_confusion",),
+        "bad_cast": ("type_confusion",),
+        "type_confusion": ("type_confusion",),
+        "function_pointer": ("type_confusion",),
+        "overlap": ("overlap",),
+        "memcpy_overlap": ("overlap",),
+        "format": ("format_routing",),
+        "magic": ("format_routing",),
+        "dispatch": ("format_routing",),
+        "resource": ("resource_progress",),
+        "no_progress": ("resource_progress",),
+        "hang": ("resource_progress",),
+    }
+    _LIST_FIELDS = (
+        "mechanism_tags", "described_operations", "described_state_transitions",
+        "numeric_facts", "suspect_functions", "suspect_files", "suspect_modules",
+        "suspect_params", "trigger_conditions", "search_hints",
+    )
+
+    def __init__(self) -> None:
+        def string_list(description: str) -> Dict[str, Any]:
+            return {
+                "type": "array", "items": {"type": "string"},
+                "description": description,
+            }
+
+        super().__init__(ToolSpec(
+            name="analyze_description",
+            description=(
+                "Record a structured interpretation of description.txt. All names and "
+                "search hints are unverified priors until the analysis service matches "
+                "them to repository code. Prefer concrete operations, transitions, "
+                "numbers, identifiers, and trigger conditions over prose."
+            ),
+            parameters={
+                "vuln_type": {"type": "string", "description": "Likely vulnerability class/CWE-style mechanism."},
+                "crash_type_hint": {"type": "string", "description": "Likely sanitizer crash type, or UNKNOWN."},
+                "access_mode": {"type": "string", "enum": sorted(self.ACCESS_MODES)},
+                "memory_region": {"type": "string", "enum": sorted(self.MEMORY_REGIONS)},
+                "mechanism_tags": string_list("Normalized mechanism tags such as bounds, signedness, or lifetime."),
+                "described_operations": string_list("Operations explicitly described, such as copy, index, resize, free, or cast."),
+                "described_state_transitions": string_list("Lifecycle or parser state transitions explicitly described."),
+                "numeric_facts": string_list("Exact numeric facts or relationships, preserving units and operators."),
+                "suspect_functions": string_list("Function identifiers mentioned or strongly implied by the description."),
+                "suspect_files": string_list("File names or paths mentioned by the description."),
+                "suspect_modules": string_list("Component, class, namespace, or module names."),
+                "suspect_params": string_list("Relevant fields, parameters, flags, lengths, or offsets."),
+                "trigger_conditions": string_list("Conditions the input likely must satisfy."),
+                "search_hints": string_list("Short literal identifiers or phrases worth verifying in source."),
+            },
+            required=["vuln_type", "crash_type_hint", "access_mode", "memory_region"],
+        ))
+
+    @staticmethod
+    def _clean_list(value: Any, limit: int) -> list[str]:
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            return []
+        result: list[str] = []
+        seen: set[str] = set()
+        for item in value:
+            cleaned = " ".join(str(item or "").split())[:200]
+            key = cleaned.casefold()
+            if cleaned and key not in seen:
+                seen.add(key)
+                result.append(cleaned)
+            if len(result) >= limit:
+                break
+        return result
+
+    @classmethod
+    def _normalize_mechanism_tags(cls, value: Any, access_mode: str = "unknown") -> tuple[list[str], list[str]]:
+        raw_tags = cls._clean_list(value, 24)
+        normalized: list[str] = []
+        unknown: list[str] = []
+        seen: set[str] = set()
+        access = str(access_mode or "unknown").strip().lower()
+        for raw in raw_tags:
+            key = raw.strip().lower().replace("-", "_").replace(" ", "_")
+            mapped = ()
+            if key in cls.MECHANISM_TAGS:
+                mapped = (key,)
+            elif key in cls.MECHANISM_ALIASES:
+                mapped = cls.MECHANISM_ALIASES[key]
+                if key in {"bounds", "bound", "oob", "out_of_bounds", "out-of-bounds"}:
+                    if access == "write":
+                        mapped = ("bounds_write",)
+                    elif access == "read":
+                        mapped = ("bounds_read",)
+            else:
+                unknown.append(raw)
+                continue
+            for tag in mapped:
+                if tag not in seen:
+                    seen.add(tag)
+                    normalized.append(tag)
+        return normalized[:12], unknown[:12]
+
+    def validate_input(
+        self, args: Dict[str, Any], runtime_context: Optional[Dict[str, Any]] = None
+    ) -> ToolValidationResult:
+        _ = runtime_context
+        access_mode = str(args.get("access_mode") or "unknown").strip().lower()
+        memory_region = str(args.get("memory_region") or "unknown").strip().lower()
+        if access_mode not in self.ACCESS_MODES:
+            return ToolValidationResult.fail(f"invalid access_mode: {access_mode}")
+        if memory_region not in self.MEMORY_REGIONS:
+            return ToolValidationResult.fail(f"invalid memory_region: {memory_region}")
+        for field_name in self._LIST_FIELDS:
+            value = args.get(field_name, [])
+            if value is not None and not isinstance(value, list):
+                return ToolValidationResult.fail(f"{field_name} must be an array")
+            limit = 24 if field_name == "search_hints" else 12
+            if isinstance(value, list) and len(value) > limit:
+                return ToolValidationResult.fail(f"{field_name} accepts at most {limit} items")
+            if isinstance(value, list) and any(
+                not isinstance(item, str) or not item.strip() for item in value
+            ):
+                return ToolValidationResult.fail(f"{field_name} items must be non-empty strings")
+        has_content = any(str(args.get(name) or "").strip() for name in ("vuln_type", "crash_type_hint"))
+        has_content = has_content or any(args.get(name) for name in self._LIST_FIELDS)
+        if not has_content:
+            return ToolValidationResult.fail("description analysis cannot be empty")
+        return ToolValidationResult.ok()
+
+    def execute(
+        self, args: Dict[str, Any], runtime_context: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        from .analysis.vuln_patterns import normalize_crash_type
+        from .state import DescriptionAnalysis
+
+        state = (runtime_context or {}).get("state")
+        raw_crash_type = str(args.get("crash_type_hint") or "unknown").strip()
+        crash_type = normalize_crash_type(raw_crash_type) or "unknown"
+        step = int(getattr(state, "current_step", 0) or 0) if state is not None else 0
+        values: Dict[str, Any] = {
+            "vuln_type": _clip(args.get("vuln_type"), 120),
+            "crash_type_hint": crash_type,
+            "access_mode": str(args.get("access_mode") or "unknown").strip().lower(),
+            "memory_region": str(args.get("memory_region") or "unknown").strip().lower(),
+            "status": "recorded",
+            "created_step": step,
+            "last_relevant_step": step,
+        }
+        for field_name in self._LIST_FIELDS:
+            values[field_name] = self._clean_list(
+                args.get(field_name), 24 if field_name == "search_hints" else 12,
+            )
+        mechanism_tags, unknown_tags = self._normalize_mechanism_tags(
+            args.get("mechanism_tags"), values["access_mode"],
+        )
+        values["mechanism_tags"] = mechanism_tags
+        if unknown_tags:
+            merged_hints = values["search_hints"] + [
+                f"mechanism:{tag}" for tag in unknown_tags
+                if f"mechanism:{tag}" not in values["search_hints"]
+            ]
+            values["search_hints"] = self._clean_list(merged_hints, 24)
+        analysis = DescriptionAnalysis(**values)
+
+        if state is not None:
+            from cybergym_agent.agent_impl.core.metadata_keys import (
+                CRASH_TYPE_PRIOR,
+                CRASH_TYPE_PRIOR_SOURCE,
+                DESCRIPTION_ANALYSIS_DIRTY,
+                bump_context_revision_value,
+            )
+
+            state.description_analysis = analysis
+            state.metadata[CRASH_TYPE_PRIOR] = crash_type
+            state.metadata[CRASH_TYPE_PRIOR_SOURCE] = "description_analysis"
+            state.metadata[DESCRIPTION_ANALYSIS_DIRTY] = True
+            bump_context_revision_value(
+                state, "description",
+                allowed=frozenset({"description", "assessment", "path", "condition", "experiment", "action", "misc"}),
+            )
+
+        return {
+            "status": "success",
+            "analysis_status": "recorded",
+            "crash_type_hint": crash_type,
+            "suspect_functions": values["suspect_functions"][:6],
+            "search_hints": values["search_hints"][:6],
+            "normalized_mechanism_tags": values["mechanism_tags"][:6],
+            "unmapped_mechanism_tags": unknown_tags[:6],
+            "message": "Description priors recorded; source references remain unverified.",
+        }
+
+
+class SetCrashTypeTool(BaseTool):
+    """Set the inferred crash type from the vulnerability description.
+
+    The LLM calls this at step 0-1 after reading description.txt to register
+    its assessment of the likely ASAN crash type. This feeds into crash-type-
+    aware navigation scoring to prioritize the right function patterns.
+    After the first submit_poc, the exact crash_type from ASAN output
+    overrides this LLM-inferred prior.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(
+            ToolSpec(
+                name="set_crash_type",
+                description=(
+                    "Set the inferred ASAN crash type based on the vulnerability "
+                    "description. Choose one: Heap-buffer-overflow, "
+                    "Heap-use-after-free, Heap-double-free, Stack-buffer-overflow, "
+                    "Global-buffer-overflow, Use-of-uninitialized-value, "
+                    "Index-out-of-bounds, SEGV, or UNKNOWN. "
+                    "This helps the static analysis engine prioritize the right "
+                    "function patterns for navigation."
+                ),
+                parameters={
+                    "crash_type": {
+                        "type": "string",
+                        "description": "Inferred crash type (e.g., 'Heap-buffer-overflow')",
+                    },
+                },
+                required=["crash_type"],
+            )
+        )
+
+    def validate_input(
+        self, args: Dict[str, Any], runtime_context: Optional[Dict[str, Any]] = None
+    ) -> ToolValidationResult:
+        _ = runtime_context
+        if not str(args.get("crash_type") or "").strip():
+            return ToolValidationResult.fail("crash_type is required")
+        return ToolValidationResult.ok()
+
+    def execute(
+        self, args: Dict[str, Any], runtime_context: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        from .analysis.vuln_patterns import normalize_crash_type
+
+        state = (runtime_context or {}).get("state")
+        raw = str(args.get("crash_type") or "").strip()
+        normalized = normalize_crash_type(raw)
+
+        if state is not None:
+            state.metadata["crash_type_prior"] = normalized
+            # Don't overwrite crash_type from ASAN output (that's the ground truth)
+            if not getattr(state, "crash_type", ""):
+                state.crash_type = normalized
+
+        return {
+            "status": "success",
+            "crash_type": normalized,
+            "original_input": raw,
         }

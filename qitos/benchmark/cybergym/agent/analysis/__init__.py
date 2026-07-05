@@ -1,7 +1,15 @@
 """Bounded Tree-sitter C/C++ interprocedural analysis."""
 
 from .models import *  # noqa: F401,F403
-from .service import AnalysisService, AnalysisConfig
+from .service import AnalysisService
+from .store import AnalysisConfig
+from .constraints import (
+    analyze_constraints,
+    analyze_constraint_requests,
+    ExtractionRequest,
+    SourceUnit,
+    hint_from_description,
+)
 
 __all__ = ["AnalysisService", "AnalysisConfig"]
 

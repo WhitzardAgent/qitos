@@ -39,12 +39,15 @@ CORPUS_INSPECT = "CorpusInspect"
 # ---------------------------------------------------------------------------
 
 SUBMIT_POC = "submit_poc"
+RUN_CANDIDATE = "run_candidate"
+PROBE_RUNTIME_FRONTIER = "probe_runtime_frontier"
 RECORD_HYPOTHESIS = "record_hypothesis"
 RECORD_ATTEMPT = "record_attempt"
 RECORD_REFLECTION = "record_reflection"
 RECORD_CHAIN_NODE = "record_chain_node"
 RECORD_GATE = "record_gate"
 RECORD_SINK_CANDIDATE = "record_sink_candidate"
+SET_CRASH_TYPE = "set_crash_type"
 SWITCH_PHASE = "switch_phase"
 ANALYZE_SINK_CANDIDATE = "analyze_sink_candidate"
 ANALYSIS_QUERY_TOOLS = frozenset({
@@ -53,14 +56,8 @@ ANALYSIS_QUERY_TOOLS = frozenset({
     "index_repository", "find_callers", "find_paths_to_target", "summarize_function",
     "extract_constraints", "trace_value", "get_path_details", "explain_path",
     "resolve_callsite_candidates", "get_analysis_result",
+    "reachable_functions_from_entry",
 })
-
-# ---------------------------------------------------------------------------
-# Delegate tools (snake_case — sub-agent dispatch)
-# ---------------------------------------------------------------------------
-
-EXPLORE_DELEGATE = "explore_codebase"
-INSIGHT_DELEGATE = "analyze_feedback"
 
 # ---------------------------------------------------------------------------
 # Aggregate sets
@@ -83,6 +80,7 @@ TRACKING_TOOLS = frozenset({
     RECORD_CHAIN_NODE,
     RECORD_GATE,
     RECORD_SINK_CANDIDATE,
+    SET_CRASH_TYPE,
     SWITCH_PHASE,
 })
 
@@ -99,9 +97,4 @@ WRITE_TOOLS = frozenset({
     INSERT,
     REPLACE_LINES,
     STR_REPLACE,
-})
-
-DELEGATE_TOOLS = frozenset({
-    EXPLORE_DELEGATE,
-    INSIGHT_DELEGATE,
 })

@@ -5,6 +5,13 @@
 - If a compact marker or prior note points to `.agent/memory/project/...`, read that memory path before rereading the original source or feedback.
 - Do not reread the same long file from the beginning when you only need a later region.
 - Every search hit includes a `match_id`. Use `READ(match_id=..., radius=...)` to jump directly to that location with surrounding context — no need to copy file paths and line numbers.
+- `GLOB`, `GREP`, and `READ` may include `[static lead ...]` annotations. Treat
+  them as ranked navigation leads, not facts. Prefer `READ(match_id=...)` on a
+  high-role hit before starting another broad search.
+- If a static lead says `wrapper` or `path_anchor`, follow its next-hop before
+  selecting a final sink. If source reading confirms `crash_site` or
+  `causal_site`, persist it with `record_sink_candidate`; if it confirms a
+  `parser_gate`, persist the gate/input mapping instead.
 - Use `GREP(pattern, path?, glob?, output_mode?, head_limit?, offset?)` for content search; default `output_mode` is `content`, use `files_with_matches` when you only need to know which files match and `count` for per-file counts.
 - Use `RepoMap(path?)` for repository layout, harness files, corpus directories, and build-file metadata instead of broad shell listing.
 - Use `FindSymbols(query, kind?, path?)` when you know a symbol name and want its definition location, signature, and kind (function/macro/struct/enum).
@@ -55,10 +62,34 @@ Why: Toolbox generates format-valid carriers; patching at a precise offset targe
 
 ### Miss Feedback Loop: submit_poc → READ → BASH → submit_poc
 1. `submit_poc(...)` — get crash trace and vul_exit_code.
-2. If `no_trigger`: `READ(match_id=<to vulnerable function>)` — re-read the exact condition that wasn't satisfied.
+2. If there is no crash: use the typed feedback. When reachability is unknown,
+   re-read the exact candidate condition and carrier/path gates; do not assume
+   `path_not_reached` without evidence.
 3. `BASH("python3 ...")` — construct a revised candidate addressing the gap.
 4. `submit_poc(...)` — verify again.
-Why: Submit feedback is the oracle. A no_trigger means the input never reached the bug — READ the function again to understand WHY, then fix the candidate.
+Why: Submit feedback is the oracle, but a non-crash alone does not prove where
+execution stopped. Use source-backed gates and typed feedback to decide whether
+to repair the carrier/path, revise the trigger recipe, or rotate candidates.
+
+### Dynamic Miss Diagnosis: submit_poc → run_candidate → probe_runtime_frontier
+Use this chain only when the tools are present in the tool list and the
+Next Action slot asks for runtime diagnosis.
+
+1. `run_candidate(candidate_path=..., objective_id=..., purpose="classify_no_trigger")`
+   — run the exact latest candidate once against the staged vulnerable binary.
+2. If `run_candidate` reports `clean_exit`, `input_rejected`, `timeout`, or an
+   environment/profile issue and `probe_runtime_frontier` is available, call
+   `probe_runtime_frontier(candidate_path=..., objective_id=..., path_id=...)`.
+3. Use the returned `first_unreached_role` / `last_hit_role` to pick the repair:
+   harness/parser miss → repair carrier or harness protocol; dispatch/sink miss
+   → localize selector/field; sink reached but trigger unmet → revise trigger
+   bytes/constraints.
+4. Do not paste or invent GDB commands. The frontier tool generates a bounded
+   script from source-backed probe points and returns compact evidence.
+
+Why: A non-crash from `submit_poc` does not tell whether the candidate missed
+the harness, parser, sink, or final trigger condition. Runtime evidence is a
+diagnostic aid; `submit_poc` remains the benchmark verdict.
 
 ### Parallel Chain Coverage (investigation phase)
 Call these together in one step to cover the full data flow:

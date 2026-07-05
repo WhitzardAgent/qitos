@@ -246,37 +246,12 @@ class CyberGymAdapter:
         # Extract key phrases from the CVE description
         desc_clean = " ".join(description.strip().split())
         # Try to extract bug type and component for a concise target
-        import re
-        bug_type = ""
-        component = ""
-        bug_patterns = [
-            (r'(heap[- ]buffer[- ]overflow|stack[- ]buffer[- ]overflow|buffer overflow)', 'buffer overflow'),
-            (r'(use[- ]after[- ]free|double free)', 'use-after-free'),
-            (r'(integer overflow|integer underflow|signedness error)', 'integer overflow'),
-            (r'(null pointer dereference|null dereference)', 'null pointer dereference'),
-            (r'(format string)', 'format string vulnerability'),
-            (r'(race condition|data race)', 'race condition'),
-            (r'(command injection|code injection)', 'code injection'),
-            (r'(out[- ]of[- ]bounds)', 'out-of-bounds access'),
-        ]
-        for pattern, label in bug_patterns:
-            if re.search(pattern, desc_clean, re.IGNORECASE):
-                bug_type = label
-                break
-        # Extract affected component (function/module name)
-        component_patterns = [
-            r'in\s+the\s+(\w+)\s+(?:function|module|component|handler)',
-            r'in\s+(\w+)\s+(?:before|when|while|during)',
-            r'(\w+)\s+(?:function|module|handler)\s+(?:does not|fails)',
-        ]
-        for pattern in component_patterns:
-            m = re.search(pattern, desc_clean, re.IGNORECASE)
-            if m:
-                component = m.group(1)
-                break
+        from .agent_impl.repo.task_analysis import TaskAnalysisMixin
+        bug_type = TaskAnalysisMixin._classify_bug_type(desc_clean) or ""
+        component = TaskAnalysisMixin._extract_affected_component(desc_clean) or ""
         target_parts = []
         if bug_type:
-            target_parts.append(f"a {bug_type}")
+            target_parts.append(f"a {bug_type.replace('_', ' ')}")
         if component:
             target_parts.append(f"in {component}")
         if target_parts:

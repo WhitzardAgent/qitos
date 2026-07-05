@@ -3,7 +3,7 @@
 Two-layer indexing:
   Layer 1 (Shallow): Uses TSA's parser + function_extraction for function
     definitions and call sites.  Always succeeds — no SIGSEGV risk.
-  Layer 2 (Deep): Uses constraint_ast + constraint_extractor for rich
+  Layer 2 (Deep): Uses constraints.ast + constraints.extractor for rich
     analysis (RiskSignal, ConstraintIR, ExprIR).  Only runs when tree-sitter
     + grammar versions are known-safe; gracefully skips otherwise.
 """
@@ -19,10 +19,10 @@ import sys
 from pathlib import Path
 from typing import Any, Iterable
 
-from ..agent_impl.constraint_ast import (
+from .constraints.ast import (
     callee_text, descendants, enclosing_function, function_name, parse_source, walk,
 )
-from ..agent_impl.constraint_extractor import extract_callsite_constraints
+from .constraints.extractor import extract_callsite_constraints
 from .models import (
     CallCandidate, CallEdge, CallSite, ConstraintIR, DefinitionIR, ExprIR,
     FunctionSummary, FunctionSymbol, Parameter, RiskSignal, SourceLocation, stable_value,
@@ -120,6 +120,18 @@ def _risk_signal(parsed: Any, node: Any, file: str, function_id: str,
     )
 
 
+def _looks_like_write_context(node: Any) -> bool:
+    parent = getattr(node, "parent", None)
+    if parent is None:
+        return False
+    if parent.type == "assignment_expression":
+        left = parent.child_by_field_name("left")
+        return left is node or any(child is node for child in getattr(left, "named_children", []) or [])
+    if parent.type in {"update_expression", "pointer_expression"}:
+        return True
+    return False
+
+
 def _extract_risk_signals(parsed: Any, fn: Any, file: str, function_id: str,
                           parameters: list[Parameter]) -> list[RiskSignal]:
     """Extract cheap navigation evidence while the file AST is already resident."""
@@ -132,16 +144,24 @@ def _extract_risk_signals(parsed: Any, fn: Any, file: str, function_id: str,
         reason = ""
         raw = parsed.text(node).strip()
         if node.type == "subscript_expression":
-            kind, severity, reason = "array_access", .85, "array index may require a bounds constraint"
+            if _looks_like_write_context(node):
+                kind, severity, reason = "typed_write", .88, "array element write may require a bounds or index constraint"
+            else:
+                kind, severity, reason = "array_access", .85, "array index may require a bounds constraint"
         elif node.type in {"pointer_expression", "unary_expression"} and raw.startswith("*"):
-            kind, severity, reason = "pointer_dereference", .75, "pointer dereference may require validity and lifetime constraints"
+            if _looks_like_write_context(node):
+                kind, severity, reason = "typed_write", .82, "pointer write may require bounds, initialization, or lifetime constraints"
+            else:
+                kind, severity, reason = "pointer_dereference", .75, "pointer dereference may require validity and lifetime constraints"
         elif "cast" in node.type:
-            kind, severity, reason = "cast", .55, "cast may require a type, range, or alignment constraint"
+            kind, severity, reason = "bad_cast_or_tag_dispatch", .60, "cast may require a type, range, or alignment constraint"
         elif node.type == "call_expression":
             leaf = callee_text(node, parsed).rsplit("::", 1)[-1].rsplit("->", 1)[-1].rsplit(".", 1)[-1].lower()
             match = next(((name, value) for name, value in _CALL_RISK_KINDS.items() if leaf in {name, "__builtin_" + name}), None)
             if match:
                 kind, severity = match[1]
+                if match[0] in {"free", "delete", "realloc"}:
+                    kind = "lifecycle_invalidation"
                 # Use vuln_patterns for richer description when available
                 from .vuln_patterns import get_vuln_pattern
                 vp = get_vuln_pattern(match[0])
@@ -150,13 +170,30 @@ def _extract_risk_signals(parsed: Any, fn: Any, file: str, function_id: str,
                 else:
                     reason = f"call to {leaf} carries memory, I/O, or lifecycle semantics"
             elif any(token in leaf for token in ("copy", "insert", "append", "decode", "convert", "bytes2", "release", "destroy")):
-                kind, severity, reason = "utility_call", .55, f"utility operation {leaf} may be the direct crash site"
+                if any(token in leaf for token in ("release", "destroy", "drop", "unref", "erase", "clear")):
+                    kind, severity, reason = "lifecycle_invalidation", .62, f"lifecycle operation {leaf} may invalidate a later use"
+                else:
+                    kind, severity, reason = "utility_call", .55, f"utility operation {leaf} may be the direct crash site"
+            elif "operator()" in raw or "callback" in leaf or "handler" in leaf:
+                kind, severity, reason = "indirect_call", .62, "callback/function-object call may dispatch to a crash endpoint"
+        elif node.type in {"if_statement", "switch_statement", "conditional_expression"}:
+            deps = _identifier_dependencies(parsed, node, parameter_names)
+            if deps:
+                kind, severity, reason = "branch_on_value", .55, "branch decision depends on a function parameter or input-derived value"
         elif node.type == "binary_expression" and any(op in raw for op in (" + ", " - ", " * ", " / ", " << ", " >> ")):
             deps = _identifier_dependencies(parsed, node, parameter_names)
             if deps:
                 kind, severity, reason = "input_arithmetic", .45, "arithmetic derived from a function parameter may affect a size or offset"
         elif node.type in {"for_statement", "while_statement", "do_statement"}:
             kind, severity, reason = "loop_progress", .35, "loop progress may depend on input-controlled state"
+        elif node.type in {"declaration", "init_declarator"}:
+            text = raw.lower()
+            if "{" in text and "}" in text and any(sep in text for sep in (",", ".")):
+                kind, severity, reason = "partial_initialization", .45, "aggregate initialization may leave fields unset on alternate paths"
+            elif "*" in text or "&" in text:
+                kind, severity, reason = "out_param_write", .35, "pointer/reference local may be used as an output or later dereferenced"
+        elif node.type == "field_expression":
+            kind, severity, reason = "field_access", .50, "field access may require object validity, initialization, or tag dispatch constraints"
         if not kind:
             continue
         loc = source_location(parsed, node, file)
@@ -385,7 +422,7 @@ def _shallow_extract(root: Path, path: Path, rel: str) -> tuple[list[FunctionSym
 # ---------------------------------------------------------------------------
 
 def _deep_extract(root: Path, path: Path, rel: str) -> tuple[str, list[FunctionSymbol], list[FunctionSummary], list[dict[str, Any]]]:
-    """Deep per-function analysis using constraint_ast + constraint_extractor.
+    """Deep per-function analysis using constraints.ast + constraints.extractor.
 
     This is the original index_file() logic, extracted into a helper.
     Only called when _TS_DEEP_ANALYSIS_SAFE is True.
