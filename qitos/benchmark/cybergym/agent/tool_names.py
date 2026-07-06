@@ -40,7 +40,8 @@ CORPUS_INSPECT = "CorpusInspect"
 
 SUBMIT_POC = "submit_poc"
 RUN_CANDIDATE = "run_candidate"
-PROBE_RUNTIME_FRONTIER = "probe_runtime_frontier"
+PROBE_RUNTIME_FRONTIER = "probe_runtime_frontier"  # deprecated — replaced by GDB_DEBUG
+GDB_DEBUG = "gdb_debug"
 RECORD_HYPOTHESIS = "record_hypothesis"
 RECORD_ATTEMPT = "record_attempt"
 RECORD_REFLECTION = "record_reflection"

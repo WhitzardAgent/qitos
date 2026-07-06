@@ -185,7 +185,16 @@ CONSTRAINT_SOLUTIONS: str = "constraint_solutions"
 """Owner: poc_recipe — solutions discovered for constraints."""
 
 DOMAIN_PACKS: str = "domain_packs"
-"""Owner: poc_recipe — loaded domain packs."""
+"""Owner: poc_recipe — loaded domain packs (legacy dict format from knowledge registry)."""
+
+KNOWLEDGE_RESULTS: str = "knowledge_results"
+"""Owner: knowledge — DetectionResults from KnowledgeRegistry.select_packs()."""
+
+KNOWLEDGE_BACKENDS: str = "knowledge_backends"
+"""Owner: knowledge — BackendRegistry status snapshot."""
+
+CARRIER_CONTRACT: str = "carrier_contract"
+"""Owner: knowledge — confirmed CarrierContract from pack.derive_contract()."""
 
 # ---------------------------------------------------------------------------
 # Frontier

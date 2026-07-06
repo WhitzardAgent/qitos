@@ -10,7 +10,7 @@ from qitos.core.tool_registry import ToolRegistry
 from ...submit_tool import SubmitPoCTool
 from ...tracking_tools import AnalyzeDescriptionTool, RecordHypothesisTool, RecordReflectionTool, RecordChainNodeTool, RecordGateTool, RecordSinkCandidateTool, RecordAttemptTool, SwitchPhaseTool, SetCrashTypeTool
 from ...analysis.tools import analysis_tools
-from .dynamic_execution import ProbeRuntimeFrontierTool, RunCandidateTool
+from .dynamic_execution import GdbDebugTool, ProbeRuntimeFrontierTool, RunCandidateTool
 
 
 def build_tool_registry(agent: Any, *, llm: Any, shell_timeout: int, server_url: str):
@@ -63,7 +63,9 @@ def build_tool_registry(agent: Any, *, llm: Any, shell_timeout: int, server_url:
 
     tool_registry.register(SubmitPoCTool(server_url=server_url))
     tool_registry.register(RunCandidateTool())
-    tool_registry.register(ProbeRuntimeFrontierTool())
+    tool_registry.register(GdbDebugTool())
+    # ProbeRuntimeFrontierTool is deprecated — keeping for backward-compat
+    # tool_registry.register(ProbeRuntimeFrontierTool())
     tool_registry.register(RecordHypothesisTool())
     tool_registry.register(RecordReflectionTool())
     tool_registry.register(RecordChainNodeTool())

@@ -182,6 +182,9 @@ def process_submit_result(agent: Any, state: CyberGymState, result: Any, output:
         state.discriminant_failed = False
         state.consecutive_submit_errors = 0
         state.consecutive_misses += 1
+        # Arm pending_reproduction so gdb_debug is required before next submit
+        if not getattr(state, "gdb_unavailable", False):
+            state.pending_reproduction = True
         agent._update_best_poc_for_path(state, 0, submitted_path)
         raw_output = str(output.get("raw_output") or "")
         feedback_hints = agent._extract_verification_hints(output)
@@ -287,7 +290,7 @@ def _record_feedback_arbitration(
         if action:
             state.metadata[LAST_FEEDBACK_ACTION] = action
             bump_context_revision(state, "feedback_action")
-            if action.get("action") not in {"run_candidate", "probe_runtime_frontier"}:
+            if action.get("action") not in {"run_candidate", "gdb_debug"}:
                 result = execute_feedback_action_if_safe(state, action)
                 state.metadata[LAST_FEEDBACK_ACTION_RESULT] = result
                 bump_context_revision(state, "feedback_action")

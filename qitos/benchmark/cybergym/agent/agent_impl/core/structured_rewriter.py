@@ -28,10 +28,14 @@ def apply_structured_rewrite(
     *,
     seed_path: str,
     out_path: str,
-    rewrite_plan: dict[str, Any],
+    rewrite_plan: dict[str, Any] | Any,
     mutations: list[dict[str, Any]],
 ) -> dict[str, Any]:
     """Apply conservative local rewrites and return a structured result.
+
+    Accepts both the legacy dict rewrite_plan and the new RecipePlan dataclass.
+    When a RecipePlan is provided, operations are applied in DAG dependency
+    order and derived fields trigger backpatch recomputation.
 
     Returns a dict with:
       status: "success" | "partial" | "blocked"
@@ -56,8 +60,37 @@ def apply_structured_rewrite(
         return result
 
     data = bytearray(seed.read_bytes())
-    operations = list(rewrite_plan.get("operations", []) or [])
-    invariants = list(rewrite_plan.get("invariants", []) or [])
+
+    # Handle RecipePlan dataclass input
+    from ..knowledge.models import RecipePlan as RecipePlanDataclass
+    from ..knowledge.recipe_ir import topological_sort_ops, apply_backpatch, recipe_to_dict
+
+    if isinstance(rewrite_plan, RecipePlanDataclass):
+        # Sort operations by DAG dependency order
+        sorted_ops = topological_sort_ops(rewrite_plan.operations)
+
+        # Convert RecipePlan operations to legacy dict format
+        operations = []
+        for op in sorted_ops:
+            op_dict: dict[str, Any] = {
+                "kind": op.kind,
+                "op_id": op.op_id,
+                "target_node_id": op.target_node_id,
+            }
+            # Convert ast_transform to concrete operations
+            transform = op.ast_transform if hasattr(op, "ast_transform") else {}
+            if transform:
+                op_dict.update(transform)
+            operations.append(op_dict)
+
+        invariants = [
+            {"invariant_id": inv.invariant_id, "kind": inv.kind,
+             "expression": inv.expression, "protected": inv.protected}
+            for inv in rewrite_plan.invariants
+        ]
+    else:
+        operations = list(rewrite_plan.get("operations", []) or [])
+        invariants = list(rewrite_plan.get("invariants", []) or [])
 
     # Apply mutations first (from recipe trigger_mutations)
     for mut in mutations:
@@ -119,6 +152,20 @@ def apply_structured_rewrite(
         result["status"] = "blocked"
         result["blocked_reason"] = f"Failed to write output: {e}"
         return result
+
+    # Backpatch derived fields if using RecipePlan
+    if isinstance(rewrite_plan, RecipePlanDataclass):
+        recompute_ops = apply_backpatch(
+            rewrite_plan.operations,
+            results_so_far={"field_map": {}},
+        )
+        for rc_op in recompute_ops[:3]:
+            # Apply recompute as a rewrite operation
+            rc_dict = {"kind": rc_op.kind, "op_id": rc_op.op_id,
+                       "target_node_id": rc_op.target_node_id}
+            applied_rc = _apply_recompute(data, rc_op.kind, rc_dict)
+            if applied_rc:
+                result["applied_operations"].append(applied_rc)
 
     # Set sanity expectations from invariants
     result["sanity_expectations"] = [

@@ -24,6 +24,7 @@ from typing import Any, TYPE_CHECKING
 from ..core.metadata_keys import (
     FRONTIER_PROBES,
     INVOCATION_PROFILE,
+    LAST_FEEDBACK_ACTION,
     RUNTIME_EVIDENCE,
     STAGED_BINARY_CAPABILITY,
 )
@@ -111,21 +112,39 @@ def derive_feedback_action(
                 "prompt_instruction": "Verify harness/oracle observability or switch objective before submitting more variants.",
             }
 
-    # 2c. Frontier probe: use the latest observed boundary to choose the next
-    # analysis action instead of falling back to generic submit.
-    latest_frontier = _latest_frontier_probe(state)
-    if latest_frontier:
-        status = str(latest_frontier.get("status") or "")
-        normalized_status = _normalize_frontier_status(status)
-        recommended = str(latest_frontier.get("recommended_action") or "")
-        if normalized_status in {"wrong_harness", "path_not_reached", "trigger_unmet", "oracle_not_observable", "frontier_unknown"} and recommended:
+    # 2c. GDB debug evidence: if gdb_debug has been run and returned results,
+    # check for pending reproduction requirement before falling through.
+    # Auto-release after 6+ steps stuck in the same hard-block to prevent
+    # infinite loops (the agent may not have gdb available in practice).
+    if getattr(state, "pending_reproduction", False) and not getattr(state, "gdb_unavailable", False):
+        feedback_action = (state.metadata or {}).get(LAST_FEEDBACK_ACTION) or {}
+        current_action = str(feedback_action.get("action") or "")
+        if current_action == "gdb_debug":
+            # Check how long we've been stuck in this block
+            mode_enter_step = int(getattr(state, "mode_enter_step", 0) or 0)
+            current_step = int(getattr(state, "current_step", 0) or 0)
+            steps_stuck = current_step - mode_enter_step if mode_enter_step else 0
+            if steps_stuck >= 6:
+                # Auto-release: latch gdb_unavailable and fall through
+                state.gdb_unavailable = True
+                state.pending_reproduction = False
+            else:
+                return {
+                    "action": "gdb_debug",
+                    "reason": "gdb_debug is required to diagnose the no-trigger result before submitting again.",
+                    "negative_evidence_kind": "",
+                    "blocks_submit": True,
+                    "target_ids": {"ranked_path_id": _best_ranked_path_id(state)},
+                    "prompt_instruction": "Call gdb_debug with appropriate commands to diagnose why the PoC fails.",
+                }
+        else:
             return {
-                "action": recommended,
-                "reason": str(latest_frontier.get("reason") or f"frontier={status}")[:200],
-                "negative_evidence_kind": _frontier_negative_kind(normalized_status),
-                "blocks_submit": normalized_status in {"wrong_harness", "path_not_reached", "oracle_not_observable"},
+                "action": "gdb_debug",
+                "reason": "gdb_debug is required to diagnose the no-trigger result before submitting again.",
+                "negative_evidence_kind": "",
+                "blocks_submit": True,
                 "target_ids": {"ranked_path_id": _best_ranked_path_id(state)},
-                "prompt_instruction": f"Resolve latest frontier probe status={status} frontier={latest_frontier.get('frontier', '')}.",
+                "prompt_instruction": "Call gdb_debug with appropriate commands to diagnose why the PoC fails.",
             }
 
     # 3. Transcript gap
@@ -341,6 +360,7 @@ def _latest_frontier_probe(state: CyberGymState) -> dict[str, Any]:
 
 
 def _frontier_negative_kind(status: str) -> str:
+    """Deprecated — kept for backward compat with existing negative evidence records."""
     return {
         "wrong_harness": "wrong_harness_binary",
         "path_not_reached": "path_not_reached",
@@ -352,6 +372,7 @@ def _frontier_negative_kind(status: str) -> str:
 
 
 def _normalize_frontier_status(status: str) -> str:
+    """Deprecated — kept for backward compat with existing negative evidence records."""
     return {
         "harness_not_reached": "path_not_reached",
         "parser_rejected": "path_not_reached",
@@ -374,6 +395,34 @@ def _runtime_diagnosis_action_if_applicable(
         "trigger_wrong_location",
     }:
         return None
+
+    # If gdb is permanently unavailable, skip dynamic diagnosis
+    if getattr(state, "gdb_unavailable", False):
+        return None
+
+    # If pending_reproduction is armed, gdb_debug is mandatory
+    if getattr(state, "pending_reproduction", False):
+        candidate_path = _latest_feedback_candidate_path(state)
+        objective_id = _active_objective_id(state)
+        return {
+            "action": "gdb_debug",
+            "reason": (
+                "submit_poc returned no-trigger; gdb_debug is required to "
+                "diagnose why the candidate fails before submitting again."
+            ),
+            "negative_evidence_kind": "",
+            "blocks_submit": True,
+            "target_ids": {
+                "candidate_path": candidate_path,
+                "objective_id": objective_id,
+            },
+            "prompt_instruction": (
+                f"Call gdb_debug(poc_path={candidate_path!r}, "
+                f"objective_id={objective_id!r}) with appropriate GDB commands "
+                "to diagnose the failure. Only skip if you make a source-backed repair."
+            ),
+        }
+
     if not _staged_runtime_ready(state):
         return None
 
@@ -384,7 +433,6 @@ def _runtime_diagnosis_action_if_applicable(
     objective_id = _active_objective_id(state)
     ranked_path_id = _best_ranked_path_id(state)
     latest_evidence = _latest_runtime_evidence_for_candidate(state, candidate_path)
-    latest_probe = _latest_frontier_probe_for_candidate(state, candidate_path)
 
     if not latest_evidence:
         return {
@@ -394,7 +442,7 @@ def _runtime_diagnosis_action_if_applicable(
                 "so classify whether the same candidate exits cleanly, is rejected, "
                 "times out, or crashes before replanning."
             ),
-            "negative_evidence_kind": "frontier_unknown",
+            "negative_evidence_kind": "",
             "blocks_submit": True,
             "target_ids": {
                 "candidate_path": candidate_path,
@@ -408,35 +456,51 @@ def _runtime_diagnosis_action_if_applicable(
             ),
         }
 
-    outcome = str(latest_evidence.get("conclusion") or latest_evidence.get("status") or "")
-    capability = (state.metadata or {}).get(STAGED_BINARY_CAPABILITY) or {}
-    gdb_available = isinstance(capability, dict) and bool(capability.get("gdb_available"))
-    if (
-        gdb_available
-        and latest_probe is None
-        and outcome in {"clean_exit", "input_rejected", "timeout", "profile_unresolved", "environment_error"}
-    ):
-        return {
-            "action": "probe_runtime_frontier",
-            "reason": (
-                f"run_candidate outcome={outcome}; use source-backed GDB frontier probes "
-                "to find the first unreached harness/parser/sink boundary."
-            ),
-            "negative_evidence_kind": _runtime_outcome_negative_kind(outcome),
-            "blocks_submit": True,
-            "target_ids": {
-                "candidate_path": candidate_path,
-                "objective_id": objective_id,
-                "ranked_path_id": ranked_path_id,
-            },
-            "prompt_instruction": (
-                f"Call probe_runtime_frontier(candidate_path={candidate_path!r}, "
-                f"objective_id={objective_id!r}, path_id={ranked_path_id!r}) and repair the "
-                "first_unreached_role before submitting another variant."
-            ),
-        }
+    # After run_candidate, if outcome suggests the path was reached but no crash,
+    # recommend gdb_debug for deeper diagnosis (instead of probe_runtime_frontier)
+    outcome = str(latest_evidence.get("outcome") or latest_evidence.get("conclusion") or "")
+    if outcome in {"clean_exit", "input_rejected", "timeout", "profile_unresolved", "environment_error"}:
+        # Check if gdb_debug evidence already exists for this candidate
+        latest_gdb = _latest_gdb_debug_for_candidate(state, candidate_path)
+        gdb_available = _gdb_available(state)
+        if latest_gdb is None and gdb_available:
+            return {
+                "action": "gdb_debug",
+                "reason": (
+                    f"run_candidate outcome={outcome}; use gdb_debug to trace "
+                    "execution and diagnose why the candidate does not trigger the vulnerability."
+                ),
+                "negative_evidence_kind": "",
+                "blocks_submit": True,
+                "target_ids": {
+                    "candidate_path": candidate_path,
+                    "objective_id": objective_id,
+                    "ranked_path_id": ranked_path_id,
+                },
+                "prompt_instruction": (
+                    f"Call gdb_debug(poc_path={candidate_path!r}, "
+                    f"objective_id={objective_id!r}) with GDB commands like "
+                    '"break <target_function>", "run", "bt", "info registers" to '
+                    "diagnose the failure. Repair based on GDB findings before submitting."
+                ),
+            }
 
     return None
+
+
+def _gdb_available(state: CyberGymState) -> bool:
+    """Check whether GDB is available in the staged binary capability.
+
+    When rediscovery is pending, the binary exists inside the container at
+    /out with GDB available, but host-side init_state() cannot verify it.
+    Return True optimistically — dynamic tools will validate at execution
+    time and fail closed only if GDB is truly absent.
+    """
+    metadata = getattr(state, "metadata", {}) or {}
+    if metadata.get("_need_container_rediscovery"):
+        return True
+    capability = metadata.get(STAGED_BINARY_CAPABILITY) or {}
+    return isinstance(capability, dict) and bool(capability.get("gdb_available"))
 
 
 def _staged_runtime_ready(state: CyberGymState) -> bool:
@@ -445,12 +509,16 @@ def _staged_runtime_ready(state: CyberGymState) -> bool:
         return True
     capability = metadata.get(STAGED_BINARY_CAPABILITY) or {}
     profile = metadata.get(INVOCATION_PROFILE) or {}
-    return (
-        isinstance(capability, dict)
-        and bool(capability.get("available"))
-        and isinstance(profile, dict)
-        and profile.get("mode") in {"argv_file", "stdin"}
-    )
+    # Check if capability is available
+    if not isinstance(capability, dict) or not capability.get("available"):
+        return False
+    # Profile resolved → ready
+    if isinstance(profile, dict) and profile.get("mode") in {"argv_file", "stdin"}:
+        return True
+    # Profile unresolved but binary_path exists → allow best-effort fallback
+    if isinstance(capability, dict) and capability.get("binary_path"):
+        return True
+    return False
 
 
 def _latest_feedback_candidate_path(state: CyberGymState) -> str:
@@ -599,6 +667,25 @@ def _latest_frontier_probe_for_candidate(
         if not isinstance(record, dict):
             continue
         recorded_path = str(record.get("candidate_path") or "").strip()
+        if recorded_path and _same_candidate_path(recorded_path, candidate_path):
+            return record
+    return None
+
+
+def _latest_gdb_debug_for_candidate(
+    state: CyberGymState,
+    candidate_path: str,
+) -> dict[str, Any] | None:
+    """Find the latest gdb_debug evidence for a given candidate path."""
+    records = (getattr(state, "metadata", {}) or {}).get(RUNTIME_EVIDENCE, [])
+    if not isinstance(records, list):
+        return None
+    for record in reversed(records):
+        if not isinstance(record, dict):
+            continue
+        if record.get("source_kind") != "gdb_debug":
+            continue
+        recorded_path = str(record.get("poc_path") or "").strip()
         if recorded_path and _same_candidate_path(recorded_path, candidate_path):
             return record
     return None

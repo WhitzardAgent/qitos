@@ -136,6 +136,8 @@ class CyberGymState(StateSchema):
     discriminant_failed: bool = False  # True when fix_exit != 0 (PoC too aggressive)
     consecutive_misses: int = 0  # consecutive NO_TRIGGER submits (resets on any crash)
     consecutive_submit_errors: int = 0  # consecutive submit_poc errors (not verification results)
+    pending_reproduction: bool = False  # set after no-trigger submit, cleared by gdb_debug
+    gdb_unavailable: bool = False  # latched when gdb is confirmed unavailable for this task
     phase_submissions: int = 0  # submit_poc count in current phase (resets on phase transition)
     crash_type: str = ""  # parsed from sanitizer output (e.g., heap-buffer-overflow)
     crash_location: str = ""  # parsed from sanitizer output (file:line)

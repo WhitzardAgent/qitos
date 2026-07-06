@@ -197,12 +197,16 @@ def inspect_poc_bytes(
     *,
     expected_format: str = "",
     seed_path: str | None = None,
+    state: Any | None = None,
 ) -> PoCSanityResult:
     """Inspect a PoC file for carrier sanity issues.
 
     Returns a PoCSanityResult with pass/warn/fail verdict.
     - FAIL: blocks obviously invalid PoC (empty, wrong magic, table directory OOB)
     - WARN: does not block submit
+
+    When state is provided, also runs five-layer knowledge pack validation
+    if a confirmed pack exists for the format.
     """
     issues: list[PoCSanityIssue] = []
     p = Path(path)
@@ -247,7 +251,7 @@ def inspect_poc_bytes(
     # Layer 2: corpus-aware checks
     _check_corpus(data, seed_path, issues)
 
-    # Layer 3: format-aware checks
+    # Layer 3: format-aware checks (existing)
     if effective_format:
         fmt_key = effective_format.split("/")[0] if "/" in effective_format else effective_format
         if fmt_key == "font" or effective_format.startswith("font/"):
@@ -270,6 +274,24 @@ def inspect_poc_bytes(
             check_av1(data, issues)
         elif fmt_key == "zstd":
             check_zstd(data, issues)
+
+    # Layer 3.5: Knowledge pack five-layer validation (if state available)
+    if state is not None:
+        try:
+            from ..knowledge.validation import validate_with_knowledge_pack, merge_pack_findings
+            pack_report = validate_with_knowledge_pack(path, state)
+            if pack_report is not None:
+                result = PoCSanityResult(
+                    path=path,
+                    expected_format=effective_format,
+                    passed=True,
+                    issues=issues,
+                    summary="",
+                )
+                result = merge_pack_findings(result, pack_report)
+                issues = result.issues
+        except Exception:
+            pass  # Pack validation is supplementary — never crash
 
     # Determine verdict
     has_fail = any(i.severity == "fail" for i in issues)

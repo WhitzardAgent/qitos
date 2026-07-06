@@ -28,8 +28,12 @@ from ..core.constants import (
     ACTIVE_CANDIDATE_TARGETED_READ_LIMIT,
     CANDIDATE_REQUIRED_REMINDER_TEXT,
 )
+from ..core.metadata_keys import LAST_FEEDBACK_ACTION
 from ...tool_names import (
     SUBMIT_POC,
+    RUN_CANDIDATE,
+    PROBE_RUNTIME_FRONTIER,
+    GDB_DEBUG,
     READ,
     GREP,
     GLOB,
@@ -169,6 +173,8 @@ class ValidationMixin:
             return "chain_checkpoint_pending"
         if getattr(state, "pending_gates_checkpoint", False):
             return "gates_checkpoint_pending"
+        if getattr(state, "pending_reproduction", False) and not getattr(state, "gdb_unavailable", False):
+            return "reproduce_required"
         if state.pending_reflection:
             return "reflection_pending"
         # P43: add a 2-step cooldown after post_submit_miss so the agent
@@ -718,6 +724,15 @@ class ValidationMixin:
         return names
 
     def _layered_tool_schema_names(self, state: CyberGymState) -> set[str]:
+        required_dynamic_tool = self._required_dynamic_tool_name(state)
+        if required_dynamic_tool:
+            # A dynamic feedback hard block is the authoritative next action.
+            # Keep the schema to that single tool so candidate-ready and
+            # post-submit construction lanes cannot offer submit/read/write
+            # alternatives that contradict Runtime Context.
+            # Explicitly exclude submit_poc to prevent GLM from bypassing
+            # the hard block by salvaging a textual submit_poc call.
+            return {required_dynamic_tool}
         if self._should_filter_to_candidate_tools(state):
             return self._candidate_construction_tool_names(state)
         names = {
@@ -761,6 +776,21 @@ class ValidationMixin:
         if brief:
             names.add("get_analysis_result")
         return names
+
+    @staticmethod
+    def _required_dynamic_tool_name(state: CyberGymState) -> str:
+        """Return the dynamic tool mandated by feedback arbitration, if any."""
+        # pending_reproduction takes precedence: gdb_debug is mandatory
+        if getattr(state, "pending_reproduction", False) and not getattr(state, "gdb_unavailable", False):
+            return GDB_DEBUG
+        metadata = getattr(state, "metadata", {}) or {}
+        feedback_action = metadata.get(LAST_FEEDBACK_ACTION) or {}
+        if not isinstance(feedback_action, dict) or not feedback_action.get("blocks_submit"):
+            return ""
+        action = str(feedback_action.get("action") or "")
+        if action in {RUN_CANDIDATE, GDB_DEBUG}:
+            return action
+        return ""
 
     def _submit_ready_tool_names(self) -> set[str]:
         return {

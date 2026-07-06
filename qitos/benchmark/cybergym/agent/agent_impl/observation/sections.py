@@ -166,14 +166,34 @@ class SectionMixin:
                 vul_exit = last_result.get("vul_exit_code")
                 if vul_exit is not None:
                     if vul_exit == 0:
-                        confirmed_items.append(
-                            "- Target process exited normally (vul_exit=0); "
-                            "parser/sink reachability unknown [source: submit_poc]"
+                        # Check if dynamic evidence contradicts "reachability unknown"
+                        from ..core.metadata_keys import RUNTIME_EVIDENCE as _RE_KEY
+                        _re_records = list(metadata.get(_RE_KEY, []) or []) if isinstance(metadata, dict) else []
+                        has_crash_evidence = any(
+                            isinstance(r, dict) and r.get("source_kind") in ("gdb_debug", "candidate_run")
+                            and (r.get("outcome") in ("sanitizer_failure", "signal_failure")
+                                 or (r.get("source_kind") == "gdb_debug" and r.get("returncode") not in (0, None, 124, 137)))
+                            for r in _re_records
                         )
+                        if has_crash_evidence:
+                            confirmed_items.append(
+                                "- Crash observed in dynamic diagnosis; submit_poc vul_exit=0 [source: dynamic_evidence]"
+                            )
+                        else:
+                            confirmed_items.append(
+                                "- Target process exited normally (vul_exit=0); "
+                                "parser/sink reachability unknown [source: submit_poc]"
+                            )
                     else:
                         confirmed_items.append(
                             f"- Vulnerable target exited nonzero (vul_exit={vul_exit}) [source: submit_poc]"
                         )
+        # High-value durable feedback facts (crash_type, crash_location from ASAN)
+        for fact in list(getattr(state, "durable_feedback_facts", []) or [])[-6:]:
+            fact_str = str(fact or "").strip()
+            # Only promote crash-type and crash-location facts to Confirmed
+            if fact_str and any(kw in fact_str.lower() for kw in ("crash_type:", "crash_location:")):
+                confirmed_items.append(f"- {fact_str[:120]} [source: submit feedback]")
 
         if confirmed_items:
             lines.append("")
@@ -254,29 +274,67 @@ class SectionMixin:
             lines.append("### Likely")
             lines.extend(likely_items)
 
-        # --- Supplementary: feedback facts and suggested constraints ---
-        supp_items: List[str] = []
-        # Durable feedback facts (crash_type, crash_location from ASAN)
-        for fact in list(getattr(state, "durable_feedback_facts", []) or [])[-6:]:
-            fact_str = str(fact or "").strip()
-            if fact_str and len(fact_str) > 5:
-                supp_items.append(f"- {fact_str[:120]} [source: submit feedback]")
-        # Durable code facts (function signatures, buffer sizes — non-numeric)
-        for fact in list(getattr(state, "durable_code_facts", []) or [])[-6:]:
-            fact_str = str(fact or "").strip()
-            if fact_str and len(fact_str) > 5:
-                supp_items.append(f"- {fact_str[:120]} [source: code reading]")
-        # Suggested constraints (from analysis, pending LLM confirmation)
-        suggested = list(getattr(state, "suggested_constraints", []) or [])
-        for s in suggested[:3]:
-            expr = str(s.get("expression") or s.get("description") or "").strip()
-            role = str(s.get("role") or "unknown").strip()
-            if expr:
-                supp_items.append(f"- Suggested: [{role}] {expr[:100]} [source: analysis, not yet confirmed]")
-        if supp_items:
+        # --- Dynamic Evidence: raw runtime facts from run_candidate and gdb_debug ---
+        from ..core.metadata_keys import RUNTIME_EVIDENCE
+        runtime_records = list(metadata.get(RUNTIME_EVIDENCE, []) or []) if isinstance(metadata, dict) else []
+        dynamic_items: List[str] = []
+        for record in runtime_records[-4:]:
+            if not isinstance(record, dict):
+                continue
+            source_kind = str(record.get("source_kind") or "")
+            if source_kind == "gdb_debug":
+                poc_path = str(record.get("poc_path") or "")
+                binary_path = str(record.get("binary_path") or "")
+                timed_out = record.get("timed_out", False)
+                cmds = record.get("commands") or []
+                cmds_str = " ".join(str(c) for c in cmds[:8])
+                # Render GDB output as multi-line block — the model needs full
+                # backtrace, variable values, breakpoint hit info to reason about
+                # why the PoC doesn't trigger.  Single-line truncation at 150 chars
+                # was losing the diagnostic value entirely.
+                output_text = str(record.get("output") or record.get("output_snippet") or "")
+                header_parts = [f"GDB debug: poc={poc_path}"]
+                if binary_path:
+                    header_parts.append(f"binary={binary_path}")
+                if cmds_str:
+                    header_parts.append(f"commands=[{cmds_str}]")
+                if timed_out:
+                    header_parts.append("TIMED_OUT")
+                dynamic_items.append(f"- {' | '.join(header_parts)} [source: gdb_debug]")
+                if output_text.strip():
+                    # Show up to 3000 chars of GDB output as indented block
+                    display = output_text[:3000]
+                    for line in display.splitlines():
+                        dynamic_items.append(f"  {line}")
+            elif source_kind == "candidate_run":
+                outcome = str(record.get("outcome") or "")
+                candidate_path = str(record.get("candidate_path") or "")
+                sanitizer = str(record.get("sanitizer_kind") or "")
+                signal = str(record.get("signal_name") or "")
+                top_frame = str(record.get("top_frame") or "")
+                parts = [f"Run candidate: poc={candidate_path} outcome={outcome}"]
+                if sanitizer:
+                    parts.append(f"sanitizer={sanitizer}")
+                if signal:
+                    parts.append(f"signal={signal}")
+                if top_frame:
+                    parts.append(f"top_frame={top_frame}")
+                dynamic_items.append(f"- {' | '.join(parts)} [source: run_candidate]")
+            else:
+                # Legacy records without source_kind
+                outcome = str(record.get("conclusion") or record.get("outcome") or "")
+                candidate = str(record.get("candidate_digest") or "")[:12]
+                objective = str(record.get("objective_id") or "")
+                parts = [f"outcome={outcome}"]
+                if candidate:
+                    parts.append(f"candidate={candidate}")
+                if objective:
+                    parts.append(f"obj={objective}")
+                dynamic_items.append(f"- {' | '.join(parts)} [source: runtime]")
+        if dynamic_items:
             lines.append("")
-            lines.append("### Supplementary")
-            lines.extend(supp_items)
+            lines.append("### Dynamic Evidence")
+            lines.extend(dynamic_items)
 
         # Assessment snippets are now in hard contract slots (Fix A)
 

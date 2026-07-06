@@ -79,33 +79,88 @@ def any_revision_changed(
 
 
 def _runtime_capability_summary(state: CyberGymState) -> str:
-    metadata = getattr(state, "metadata", {}) or {}
-    capability = metadata.get(STAGED_BINARY_CAPABILITY) or {}
-    profile = metadata.get(INVOCATION_PROFILE) or {}
-    rediscovery = bool(metadata.get("_need_container_rediscovery"))
+    """Return runtime capability line, or empty string if all defaults are positive.
 
-    if rediscovery:
-        staged = "rediscovery_pending"
-    elif isinstance(capability, dict) and capability.get("available"):
+    GDB and dynamic tools are always available in CyberGym containers.
+    Only emit a line when something is genuinely unavailable (e.g. gdb missing).
+    """
+    metadata = getattr(state, "metadata", {}) or {}
+
+    # Early rediscovery: if _need_container_rediscovery is set, try
+    # host-side probe again — the container may now be running and /out
+    # may be visible.
+    if metadata.get("_need_container_rediscovery"):
+        _try_host_side_rediscovery(state)
+
+    capability = metadata.get(STAGED_BINARY_CAPABILITY) or {}
+
+    # If everything is nominal (binary available, gdb available), emit nothing.
+    # The model doesn't need to see "everything is fine" — it only needs to
+    # know when something is wrong.
+    if isinstance(capability, dict) and capability.get("available") and capability.get("gdb_available"):
+        return ""
+
+    # Something is genuinely unavailable — report it.
+    if isinstance(capability, dict) and capability.get("available"):
         staged = "available"
     else:
         staged = "unavailable"
 
-    profile_mode = str(profile.get("mode") or "unknown") if isinstance(profile, dict) else "unknown"
+    gdb = "unknown"
     if isinstance(capability, dict) and "gdb_available" in capability:
         gdb = "true" if capability.get("gdb_available") else "false"
-    else:
-        gdb = "unknown"
     reason = ""
     if isinstance(capability, dict):
         reason = str(capability.get("reason") or "")[:80]
-    if not reason and isinstance(profile, dict) and profile_mode == "unknown":
-        reason = str(profile.get("reason") or "")[:80]
     suffix = f" reason={reason}" if reason else ""
     return (
         "- Runtime capability: dynamic_tools=registered "
-        f"staged={staged} profile={profile_mode} gdb={gdb}{suffix}"
+        f"staged={staged} gdb={gdb}{suffix}"
     )
+
+
+def _try_host_side_rediscovery(state: CyberGymState) -> None:
+    """Attempt container-aware staged binary discovery when _need_container_rediscovery is set.
+
+    Called from _runtime_capability_summary on every observation render.
+    Tries container-aware discovery first (via cached env_runner), then
+    falls back to host-side discovery. This eliminates the
+    "rediscovery_pending" span that misleads the model into avoiding
+    dynamic tools.
+    """
+    metadata = getattr(state, "metadata", {}) or {}
+    if not metadata.get("_need_container_rediscovery"):
+        return
+
+    # First try container-aware discovery via cached env_runner
+    env_runner = metadata.get("_env_runner")
+    if env_runner is not None and hasattr(env_runner, "cmd"):
+        try:
+            from ..runtime.staged_binary import discover_staged_binary_capability_from_env
+            from ..runtime.invocation_profile import build_invocation_profile
+
+            capability = discover_staged_binary_capability_from_env(env_runner)
+            metadata[STAGED_BINARY_CAPABILITY] = capability.to_dict()
+            profile = build_invocation_profile(state, capability)
+            metadata[INVOCATION_PROFILE] = profile.to_dict()
+            metadata.pop("_need_container_rediscovery", None)
+            return
+        except Exception:
+            pass  # Fall through to host-side attempt
+
+    # Fallback: try host-side discovery (works if /out is bind-mounted)
+    try:
+        from ..runtime.staged_binary import discover_staged_binary_capability
+        from ..runtime.invocation_profile import build_invocation_profile
+
+        capability = discover_staged_binary_capability()
+        if capability.available:
+            metadata[STAGED_BINARY_CAPABILITY] = capability.to_dict()
+            profile = build_invocation_profile(state, capability)
+            metadata[INVOCATION_PROFILE] = profile.to_dict()
+            metadata.pop("_need_container_rediscovery", None)
+    except Exception:
+        pass  # Keep pending; will retry next step
 
 
 def _latest_feedback_candidate_path(state: CyberGymState) -> str:
@@ -158,6 +213,22 @@ def _runtime_evidence_gap_line(state: CyberGymState) -> str:
         return ""
     if _runtime_evidence_for_candidate(state, candidate):
         return ""
+    # Also check if any runtime evidence exists for the same objective_id
+    # (candidate may have been renamed or moved)
+    metadata = getattr(state, "metadata", {}) or {}
+    records = metadata.get(RUNTIME_EVIDENCE, [])
+    if isinstance(records, list):
+        # Find the active objective id
+        objectives = list(getattr(state, "active_trigger_objectives", []) or [])
+        active_obj_ids = {
+            obj.get("objective_id", "")
+            for obj in objectives
+            if isinstance(obj, dict) and obj.get("status") == "active"
+        }
+        if active_obj_ids:
+            for record in records:
+                if isinstance(record, dict) and record.get("objective_id") in active_obj_ids:
+                    return ""
     return (
         f"- Evidence gap: latest submit no-trigger for {candidate}; "
         "no run_candidate evidence yet."
@@ -171,7 +242,9 @@ def _runtime_evidence_gap_line(state: CyberGymState) -> str:
 def render_assessment_contract_snippets(state: CyberGymState) -> List[str]:
     """Render objective/protocol/consistency summary into Current Assessment."""
     lines: List[str] = []
-    lines.append(_runtime_capability_summary(state))
+    cap = _runtime_capability_summary(state)
+    if cap:
+        lines.append(cap)
 
     # Active trigger objectives
     objectives = list(getattr(state, "active_trigger_objectives", []) or [])
@@ -602,16 +675,16 @@ def derive_contract_next_action_block(state: CyberGymState) -> Dict[str, str]:
                 "stop_condition": "runtime evidence is recorded for this candidate",
                 "do_not": "submit another PoC or continue broad source reading before runtime diagnosis",
             }
-        if action == "probe_runtime_frontier":
+        if action == "gdb_debug":
             candidate_path = str(target_ids.get("candidate_path") or "")
             objective_id = str(target_ids.get("objective_id") or "")
             path_id = str(target_ids.get("ranked_path_id") or "")
             return {
-                "required": "probe_runtime_frontier",
+                "required": "gdb_debug",
                 "why": reason[:200],
                 "target": f"candidate_path={candidate_path}; objective_id={objective_id}; path_id={path_id}",
-                "stop_condition": "first_unreached_role/last_hit_role is recorded or probe is inconclusive with evidence_ref",
-                "do_not": "submit another PoC before resolving the runtime frontier",
+                "stop_condition": "gdb_debug evidence is recorded with returncode/commands/output for this candidate",
+                "do_not": "submit another PoC before resolving the GDB diagnosis",
             }
         stop_cond = feedback_action.get("prompt_instruction", "")
         return {
@@ -666,15 +739,7 @@ def derive_contract_next_action_block(state: CyberGymState) -> Dict[str, str]:
                 "do_not": "submit more crash variants for an unobservable objective",
             }
 
-    frontier = _latest_frontier_probe(state)
-    if frontier and _frontier_requires_action(str(frontier.get("status") or "")):
-        return {
-            "required": str(frontier.get("recommended_action") or "extract_harness_protocol"),
-            "why": str(frontier.get("reason") or "")[:200],
-            "target": f"frontier={frontier.get('frontier', '')} status={frontier.get('status', '')}",
-            "stop_condition": "latest frontier status is resolved or a newer probe changes the diagnosis",
-            "do_not": "submit unchanged PoC before resolving the frontier",
-        }
+    # (Frontier probe block removed — replaced by gdb_debug dynamic diagnosis)
 
     # 4. Transcript gap (also checks recipe coverage)
     transcripts = list(getattr(state, "protocol_transcript_plans", []) or [])
@@ -822,7 +887,9 @@ def render_context_contract_slots(state: CyberGymState) -> Dict[str, List[str]]:
 
     # === Assessment slots (must appear in first 8 lines) ===
 
-    slots["assessment"].append(_runtime_capability_summary(state))
+    cap = _runtime_capability_summary(state)
+    if cap:
+        slots["assessment"].append(cap)
 
     # 1. Active objective
     objectives = list(getattr(state, "active_trigger_objectives", []) or [])
@@ -888,11 +955,11 @@ def render_context_contract_slots(state: CyberGymState) -> Dict[str, List[str]]:
         else:
             slots["assessment"].append("- Consistency status: PASS")
 
-    frontier = _latest_frontier_probe(state)
-    if frontier:
-        slots["assessment"].append(
-            f"- Frontier: status={frontier.get('status', '')} frontier={frontier.get('frontier', '')} action={frontier.get('recommended_action', '')}"
-        )
+    # Dynamic diagnosis state
+    if getattr(state, "pending_reproduction", False) and not getattr(state, "gdb_unavailable", False):
+        slots["assessment"].append("- Reproduction required: gdb_debug must be called before next submit")
+    elif getattr(state, "gdb_unavailable", False):
+        slots["assessment"].append("- GDB unavailable: dynamic diagnosis not possible; use static analysis")
 
     # === Vulnerability Path slots ===
 
@@ -1006,30 +1073,58 @@ def render_context_contract_slots(state: CyberGymState) -> Dict[str, List[str]]:
         item for item in list((state.metadata or {}).get(RUNTIME_EVIDENCE, []) or [])
         if isinstance(item, dict)
     ]
-    for record in runtime_records[-2:]:
-        outcome = str(record.get("conclusion") or record.get("status") or "")
-        candidate = str(record.get("candidate_digest") or "")[:12]
-        evidence_ref = str(record.get("evidence_ref") or "")
-        objective = str(record.get("objective_id") or "")
-        parts = [f"outcome={outcome}"]
-        if candidate:
-            parts.append(f"candidate={candidate}")
-        if objective:
-            parts.append(f"obj={objective}")
-        if evidence_ref:
-            parts.append(f"evidence={evidence_ref}")
-        slots["experiments"].append("- Runtime evidence: " + " ".join(parts))
-
-    frontier = _latest_frontier_probe(state)
-    if frontier:
-        evidence_ref = str(frontier.get("evidence_ref") or "")
-        suffix = f" evidence={evidence_ref}" if evidence_ref else ""
-        slots["experiments"].append(
-            f"- GDB frontier: status={frontier.get('status', '')} "
-            f"last_hit={frontier.get('last_hit_role', '')} "
-            f"first_unreached={frontier.get('first_unreached_role', '')} "
-            f"action={frontier.get('recommended_action', '')}{suffix}"
-        )
+    for record in runtime_records[-4:]:
+        source_kind = str(record.get("source_kind") or "")
+        if source_kind == "gdb_debug":
+            poc_path = str(record.get("poc_path") or "")
+            binary_path = str(record.get("binary_path") or "")
+            timed_out = record.get("timed_out", False)
+            cmds = record.get("commands") or []
+            cmds_str = " ".join(str(c) for c in cmds[:8])
+            parts = [f"source=gdb_debug"]
+            if poc_path:
+                parts.append(f"poc={poc_path}")
+            if binary_path:
+                parts.append(f"binary={binary_path}")
+            parts.append(f"commands=[{cmds_str}]")
+            if timed_out:
+                parts.append("TIMED_OUT")
+            slots["experiments"].append("- Runtime evidence: " + " ".join(parts))
+            # Include GDB output body for model reasoning
+            output_text = str(record.get("output") or record.get("output_snippet") or "")
+            if output_text.strip():
+                for line in output_text[:3000].splitlines():
+                    slots["experiments"].append(f"  {line}")
+        elif source_kind == "candidate_run":
+            outcome = str(record.get("outcome") or "")
+            candidate = str(record.get("candidate_digest") or "")[:12]
+            evidence_ref = str(record.get("evidence_ref") or "")
+            objective = str(record.get("objective_id") or "")
+            sanitizer = str(record.get("sanitizer_kind") or "")
+            parts = [f"source=run_candidate outcome={outcome}"]
+            if candidate:
+                parts.append(f"candidate={candidate}")
+            if objective:
+                parts.append(f"obj={objective}")
+            if sanitizer:
+                parts.append(f"sanitizer={sanitizer}")
+            if evidence_ref:
+                parts.append(f"evidence={evidence_ref}")
+            slots["experiments"].append("- Runtime evidence: " + " ".join(parts))
+        else:
+            # Legacy / unknown source_kind
+            outcome = str(record.get("conclusion") or record.get("outcome") or record.get("status") or "")
+            candidate = str(record.get("candidate_digest") or "")[:12]
+            evidence_ref = str(record.get("evidence_ref") or "")
+            objective = str(record.get("objective_id") or "")
+            parts = [f"outcome={outcome}"]
+            if candidate:
+                parts.append(f"candidate={candidate}")
+            if objective:
+                parts.append(f"obj={objective}")
+            if evidence_ref:
+                parts.append(f"evidence={evidence_ref}")
+            slots["experiments"].append("- Runtime evidence: " + " ".join(parts))
 
     # 3. Scoped negative evidence
     ne_list: List[Dict[str, Any]] = (state.metadata or {}).get("negative_evidence", [])

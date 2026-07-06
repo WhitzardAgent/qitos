@@ -1,0 +1,91 @@
+"""Executable knowledge pack system for CyberGym agent.
+
+Transforms hand-written keyword rules into typed, evidence-based
+knowledge packs backed by mature libraries.
+
+Key types:
+  - KnowledgePack: Protocol for detect→parse→build→validate pipeline
+  - PackDescriptor: Static metadata about a pack
+  - DetectionResult: Evidence-based detection decision
+  - EvidenceView: Read-only task evidence snapshot (from state)
+  - RecipePlan: Typed recipe with DAG operations and invariants
+  - ValidationReport: Five-layer validation with strength arbitration
+
+Usage:
+  from agent_impl.knowledge import get_knowledge_registry, build_evidence_view
+  registry = get_knowledge_registry()
+  evidence = build_evidence_view(state)
+  packs = registry.select_packs(evidence)
+"""
+
+from .backend_registry import BackendStatus, BackendRegistry, get_backend_registry
+from .capability_matrix import TaskCapability, generate_capability_matrix, compute_coverage_summary
+from .corpus import SeedRecord, SeedSelector, build_seed_records
+from .evidence import EvidenceView, build_evidence_view
+from .models import (
+    BuildResult,
+    CarrierContract,
+    DetectionResult,
+    ExpectedEffect,
+    FieldInfo,
+    Invariant,
+    PackDescriptor,
+    ParseResult,
+    RecipeOperation,
+    RecipePlan,
+    RepairAction,
+    ValidationFinding,
+    ValidationReport,
+)
+from .protocol import KnowledgePack
+from .recipe_ir import topological_sort_ops, detect_conflicts, apply_backpatch, recipe_to_dict
+from .registry import KnowledgeRegistry, get_knowledge_registry
+from .unknown_resolver import UnknownDomainResolver, UnknownDomainResult
+from .validation import validate_with_knowledge_pack, merge_pack_findings
+
+__all__ = [
+    # Registry
+    "KnowledgeRegistry",
+    "get_knowledge_registry",
+    "BackendRegistry",
+    "get_backend_registry",
+    "BackendStatus",
+    # Evidence
+    "EvidenceView",
+    "build_evidence_view",
+    # Protocol
+    "KnowledgePack",
+    # Models
+    "PackDescriptor",
+    "DetectionResult",
+    "ParseResult",
+    "FieldInfo",
+    "CarrierContract",
+    "RecipePlan",
+    "RecipeOperation",
+    "Invariant",
+    "ExpectedEffect",
+    "BuildResult",
+    "ValidationFinding",
+    "ValidationReport",
+    "RepairAction",
+    # Recipe IR
+    "topological_sort_ops",
+    "detect_conflicts",
+    "apply_backpatch",
+    "recipe_to_dict",
+    # Corpus intelligence
+    "SeedRecord",
+    "SeedSelector",
+    "build_seed_records",
+    # Capability matrix
+    "TaskCapability",
+    "generate_capability_matrix",
+    "compute_coverage_summary",
+    # Unknown domain resolver
+    "UnknownDomainResolver",
+    "UnknownDomainResult",
+    # Validation bridge
+    "validate_with_knowledge_pack",
+    "merge_pack_findings",
+]

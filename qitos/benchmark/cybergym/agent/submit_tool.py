@@ -224,6 +224,21 @@ class SubmitPoCTool(BaseTool):
                     "Revise the candidate or submit a distinct ready PoC."
                 )
 
+        # Hard-block check: if feedback arbitration requires a dynamic tool,
+        # submit_poc must not be called until the required action is completed.
+        state = self._state_value(runtime_context, "state") if runtime_context else None
+        if state is not None:
+            metadata = getattr(state, "metadata", {}) or {}
+            feedback_action = metadata.get("last_feedback_action") or {}
+            if isinstance(feedback_action, dict) and feedback_action.get("blocks_submit"):
+                action = str(feedback_action.get("action") or "")
+                if action in {"run_candidate", "gdb_debug"}:
+                    reason = str(feedback_action.get("reason") or "")[:120]
+                    return ToolValidationResult.fail(
+                        f"submit_poc is blocked: {action} is required first. "
+                        f"{reason}. Complete the required action before submitting."
+                    )
+
         return ToolValidationResult.ok()
 
     def execute(

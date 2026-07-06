@@ -184,7 +184,11 @@ def _select_mappings(state: CyberGymState, objective: dict[str, Any]) -> list[di
 
 
 def _best_seed_path(state: CyberGymState) -> str:
-    """Find the best seed path from corpus or recipe."""
+    """Find the best seed path from corpus or recipe.
+
+    Uses SeedSelector for ranked selection when a knowledge pack is
+    confirmed for the format.  Falls back to first corpus file otherwise.
+    """
     # Check existing recipe first
     existing = state.get_poc_recipe()
     if isinstance(existing, dict):
@@ -194,6 +198,29 @@ def _best_seed_path(state: CyberGymState) -> str:
 
     # Check corpus files
     corpus = list(getattr(state, "corpus_files", []) or [])
+
+    # Try ranked seed selection via SeedSelector
+    if corpus and len(corpus) > 1:
+        try:
+            from ..knowledge.corpus import SeedSelector, build_seed_records
+            from ..knowledge.registry import get_knowledge_registry
+            from ..knowledge.evidence import build_evidence_view
+
+            registry = get_knowledge_registry()
+            evidence = build_evidence_view(state)
+            selected = registry.select_packs(evidence)
+
+            pack = selected[0][0] if selected else None
+            records = build_seed_records(corpus, pack=pack)
+            if records:
+                selector = SeedSelector()
+                ranked = selector.rank_seeds(records, objective=None, pack=pack)
+                if ranked:
+                    return ranked[0].path
+        except Exception:
+            pass  # SeedSelector is supplementary — fallback is fine
+
+    # Fallback: first corpus file
     if corpus:
         return corpus[0]
 
@@ -275,10 +302,34 @@ def _compile_mutations(
 
 def _select_domain_pack_results(state: CyberGymState) -> list[dict[str, Any]]:
     try:
-        from ..domain_packs import select_domain_packs
+        from ..knowledge import get_knowledge_registry, build_evidence_view
+        from ..knowledge.models import DetectionResult
         from ..core.runtime_context_contract import bump_context_revision
 
-        packs = select_domain_packs(state)
+        registry = get_knowledge_registry()
+        if registry.is_empty():
+            return []
+
+        evidence = build_evidence_view(state)
+        selected = registry.select_packs(evidence)
+
+        if not selected:
+            return []
+
+        # Convert to legacy dict format for backward compatibility
+        packs: list[dict[str, Any]] = []
+        for pack, det_result in selected:
+            pack_dict: dict[str, Any] = {
+                "pack": pack.descriptor.pack_id,
+                "match_score": round(det_result.score, 3),
+                "status": "ready" if det_result.decision == "confirmed" else "partial",
+                "recipe_patch": {"carrier": {"format": pack.descriptor.carrier_families[0] if pack.descriptor.carrier_families else "", "seed_policy": "minimal_template_ok"}},
+                "rewrite_plan": {"operations": [], "invariants": [f"preserve_{pack.descriptor.pack_id}_carrier"]},
+                "open_gaps": list(det_result.missing_evidence),
+                "sanity_expectations": [{"kind": "format", "expected": pack.descriptor.pack_id, "description": f"preserve {pack.descriptor.pack_id} carrier"}],
+            }
+            packs.append(pack_dict)
+
         if packs:
             state.metadata["domain_packs"] = packs
             bump_context_revision(state, "domain_packs")

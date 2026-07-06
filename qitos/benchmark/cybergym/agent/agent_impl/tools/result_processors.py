@@ -14,7 +14,11 @@ from typing import Any, Callable
 
 from ...state import CyberGymState
 from ..core.fact_extraction import extract_poc_paths_from_bash
-from ..core.metadata_keys import FRONTIER_PROBES, RUNTIME_EVIDENCE
+from ..core.metadata_keys import (
+    FRONTIER_PROBES,
+    LAST_FEEDBACK_ACTION,
+    RUNTIME_EVIDENCE,
+)
 
 
 # Type alias for handler functions
@@ -60,12 +64,40 @@ def handle_submit_result(agent: Any, state: CyberGymState, result: Any, output: 
 # Dynamic execution handler
 # ---------------------------------------------------------------------------
 
+def _refresh_feedback_action_after_dynamic_result(agent: Any, state: CyberGymState) -> None:
+    """Re-arbitrate after dynamic evidence or a fail-closed validation result."""
+    from ..core.runtime_context_contract import bump_context_revision
+    from ..feedback.arbitration import derive_feedback_action
+
+    verification = getattr(state, "last_verification_result", {}) or {}
+    failed_gate = ""
+    classifier = getattr(agent, "_classify_failed_gate", None)
+    if callable(classifier) and isinstance(verification, dict):
+        try:
+            failed_gate = str(classifier(dict(verification)) or "")
+        except Exception:
+            failed_gate = ""
+    if not failed_gate and isinstance(verification, dict):
+        failed_gate = str(verification.get("failed_gate") or "")
+    if not failed_gate:
+        failed_gate = "no_crash_unknown"
+
+    action = derive_feedback_action(
+        state=state,
+        submit_result=verification if isinstance(verification, dict) else None,
+        failed_gate=failed_gate,
+    )
+    state.metadata[LAST_FEEDBACK_ACTION] = action
+    bump_context_revision(state, "feedback_action")
+
 @register_handler("run_candidate")
 def handle_run_candidate_result(agent: Any, state: CyberGymState, result: Any, output: Any) -> None:
-    """Persist compact dynamic execution evidence."""
+    """Persist compact dynamic execution evidence — raw facts only, no auto-classification."""
     if not isinstance(output, dict):
+        _refresh_feedback_action_after_dynamic_result(agent, state)
         return
     if output.get("status") != "success":
+        _refresh_feedback_action_after_dynamic_result(agent, state)
         return
 
     from ..core.runtime_context_contract import bump_context_revision
@@ -82,114 +114,81 @@ def handle_run_candidate_result(agent: Any, state: CyberGymState, result: Any, o
         "candidate_digest": output.get("candidate_digest", ""),
         "candidate_path": output.get("candidate_path", ""),
         "objective_id": output.get("objective_id", ""),
-        "conclusion": output.get("outcome", ""),
-        "status": output.get("outcome", ""),
-        "confidence": 0.9 if output.get("outcome") in {"sanitizer_failure", "signal_failure", "clean_exit", "input_rejected"} else 0.6,
-        "evidence_ref": output.get("evidence_ref", ""),
-        "observed_at_step": int(getattr(state, "current_step", 0) or 0),
+        "outcome": output.get("outcome", ""),
         "purpose": output.get("purpose", ""),
         "top_frame": output.get("top_frame", ""),
         "sanitizer_kind": output.get("sanitizer_kind", ""),
         "signal_name": output.get("signal_name", ""),
+        "evidence_ref": output.get("evidence_ref", ""),
+        "observed_at_step": int(getattr(state, "current_step", 0) or 0),
     }
     evidence_list.append(record)
     state.metadata[RUNTIME_EVIDENCE] = evidence_list[-12:]
 
-    outcome = str(output.get("outcome") or "")
-    if outcome in {"clean_exit", "input_rejected", "profile_unresolved", "environment_error", "timeout"}:
-        kind = {
-            "clean_exit": "path_reached_no_trigger",
-            "input_rejected": "path_not_reached",
-            "profile_unresolved": "wrong_harness_binary",
-            "environment_error": "frontier_unknown",
-            "timeout": "frontier_unknown",
-        }.get(outcome, "frontier_unknown")
-        try:
-            state.append_negative_evidence(
-                kind=kind,
-                objective_id=str(output.get("objective_id") or ""),
-                summary=f"run_candidate outcome={outcome}",
-                avoid_next="Do not blindly resubmit the same candidate without changing carrier/path/trigger fields.",
-            )
-        except Exception:
-            pass
+    # No auto-classification — raw facts only. The model interprets outcomes
+    # via the Dynamic Evidence section in the observation.
 
     bump_context_revision(state, "runtime_evidence")
+    _refresh_feedback_action_after_dynamic_result(agent, state)
 
 
-@register_handler("probe_runtime_frontier")
-def handle_probe_runtime_frontier_result(agent: Any, state: CyberGymState, result: Any, output: Any) -> None:
-    """Persist compact GDB frontier probe evidence."""
+@register_handler("gdb_debug")
+def handle_gdb_debug_result(agent: Any, state: CyberGymState, result: Any, output: Any) -> None:
+    """Persist raw GDB debug evidence — no auto-classification."""
     if not isinstance(output, dict):
-        return
-    if output.get("tool_status") not in {None, "", "success"}:
+        _refresh_feedback_action_after_dynamic_result(agent, state)
         return
 
     from ..core.runtime_context_contract import bump_context_revision
 
-    probes = state.metadata.setdefault(FRONTIER_PROBES, [])
-    if not isinstance(probes, list):
-        probes = []
-        state.metadata[FRONTIER_PROBES] = probes
+    evidence_list = state.metadata.setdefault(RUNTIME_EVIDENCE, [])
+    if not isinstance(evidence_list, list):
+        evidence_list = []
+        state.metadata[RUNTIME_EVIDENCE] = evidence_list
+
+    evidence_id = f"rte_{len(evidence_list):04d}"
     record = {
-        "probe_id": f"gdb_frontier_{len(probes):04d}",
-        "source_kind": "gdb_frontier",
-        "candidate_digest": output.get("candidate_digest", ""),
-        "candidate_path": output.get("candidate_path", ""),
+        "evidence_id": evidence_id,
+        "source_kind": "gdb_debug",
+        "poc_path": output.get("poc_path", ""),
+        "binary_path": output.get("binary_path", ""),
+        "input_mode": output.get("input_mode", ""),
+        "commands": list(output.get("commands") or []),
+        "commands_stripped": output.get("commands_stripped", False),
+        "timed_out": output.get("timed_out", False),
+        "output_truncated": output.get("output_truncated", False),
         "objective_id": output.get("objective_id", ""),
-        "path_id": output.get("path_id", ""),
-        "status": output.get("status", ""),
-        "frontier_status": output.get("status", ""),
-        "runtime_status": output.get("status", ""),
-        "hit_probe_ids": list(output.get("hit_probe_ids") or []),
-        "last_hit_role": output.get("last_hit_role", ""),
-        "first_unreached_role": output.get("first_unreached_role", ""),
-        "evidence_ref": output.get("evidence_ref", ""),
-        "recommended_action": _frontier_recommended_action(str(output.get("status") or "")),
-        "reason": str(output.get("error") or output.get("first_unreached_role") or output.get("last_hit_role") or "")[:200],
+        "observed_at_step": int(getattr(state, "current_step", 0) or 0),
+        "elapsed_ms": output.get("elapsed_ms", 0),
     }
-    # Keep the legacy fields consumed by feedback arbitration.
-    record["status"] = str(output.get("status") or "")
-    record["frontier"] = str(output.get("first_unreached_role") or output.get("last_hit_role") or "")
-    probes.append(record)
-    state.metadata[FRONTIER_PROBES] = probes[-8:]
+    # Store output — GDB output can be 5-6KB with backtrace + variables,
+    # which is critical for the model to reason about why PoC doesn't trigger.
+    # Cap at 8000 chars to avoid bloat while preserving diagnostic value.
+    output_text = str(output.get("output") or "")
+    if len(output_text) > 8000:
+        record["output_snippet"] = output_text[:3000] + "\n...[truncated]...\n" + output_text[-3000:]
+    else:
+        record["output"] = output_text
+    evidence_list.append(record)
+    state.metadata[RUNTIME_EVIDENCE] = evidence_list[-12:]
 
-    outcome = str(output.get("status") or "")
-    if outcome in {"harness_not_reached", "parser_rejected", "dispatch_not_selected", "sink_not_reached", "sink_reached_trigger_unmet", "capability_error", "inconclusive"}:
-        kind = {
-            "harness_not_reached": "path_not_reached",
-            "parser_rejected": "path_not_reached",
-            "dispatch_not_selected": "path_not_reached",
-            "sink_not_reached": "path_not_reached",
-            "sink_reached_trigger_unmet": "trigger_condition_not_satisfied",
-            "capability_error": "frontier_unknown",
-            "inconclusive": "frontier_unknown",
-        }.get(outcome, "frontier_unknown")
-        try:
-            state.append_negative_evidence(
-                kind=kind,
-                objective_id=str(output.get("objective_id") or ""),
-                ranked_path_id=str(output.get("path_id") or ""),
-                summary=f"probe_runtime_frontier status={outcome}",
-                avoid_next="Use the last-hit/first-unreached frontier before mutating the same field again.",
-            )
-        except Exception:
-            pass
+    # No auto-classification into sink_not_reached, capability_error, etc.
+    # No negative_evidence generation.
+    # The model interprets raw GDB output via Dynamic Evidence section.
 
-    bump_context_revision(state, "frontier_probes")
+    # Clear pending_reproduction flag (GDB diagnosis complete)
+    from ..tools.dynamic_execution import _settle_reproduction
+    if output.get("status") == "error":
+        _settle_reproduction(state, latch=True)
+    else:
+        _settle_reproduction(state, latch=False)
+
     bump_context_revision(state, "runtime_evidence")
+    _refresh_feedback_action_after_dynamic_result(agent, state)
 
 
-def _frontier_recommended_action(status: str) -> str:
-    return {
-        "harness_not_reached": "extract_harness_protocol",
-        "parser_rejected": "repair_carrier",
-        "dispatch_not_selected": "localize_field",
-        "sink_not_reached": "localize_field",
-        "sink_reached_trigger_unmet": "localize_field",
-        "capability_error": "extract_harness_protocol",
-        "inconclusive": "extract_harness_protocol",
-    }.get(status, "")
+# _frontier_recommended_action removed — gdb_debug returns raw facts,
+# not auto-classified frontier statuses.
 
 
 # ---------------------------------------------------------------------------

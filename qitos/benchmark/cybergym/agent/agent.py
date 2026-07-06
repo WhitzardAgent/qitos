@@ -216,20 +216,32 @@ class CyberGymAgent(StaticAnalysisRuntimeMixin, StateInitMixin, TaskAnalysisMixi
         if not payload:
             return bundle
         allowed = self._layered_tool_schema_names(state)
+        required_dynamic_tool = self._required_dynamic_tool_name(state)
         filtered = [
             item
             for item in payload
             if str((item.get("function") or {}).get("name") or "") in allowed
         ]
-        if not filtered or len(filtered) == len(payload):
+        if not required_dynamic_tool and (not filtered or len(filtered) == len(payload)):
             return bundle
         metadata = dict(bundle.metadata or {})
         metadata["tool_schema_payload_filtered"] = True
-        metadata["tool_schema_payload_filter_reason"] = (
-            self._tool_schema_filter_reason(state)
-            if self._should_filter_to_candidate_tools(state)
-            else "layered_aci_tools"
-        )
+        if required_dynamic_tool:
+            exposed_names = {
+                str((item.get("function") or {}).get("name") or "")
+                for item in filtered
+            }
+            metadata["tool_schema_payload_filter_reason"] = "required_dynamic_tool"
+            metadata["required_dynamic_tool"] = required_dynamic_tool
+            metadata["required_dynamic_tool_exposed"] = (
+                exposed_names == {required_dynamic_tool} and len(filtered) == 1
+            )
+        else:
+            metadata["tool_schema_payload_filter_reason"] = (
+                self._tool_schema_filter_reason(state)
+                if self._should_filter_to_candidate_tools(state)
+                else "layered_aci_tools"
+            )
         metadata["tool_schema_payload_tool_count"] = len(filtered)
         return PromptBuildResult(
             system_prompt_static=bundle.system_prompt_static,
@@ -270,6 +282,10 @@ class CyberGymAgent(StaticAnalysisRuntimeMixin, StateInitMixin, TaskAnalysisMixi
         note_sig = self._exploration_note_signature(state)
 
         if not prompt_state.get("initialized"):
+            # Cache env_runner on state for container-aware rediscovery
+            env_runner = getattr(self, "env", None)
+            if env_runner is not None:
+                state.metadata["_env_runner"] = env_runner
             obs_result = self._render_observation(state, is_initial=True)
             prepared = _sanitize_model_text(obs_result.text)
             prepared = self._inject_static_analysis_brief(state, prepared)
@@ -308,6 +324,11 @@ class CyberGymAgent(StaticAnalysisRuntimeMixin, StateInitMixin, TaskAnalysisMixi
                 "note_sig": note_sig,
             }
         )
+
+        # Cache env_runner on state for container-aware rediscovery
+        env_runner = getattr(self, "env", None)
+        if env_runner is not None:
+            state.metadata["_env_runner"] = env_runner
 
         obs_result = self._render_observation(state, is_initial=False)
         prepared = _sanitize_model_text(obs_result.text)
@@ -509,6 +530,12 @@ class CyberGymAgent(StaticAnalysisRuntimeMixin, StateInitMixin, TaskAnalysisMixi
         decision: Decision,
     ) -> CyberGymState:
         """Reduce observation into the next state."""
+        # Cache env_runner on state so observation rendering can use it
+        # for container-aware rediscovery of staged binary capability.
+        env_runner = getattr(self, "env", None)
+        if env_runner is not None and not isinstance(state.metadata.get("_env_runner"), type(env_runner)):
+            state.metadata["_env_runner"] = env_runner
+
         from .agent_impl.reducer import (
             advance_phase,
             apply_consecutive_miss_nudge,
