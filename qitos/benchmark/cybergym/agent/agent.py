@@ -404,6 +404,20 @@ class CyberGymAgent(StaticAnalysisRuntimeMixin, StateInitMixin, TaskAnalysisMixi
         state.durable_project_memory = refreshed
 
     @staticmethod
+    def _preserved_project_memory(state: CyberGymState) -> Dict[str, Any]:
+        """Keep compact cross-refresh facts that are not rebuilt from evidence.
+
+        Delegate artifacts are written asynchronously by the runtime and must
+        survive evidence-index refreshes.  Everything else is reconstructed
+        above so stale prompt-facing data cannot accumulate indefinitely.
+        """
+        return {
+            str(key): value
+            for key, value in dict(state.durable_project_memory or {}).items()
+            if str(key).startswith("last_delegate_")
+        }
+
+    @staticmethod
     def _append_capped_fact(items: List[str], fact: str, *, limit: int = 6) -> List[str]:
         from .agent_impl.core.fact_extraction import append_capped_fact
         return append_capped_fact(items, fact, limit=limit)

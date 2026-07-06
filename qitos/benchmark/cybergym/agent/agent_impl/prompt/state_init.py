@@ -182,7 +182,12 @@ class StateInitMixin:
 
 
 def _initialize_dynamic_environment(state: CyberGymState) -> None:
-    """Record staged binary capability and conservative invocation profile."""
+    """Record staged binary capability and conservative invocation profile.
+
+    Host-side discovery runs first.  When it fails because /out only
+    exists inside the Docker container (binary_root_missing), set a
+    flag so the dynamic tools can re-discover via env_runner later.
+    """
     try:
         from ..runtime.staged_binary import discover_staged_binary_capability
         from ..runtime.invocation_profile import build_invocation_profile
@@ -191,6 +196,12 @@ def _initialize_dynamic_environment(state: CyberGymState) -> None:
         state.metadata[STAGED_BINARY_CAPABILITY] = capability.to_dict()
         profile = build_invocation_profile(state, capability)
         state.metadata[INVOCATION_PROFILE] = profile.to_dict()
+
+        # If host-side discovery failed due to binary_root_missing, mark
+        # for lazy container-aware re-discovery when runtime_context is
+        # available (i.e. when dynamic tools' validate_input is called).
+        if not capability.available and "binary_root_missing" in (capability.reason or ""):
+            state.metadata["_need_container_rediscovery"] = True
     except Exception as exc:
         state.metadata[STAGED_BINARY_CAPABILITY] = {
             "available": False,

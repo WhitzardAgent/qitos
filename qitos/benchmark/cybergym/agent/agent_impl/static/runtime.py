@@ -1044,7 +1044,10 @@ class StaticAnalysisRuntimeMixin:
                 ctx_lines.append(f"- Risk: {signal.get('kind')}: {signal.get('expression', '')[:120]}")
             controlled = read_result.get("input_controlled_parameters") or {}
             if controlled:
-                ctx_lines.append(f"- Input controlled: {'; '.join(f'{name}({', '.join(values)})' for name, values in list(controlled.items())[:3])}")
+                controlled_parts = []
+                for name, values in list(controlled.items())[:3]:
+                    controlled_parts.append(f"{name}({', '.join(values)})")
+                ctx_lines.append(f"- Input controlled: {'; '.join(controlled_parts)}")
             if read_result.get("focus_role"):
                 ctx_lines.append(f"- Role: {read_result['focus_role']}")
             # Store navigation leads from read analysis for Next Action

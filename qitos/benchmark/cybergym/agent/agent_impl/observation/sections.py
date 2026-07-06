@@ -165,9 +165,15 @@ class SectionMixin:
             if last_result:
                 vul_exit = last_result.get("vul_exit_code")
                 if vul_exit is not None:
-                    confirmed_items.append(
-                        f"- PoC reaches harness (vul_exit={vul_exit}) [source: submit_poc]"
-                    )
+                    if vul_exit == 0:
+                        confirmed_items.append(
+                            "- Target process exited normally (vul_exit=0); "
+                            "parser/sink reachability unknown [source: submit_poc]"
+                        )
+                    else:
+                        confirmed_items.append(
+                            f"- Vulnerable target exited nonzero (vul_exit={vul_exit}) [source: submit_poc]"
+                        )
 
         if confirmed_items:
             lines.append("")
@@ -283,10 +289,20 @@ class SectionMixin:
             unknown_items.append("- Description analysis: not yet structured [source: unset]")
         for hint in list(getattr(state, "unresolved_search_hints", []) or [])[:4]:
             unknown_items.append(IRRenderer.render_unresolved_hint(hint))
-        if not getattr(state, "harness_entry_confirmed", False):
+        has_likely_harness = bool(list(getattr(state, "harness_candidates", []) or []))
+        has_submit_feedback = int(getattr(state, "poc_attempts", 0) or 0) > 0
+        if (
+            not getattr(state, "harness_entry_confirmed", False)
+            and not has_likely_harness
+            and not has_submit_feedback
+        ):
             unknown_items.append("- Harness: which fuzzer targets the vulnerability? [source: unresolved]")
         consumption = getattr(getattr(state, "input_format", None), "consumption", None)
-        if consumption and getattr(consumption, "status", "") in {"partial", "unresolved"}:
+        if (
+            consumption
+            and getattr(consumption, "status", "") in {"partial", "unresolved"}
+            and not has_submit_feedback
+        ):
             unknown_items.append(
                 "- Harness consumption: partial/unknown; unresolved first hops remain possible path anchors [source: harness AST]"
             )
@@ -775,14 +791,29 @@ class SectionMixin:
             lines.append(f"({poc_attempts} attempts)")
 
         # Render feedback as a table
-        trimmed = state.hot_feedback_window[-3:]
+        runtime_records = [
+            item for item in list((state.metadata or {}).get("runtime_evidence", []) or [])
+            if isinstance(item, dict)
+        ]
+
+        def _has_runtime_evidence_for_path(path: str) -> bool:
+            if not path:
+                return False
+            for record in reversed(runtime_records):
+                recorded = str(record.get("candidate_path") or "")
+                if recorded and (recorded == path or recorded.endswith("/" + path) or path.endswith("/" + recorded)):
+                    return True
+            return False
+
+        trimmed = state.hot_feedback_window[-5:]
         if trimmed:
             lines.append("")
-            lines.append("| # | PoC | Result | Key insight |")
-            lines.append("|---|-----|--------|------------|")
+            lines.append("| # | PoC | Result | Family | Runtime evidence | Key insight |")
+            lines.append("|---|-----|--------|--------|------------------|------------|")
             for i, item in enumerate(trimmed, 1):
                 poc_path = str(getattr(item, "poc_path", "") or "")
                 poc_name = poc_path.split("/")[-1] if poc_path else "?"
+                family = str(getattr(item, "family_id", "") or "?")[:24]
                 output = str(getattr(item, "output", "") or "").strip()
                 # Extract key info from output
                 size_match = ""
@@ -809,15 +840,16 @@ class SectionMixin:
                 # Key insight: extract from suggested_action or gate info
                 suggested = str(getattr(item, "suggested_action", "") or "").strip()
                 insight = suggested[:80] if suggested else "Execution successful, no crash"
-                lines.append(f"| {i} | {poc_name}{size_match} | {result} | {insight} |")
+                runtime_seen = "yes" if _has_runtime_evidence_for_path(poc_path) else "no"
+                lines.append(f"| {i} | {poc_name}{size_match} | {result} | {family} | {runtime_seen} | {insight} |")
 
         # Pattern analysis if consecutive misses >= 3
         if consecutive >= 3:
             lines.append("")
             lines.append(
                 f"**Pattern**: {consecutive} consecutive no-crash submissions. "
-                "Classify the miss before more variants: path not reached vs. path reached "
-                "but trigger condition unmet."
+                "Classify the miss with run_candidate before more variants: path not reached "
+                "vs. path reached but trigger condition unmet."
             )
 
         # Negative evidence impact display

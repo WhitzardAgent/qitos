@@ -11,7 +11,10 @@ from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 from .metadata_keys import (
     CONTEXT_REVISIONS,
+    INVOCATION_PROFILE,
+    LAST_FEEDBACK_ACTION,
     RUNTIME_EVIDENCE,
+    STAGED_BINARY_CAPABILITY,
     bump_context_revision_value,
     get_context_revision_map,
     set_context_revision_map,
@@ -75,6 +78,92 @@ def any_revision_changed(
     return False
 
 
+def _runtime_capability_summary(state: CyberGymState) -> str:
+    metadata = getattr(state, "metadata", {}) or {}
+    capability = metadata.get(STAGED_BINARY_CAPABILITY) or {}
+    profile = metadata.get(INVOCATION_PROFILE) or {}
+    rediscovery = bool(metadata.get("_need_container_rediscovery"))
+
+    if rediscovery:
+        staged = "rediscovery_pending"
+    elif isinstance(capability, dict) and capability.get("available"):
+        staged = "available"
+    else:
+        staged = "unavailable"
+
+    profile_mode = str(profile.get("mode") or "unknown") if isinstance(profile, dict) else "unknown"
+    if isinstance(capability, dict) and "gdb_available" in capability:
+        gdb = "true" if capability.get("gdb_available") else "false"
+    else:
+        gdb = "unknown"
+    reason = ""
+    if isinstance(capability, dict):
+        reason = str(capability.get("reason") or "")[:80]
+    if not reason and isinstance(profile, dict) and profile_mode == "unknown":
+        reason = str(profile.get("reason") or "")[:80]
+    suffix = f" reason={reason}" if reason else ""
+    return (
+        "- Runtime capability: dynamic_tools=registered "
+        f"staged={staged} profile={profile_mode} gdb={gdb}{suffix}"
+    )
+
+
+def _latest_feedback_candidate_path(state: CyberGymState) -> str:
+    for item in reversed(list(getattr(state, "hot_feedback_window", []) or [])):
+        path = str(getattr(item, "poc_path", "") or "").strip()
+        if path:
+            return path
+    for fact in reversed(list(getattr(state, "durable_feedback_facts", []) or [])):
+        text = str(fact or "").strip()
+        if text.startswith("feedback_poc_path:"):
+            return text.split(":", 1)[1].strip()
+    return str(getattr(state, "last_submitted_poc_path", "") or "").strip()
+
+
+def _same_candidate_path(left: str, right: str) -> bool:
+    return bool(left and right) and (
+        left == right or left.endswith("/" + right) or right.endswith("/" + left)
+    )
+
+
+def _runtime_evidence_for_candidate(
+    state: CyberGymState,
+    candidate_path: str,
+) -> Dict[str, Any] | None:
+    records = (getattr(state, "metadata", {}) or {}).get(RUNTIME_EVIDENCE, [])
+    if not isinstance(records, list):
+        return None
+    for record in reversed(records):
+        if not isinstance(record, dict):
+            continue
+        recorded_path = str(record.get("candidate_path") or "").strip()
+        if recorded_path and _same_candidate_path(recorded_path, candidate_path):
+            return record
+    return None
+
+
+def _latest_submit_was_miss(state: CyberGymState) -> bool:
+    last = getattr(state, "last_verification_result", {}) or {}
+    if not isinstance(last, dict):
+        return False
+    if last.get("accepted") is True or last.get("status") == "error":
+        return False
+    vul = last.get("vul_exit_code")
+    return vul is None or vul == 0
+
+
+def _runtime_evidence_gap_line(state: CyberGymState) -> str:
+    candidate = _latest_feedback_candidate_path(state)
+    if not candidate or not _latest_submit_was_miss(state):
+        return ""
+    if _runtime_evidence_for_candidate(state, candidate):
+        return ""
+    return (
+        f"- Evidence gap: latest submit no-trigger for {candidate}; "
+        "no run_candidate evidence yet."
+    )
+
+
 # ------------------------------------------------------------------
 # Six-section rendering helpers
 # ------------------------------------------------------------------
@@ -82,6 +171,7 @@ def any_revision_changed(
 def render_assessment_contract_snippets(state: CyberGymState) -> List[str]:
     """Render objective/protocol/consistency summary into Current Assessment."""
     lines: List[str] = []
+    lines.append(_runtime_capability_summary(state))
 
     # Active trigger objectives
     objectives = list(getattr(state, "active_trigger_objectives", []) or [])
@@ -448,6 +538,10 @@ def render_experiment_contract_snippets(state: CyberGymState) -> List[str]:
             block_tag = " BLOCKED" if blocks else ""
             lines.append(f"- feedback{block_tag}: {action} — {reason}")
 
+    evidence_gap = _runtime_evidence_gap_line(state)
+    if evidence_gap:
+        lines.append(evidence_gap)
+
     # Last PoC sanity
     last_sanity = (state.metadata or {}).get("last_poc_sanity") or {}
     if last_sanity and not last_sanity.get("passed", True):
@@ -493,11 +587,32 @@ def derive_contract_next_action_block(state: CyberGymState) -> Dict[str, str]:
     metadata = getattr(state, "metadata", {}) or {}
 
     # 1. Feedback arbitration hard block
-    feedback_action = metadata.get("last_feedback_action") or {}
+    feedback_action = metadata.get(LAST_FEEDBACK_ACTION) or {}
     if feedback_action.get("blocks_submit"):
         action = feedback_action.get("action", "")
         reason = feedback_action.get("reason", "")
         target_ids = feedback_action.get("target_ids", {}) or {}
+        if action == "run_candidate":
+            candidate_path = str(target_ids.get("candidate_path") or "")
+            objective_id = str(target_ids.get("objective_id") or "")
+            return {
+                "required": "run_candidate",
+                "why": reason[:200],
+                "target": f"candidate_path={candidate_path}; objective_id={objective_id}",
+                "stop_condition": "runtime evidence is recorded for this candidate",
+                "do_not": "submit another PoC or continue broad source reading before runtime diagnosis",
+            }
+        if action == "probe_runtime_frontier":
+            candidate_path = str(target_ids.get("candidate_path") or "")
+            objective_id = str(target_ids.get("objective_id") or "")
+            path_id = str(target_ids.get("ranked_path_id") or "")
+            return {
+                "required": "probe_runtime_frontier",
+                "why": reason[:200],
+                "target": f"candidate_path={candidate_path}; objective_id={objective_id}; path_id={path_id}",
+                "stop_condition": "first_unreached_role/last_hit_role is recorded or probe is inconclusive with evidence_ref",
+                "do_not": "submit another PoC before resolving the runtime frontier",
+            }
         stop_cond = feedback_action.get("prompt_instruction", "")
         return {
             "required": f"Feedback required: {action}",
@@ -707,6 +822,8 @@ def render_context_contract_slots(state: CyberGymState) -> Dict[str, List[str]]:
 
     # === Assessment slots (must appear in first 8 lines) ===
 
+    slots["assessment"].append(_runtime_capability_summary(state))
+
     # 1. Active objective
     objectives = list(getattr(state, "active_trigger_objectives", []) or [])
     active_objs = [o for o in objectives if o.get("status") == "active"]
@@ -879,6 +996,10 @@ def render_context_contract_slots(state: CyberGymState) -> Dict[str, List[str]]:
         if action:
             tag = " BLOCKED" if blocks else ""
             slots["experiments"].append(f"- Feedback{tag}: {action} — {reason}")
+
+    evidence_gap = _runtime_evidence_gap_line(state)
+    if evidence_gap:
+        slots["experiments"].append(evidence_gap)
 
     # 2. Runtime evidence (compact only; full stdout/stderr stays in artifacts)
     runtime_records = [

@@ -6,6 +6,7 @@ from typing import Any
 from ...state import CyberGymState
 from ...agent_impl.core.constants import FAILURE_REFLECTION_ACK_KEY
 from ..core.fact_extraction import append_capped_fact
+from ..core.metadata_keys import LAST_FEEDBACK_ACTION, LAST_FEEDBACK_ACTION_RESULT
 
 
 def process_submit_result(agent: Any, state: CyberGymState, result: Any, output: Any) -> None:
@@ -236,6 +237,11 @@ def process_submit_result(agent: Any, state: CyberGymState, result: Any, output:
                         "Your constraint board may have incorrect gates. "
                         "Re-READ the call chain and use record_gate to update."
                     )
+        _record_feedback_arbitration(
+            state=state,
+            output=output,
+            failed_gate=gate or "no_crash_unknown",
+        )
 
     # Gate board stagnation check
     stale_steps = (
@@ -248,3 +254,49 @@ def process_submit_result(agent: Any, state: CyberGymState, result: Any, output:
             f"and {state.consecutive_misses} submissions failed. "
             "READ the code and use record_gate to update your gates."
         )
+
+
+def _record_feedback_arbitration(
+    *,
+    state: CyberGymState,
+    output: dict[str, Any],
+    failed_gate: str,
+) -> None:
+    """Store the post-submit arbitration result for Runtime Context.
+
+    Dynamic diagnosis actions are intentionally not auto-executed here: the
+    model must call the registered tool on the next step so the action appears
+    in the trace and goes through normal tool validation.
+    """
+    if output.get("status") == "error":
+        return
+    vul_code = output.get("vul_exit_code")
+    if vul_code is not None and vul_code != 0:
+        return
+
+    try:
+        from ..feedback.arbitration import derive_feedback_action
+        from ..feedback.action_runner import execute_feedback_action_if_safe
+        from ..core.runtime_context_contract import bump_context_revision
+
+        action = derive_feedback_action(
+            state=state,
+            submit_result=output,
+            failed_gate=failed_gate or "no_crash_unknown",
+        )
+        if action:
+            state.metadata[LAST_FEEDBACK_ACTION] = action
+            bump_context_revision(state, "feedback_action")
+            if action.get("action") not in {"run_candidate", "probe_runtime_frontier"}:
+                result = execute_feedback_action_if_safe(state, action)
+                state.metadata[LAST_FEEDBACK_ACTION_RESULT] = result
+                bump_context_revision(state, "feedback_action")
+    except Exception as exc:
+        state.metadata[LAST_FEEDBACK_ACTION] = {
+            "action": "arbitration_error",
+            "reason": f"{type(exc).__name__}:{str(exc)[:160]}",
+            "negative_evidence_kind": "",
+            "blocks_submit": False,
+            "target_ids": {},
+            "prompt_instruction": "",
+        }

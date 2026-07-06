@@ -69,7 +69,7 @@ class PromptsMixin:
             if carrier:
                 parts.append("\n## Format Carrier Guidance")
                 parts.append("\n".join(carrier.split("\n")[:60]))
-        actions = prompt_resource("procedure_memory/poc_action_templates.md")
+        actions = prompt_resource("procedure_memory/candidate_action_templates.md")
         if actions:
             parts.append("\n## PoC Action Templates")
             parts.append("\n".join(actions.split("\n")[:50]))

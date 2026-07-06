@@ -146,6 +146,106 @@ def _is_relative_to(path: Path, root: Path) -> bool:
         return False
 
 
+def discover_staged_binary_capability_from_env(
+    env_runner,
+    *,
+    env: Mapping[str, str] | None = None,
+    binary_root: str | None = None,
+    library_root: str | None = None,
+) -> StagedBinaryCapability:
+    """Container-aware discovery using env_runner.cmd.run().
+
+    When the agent process runs on the host but /out only exists inside
+    the Docker container, this function probes the container filesystem
+    via the env_runner (DockerEnv) instead of host-side Path/subprocess.
+    """
+    env_map = dict(os.environ if env is None else env)
+    enabled = str(env_map.get("CYBERGYM_STAGE_VUL_BINARY", "")).strip().lower()
+    if enabled not in _TRUE_VALUES:
+        return StagedBinaryCapability(
+            available=False,
+            reason="staging_disabled",
+            source="unavailable",
+        )
+
+    root = binary_root or env_map.get("CYBERGYM_STAGED_BINARY_ROOT") or _DEFAULT_BINARY_ROOT
+    lib_root_path = library_root or env_map.get("CYBERGYM_STAGED_LIBRARY_ROOT") or _DEFAULT_LIBRARY_ROOT
+
+    cmd = getattr(env_runner, "cmd", None)
+    if cmd is None:
+        return StagedBinaryCapability(
+            available=False,
+            reason="no_cmd_capability",
+            source="unavailable",
+        )
+
+    # Probe binary root directory existence
+    r = cmd.run(f"test -d {root}", timeout=10)
+    if r.get("returncode", 1) != 0:
+        gdb_avail = _gdb_available_from_cmd(cmd)
+        return StagedBinaryCapability(
+            available=False,
+            reason=f"binary_root_missing:{root}",
+            source="qitos_env",
+            gdb_available=gdb_avail,
+        )
+
+    # Discover executables inside container
+    r = cmd.run(f"find {root} -maxdepth 1 -type f -executable ! -name '.*'", timeout=10)
+    candidates: list[str] = []
+    if r.get("returncode", 1) == 0:
+        for line in r.get("stdout", "").splitlines():
+            line = line.strip()
+            if line:
+                candidates.append(line)
+    candidates.sort()
+
+    # Check library root
+    r_lib = cmd.run(f"test -d {lib_root_path}", timeout=10)
+    library_path = lib_root_path if r_lib.get("returncode", 1) == 0 else None
+
+    gdb_avail = _gdb_available_from_cmd(cmd)
+
+    if not candidates:
+        return StagedBinaryCapability(
+            available=False,
+            binary_candidates=(),
+            library_path=library_path,
+            gdb_available=gdb_avail,
+            reason="no_executable_in_binary_root",
+            source="qitos_env",
+        )
+
+    if len(candidates) > 1:
+        return StagedBinaryCapability(
+            available=False,
+            binary_candidates=tuple(candidates),
+            library_path=library_path,
+            gdb_available=gdb_avail,
+            reason="ambiguous_executable_candidates",
+            source="qitos_env",
+        )
+
+    return StagedBinaryCapability(
+        available=True,
+        binary_path=candidates[0],
+        binary_candidates=tuple(candidates),
+        library_path=library_path,
+        gdb_available=gdb_avail,
+        reason="ok",
+        source="qitos_env",
+    )
+
+
+def _gdb_available_from_cmd(cmd) -> bool:
+    """Check GDB availability via env_runner.cmd."""
+    try:
+        r = cmd.run("gdb --version", timeout=5)
+        return r.get("returncode", 1) == 0
+    except Exception:
+        return False
+
+
 def _gdb_available(probe: bool, *, timeout_seconds: float) -> bool:
     if not probe:
         return False

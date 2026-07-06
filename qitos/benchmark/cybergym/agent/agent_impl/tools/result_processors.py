@@ -155,7 +155,7 @@ def handle_probe_runtime_frontier_result(agent: Any, state: CyberGymState, resul
     state.metadata[FRONTIER_PROBES] = probes[-8:]
 
     outcome = str(output.get("status") or "")
-    if outcome in {"harness_not_reached", "parser_rejected", "dispatch_not_selected", "sink_not_reached", "sink_reached_trigger_unmet", "capability_error"}:
+    if outcome in {"harness_not_reached", "parser_rejected", "dispatch_not_selected", "sink_not_reached", "sink_reached_trigger_unmet", "capability_error", "inconclusive"}:
         kind = {
             "harness_not_reached": "path_not_reached",
             "parser_rejected": "path_not_reached",
@@ -163,6 +163,7 @@ def handle_probe_runtime_frontier_result(agent: Any, state: CyberGymState, resul
             "sink_not_reached": "path_not_reached",
             "sink_reached_trigger_unmet": "trigger_condition_not_satisfied",
             "capability_error": "frontier_unknown",
+            "inconclusive": "frontier_unknown",
         }.get(outcome, "frontier_unknown")
         try:
             state.append_negative_evidence(
@@ -187,6 +188,7 @@ def _frontier_recommended_action(status: str) -> str:
         "sink_not_reached": "localize_field",
         "sink_reached_trigger_unmet": "localize_field",
         "capability_error": "extract_harness_protocol",
+        "inconclusive": "extract_harness_protocol",
     }.get(status, "")
 
 

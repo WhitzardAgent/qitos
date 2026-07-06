@@ -617,6 +617,40 @@ class ClaudeStyleHook(RenderStreamHook):
                             if not stripped:
                                 continue
                             self._rail("bright_blue", f"[bright_blue]{stripped}[/bright_blue]")
+                    # Render Current Assessment — Confirmed/Likely/Dynamic Evidence/Unknown
+                    current_assessment = stats.get("current_assessment")
+                    if isinstance(current_assessment, str) and current_assessment.strip():
+                        for line in current_assessment.strip().splitlines():
+                            stripped = line.strip()
+                            if not stripped:
+                                self.console.print("")
+                                continue
+                            if stripped.startswith("### Runtime Contract"):
+                                self._rail("bright_cyan", f"[bold bright_cyan]{stripped}[/bold bright_cyan]")
+                            elif stripped.startswith("### Confirmed"):
+                                self._rail("green", f"[bold green]{stripped}[/bold green]")
+                            elif stripped.startswith("### Likely"):
+                                self._rail("yellow", f"[bold yellow]{stripped}[/bold yellow]")
+                            elif stripped.startswith("### Dynamic Evidence"):
+                                self._rail("bright_magenta", f"[bold bright_magenta]{stripped}[/bold bright_magenta]")
+                            elif stripped.startswith("### Unknown"):
+                                self._rail("gray50", f"[dim]{stripped}[/dim]")
+                            elif stripped.startswith("- ") and "confirmed" in stripped.lower():
+                                self._rail("green", f"[green]{stripped}[/green]")
+                            elif stripped.startswith("  "):
+                                # Indented content (e.g. GDB output lines)
+                                self._rail("gray70", f"[dim]{stripped}[/dim]")
+                            else:
+                                self._rail("gray70", stripped)
+                    # Render Experiments — dynamic evidence details
+                    experiments = stats.get("experiments")
+                    if isinstance(experiments, str) and experiments.strip():
+                        self._rail("bright_magenta", "[bold bright_magenta]── Experiments ──[/bold bright_magenta]")
+                        for line in experiments.strip().splitlines():
+                            stripped = line.strip()
+                            if not stripped:
+                                continue
+                            self._rail("bright_magenta", f"[bright_magenta]{stripped}[/bright_magenta]")
                     self._state_steps.add(event.step_id)
                 return
             if event.step_id in self._thought_steps:

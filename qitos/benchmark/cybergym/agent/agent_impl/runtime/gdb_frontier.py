@@ -84,6 +84,10 @@ def build_frontier_probe_points(
         point = _point_from_chain(nodes, role)
         if point is None and role == "harness_entry":
             point = _point_from_harness(state)
+        if point is None and role in {"parser_accept", "dispatch", "pre_sink", "trigger_condition"}:
+            point = _point_from_ranked_path(state, role)
+        if point is None and role in {"parser_accept", "dispatch", "pre_sink", "trigger_condition"}:
+            point = _point_from_gate(state, role)
         if point is None and role == "sink":
             point = _point_from_sink(state)
         if point is not None:
@@ -339,6 +343,84 @@ def _point_from_sink(state: Any) -> FrontierProbePoint | None:
     return None
 
 
+def _point_from_ranked_path(state: Any, role: str) -> FrontierProbePoint | None:
+    paths = list(getattr(state, "ranked_vulnerability_paths", []) or [])
+    role_keys = {
+        "parser_accept": ("parser", "parser_accept", "next_read", "entry", "source"),
+        "dispatch": ("dispatch", "selector", "next_read"),
+        "pre_sink": ("pre_sink", "guard", "next_read", "endpoint"),
+        "trigger_condition": ("trigger", "trigger_condition", "endpoint"),
+    }.get(role, ())
+    for idx, path in enumerate(paths):
+        candidates: list[dict[str, Any]] = []
+        for key in role_keys:
+            value = path.get(key)
+            if isinstance(value, dict):
+                candidates.append(value)
+        endpoint = path.get("endpoint")
+        if isinstance(endpoint, dict):
+            candidates.append(endpoint)
+        for candidate in candidates:
+            function = str(candidate.get("function") or candidate.get("symbol") or "")
+            file = str(candidate.get("file") or candidate.get("path") or "")
+            line = int(candidate.get("line") or candidate.get("lineno") or 0)
+            if not function and not (file and line):
+                continue
+            return FrontierProbePoint(
+                probe_id=f"probe_{role}_ranked_{idx}",
+                role=role,
+                function=function or None,
+                file=file or None,
+                line=line or None,
+                evidence_id=str(path.get("path_id") or ""),
+                confidence=float(path.get("score", 0.55) or 0.55),
+            )
+    return None
+
+
+def _point_from_gate(state: Any, role: str) -> FrontierProbePoint | None:
+    gates = []
+    if hasattr(state, "chain_gates"):
+        gates.extend(list(getattr(state, "chain_gates", []) or []))
+    if hasattr(state, "open_gates"):
+        try:
+            gates.extend(list(state.open_gates() or []))
+        except Exception:
+            pass
+    role_by_gate = {
+        "format_gate": "parser_accept",
+        "dispatch_gate": "dispatch",
+        "path_gate": "pre_sink",
+        "bounds_gate": "trigger_condition",
+        "value_gate": "trigger_condition",
+    }
+    for idx, gate in enumerate(gates):
+        gate_role = role_by_gate.get(str(getattr(gate, "gate_type", "") or ""), "pre_sink")
+        if gate_role != role:
+            continue
+        source_span = getattr(gate, "source_span", {}) or {}
+        file = str(source_span.get("file") or source_span.get("path") or "")
+        line = int(source_span.get("line") or source_span.get("start_line") or 0)
+        if not file or not line:
+            text = " ".join(
+                str(getattr(gate, name, "") or "")
+                for name in ("evidence", "description", "required_condition")
+            )
+            match = re.search(r"([A-Za-z0-9_./+-]+\.[A-Za-z0-9_+-]+):(\d+)", text)
+            if match:
+                file, line = match.group(1), int(match.group(2))
+        if file and line:
+            return FrontierProbePoint(
+                probe_id=f"probe_{role}_gate_{idx}",
+                role=role,
+                file=file,
+                line=line,
+                evidence_id=str(getattr(gate, "path_id", "") or getattr(gate, "sink_id", "") or ""),
+                confidence=0.6,
+            )
+    return None
+
+
 def _breakpoint_target(point: FrontierProbePoint) -> str:
     if point.file and point.line:
         return f"{point.file}:{int(point.line)}"
@@ -440,10 +522,11 @@ def _capability_result(
     start: float,
     error: str,
 ) -> RuntimeFrontierResult:
+    status = "inconclusive" if error == "no_source_backed_probe_points" else "capability_error"
     evidence_ref = write_runtime_artifact(
         workspace_root=workspace_root,
         candidate_digest=f"{candidate_digest}_frontier",
-        payload={"error": error, "status": "capability_error"},
+        payload={"error": error, "status": status},
     )
     return RuntimeFrontierResult(
         candidate_digest=candidate_digest,
@@ -452,7 +535,7 @@ def _capability_result(
         hit_probe_ids=(),
         last_hit_role=None,
         first_unreached_role=None,
-        status="capability_error",
+        status=status,
         evidence_ref=evidence_ref,
         elapsed_ms=int((time.monotonic() - start) * 1000),
         error=error,

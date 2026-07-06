@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib.parse import urlparse
 
 from rich import box
@@ -37,6 +37,20 @@ _NOISE_KEYS = {
     "phase",
     "hook",
 }
+
+_TEXT_BODY_KEYS = (
+    "output",
+    "stdout",
+    "stderr",
+    "raw_output",
+    "content",
+    "message",
+    "observation",
+    "text",
+    "result",
+    "summary",
+)
+_METADATA_BODY_KEYS = {"metadata"}
 
 
 class ContentFirstRenderer:
@@ -530,12 +544,7 @@ class ContentFirstRenderer:
                 "secondary_only": secondary,
             }
 
-        title = str(
-            cleaned.get("title")
-            or cleaned.get("name")
-            or ("Tool Observation" if secondary else cleaned.get("status"))
-            or ("Tool Observation" if secondary else "Observation")
-        )
+        title = self._tool_title(cleaned, secondary=secondary)
         url = str(
             cleaned.get("url")
             or cleaned.get("source_url")
@@ -548,7 +557,7 @@ class ContentFirstRenderer:
                 "status": "error",
                 "title": self._truncate(str(err), 120),
                 "url": self._short_url(url) if url else "",
-                "body": self._truncate(self._to_text(cleaned.get("content", "")), 50000),
+                "body": self._truncate(self._best_body(cleaned), 50000),
                 "primary_kind": "error",
                 "secondary_only": secondary,
             }
@@ -589,10 +598,9 @@ class ContentFirstRenderer:
         return text
 
     def _best_body(self, data: Dict[str, Any]) -> str:
-        for key in ("content", "summary", "message", "observation", "text"):
-            val = data.get(key)
-            if isinstance(val, str) and val.strip():
-                return val
+        readable = self._readable_tool_body(data)
+        if readable:
+            return readable
         lite: Dict[str, Any] = {}
         for k, v in data.items():
             if k in _NOISE_KEYS:
@@ -601,6 +609,124 @@ class ContentFirstRenderer:
                 continue
             lite[k] = v
         return self._to_text(lite)
+
+    def _tool_title(self, data: Dict[str, Any], secondary: bool = False) -> str:
+        metadata = data.get("metadata")
+        tool_name = ""
+        if isinstance(metadata, dict):
+            tool_name = str(metadata.get("tool_name") or metadata.get("name") or "").strip()
+        title = str(
+            data.get("title")
+            or data.get("name")
+            or tool_name
+            or ("Tool Observation" if secondary else data.get("status"))
+            or ("Tool Observation" if secondary else "Observation")
+        )
+        return self._truncate(title, 120)
+
+    def _readable_tool_body(self, data: Dict[str, Any]) -> str:
+        """Render tool-result payloads as operator-readable text, not raw JSON.
+
+        Engine tool results are usually wrapped as:
+
+            {"status": ..., "output": <tool payload>, "error": ..., "metadata": ...}
+
+        For nested payloads such as gdb_debug, the useful text lives under
+        ``output.output``.  The model can see it through the tool-result
+        message, so the TUI should show that same signal as readable sections
+        instead of collapsing the wrapper into a JSON preview.
+        """
+        source, wrapper = self._tool_payload_source(data)
+        if not isinstance(source, dict):
+            return ""
+
+        lines: List[str] = []
+        metadata_line = self._format_metadata_line(wrapper, source)
+        if metadata_line:
+            lines.append(metadata_line)
+
+        for key in ("commands", "command"):
+            if key not in source:
+                continue
+            command_block = self._format_sequence_block("Commands", source.get(key))
+            if command_block:
+                if lines:
+                    lines.append("")
+                lines.append(command_block)
+                break
+
+        seen_texts: Set[str] = set()
+        for key, label in (
+            ("output", "Output"),
+            ("stdout", "STDOUT"),
+            ("stderr", "STDERR"),
+            ("raw_output", "Raw output"),
+            ("content", "Content"),
+            ("observation", "Observation"),
+            ("text", "Text"),
+            ("result", "Result"),
+            ("message", "Message"),
+            ("summary", "Summary"),
+        ):
+            value = source.get(key)
+            if not isinstance(value, str) or not value.strip():
+                continue
+            normalized = value.strip()
+            if normalized in seen_texts:
+                continue
+            seen_texts.add(normalized)
+            if lines:
+                lines.append("")
+            lines.append(f"{label}:")
+            lines.append(value.rstrip())
+
+        return "\n".join(lines).strip()
+
+    def _tool_payload_source(self, data: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        output = data.get("output")
+        if isinstance(output, dict):
+            return output, data
+        return data, data
+
+    def _format_metadata_line(self, wrapper: Dict[str, Any], source: Dict[str, Any]) -> str:
+        fields: Dict[str, Any] = {}
+        metadata = wrapper.get("metadata")
+        if isinstance(metadata, dict):
+            for key in ("tool_name", "attempts", "model_visible"):
+                value = metadata.get(key)
+                if value not in (None, ""):
+                    fields[key] = value
+
+        for container in (wrapper, source):
+            for key, value in container.items():
+                if key in _NOISE_KEYS or key in _METADATA_BODY_KEYS or key in _TEXT_BODY_KEYS:
+                    continue
+                if key in fields:
+                    continue
+                if value in (None, ""):
+                    continue
+                if isinstance(value, (dict, list, tuple, set)):
+                    continue
+                fields[key] = value
+
+        if not fields:
+            return ""
+        return " · ".join(f"{key}={self._format_scalar(value)}" for key, value in fields.items())
+
+    def _format_sequence_block(self, title: str, value: Any) -> str:
+        if isinstance(value, str) and value.strip():
+            return f"{title}:\n  - {value.strip()}"
+        if not isinstance(value, (list, tuple)):
+            return ""
+        items = [str(item).strip() for item in value if str(item).strip()]
+        if not items:
+            return ""
+        return f"{title}:\n" + "\n".join(f"  - {item}" for item in items)
+
+    def _format_scalar(self, value: Any) -> str:
+        if isinstance(value, float):
+            return f"{value:.3f}".rstrip("0").rstrip(".")
+        return str(value)
 
     def _strip_noise(self, data: Dict[str, Any]) -> Dict[str, Any]:
         out: Dict[str, Any] = {}

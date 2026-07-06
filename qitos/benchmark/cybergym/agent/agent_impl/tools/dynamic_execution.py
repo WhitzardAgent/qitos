@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Any, Optional
 
@@ -14,13 +13,45 @@ from ..runtime.candidate_runner import run_candidate_once
 from ..runtime.gdb_frontier import DEFAULT_PROBE_ROLES, run_gdb_frontier_probe
 
 
+def _maybe_rediscover_from_container(state, runtime_context) -> None:
+    """Lazy container-aware re-discovery of staged binary capability.
+
+    Called from validate_input when host-side discovery failed with
+    binary_root_missing.  Uses env_runner.cmd to probe /out inside
+    the Docker container.
+    """
+    metadata = getattr(state, "metadata", None)
+    if not isinstance(metadata, dict):
+        return
+    if not metadata.get("_need_container_rediscovery"):
+        return
+
+    env_runner = (runtime_context or {}).get("env")
+    if env_runner is None or not hasattr(env_runner, "cmd"):
+        return
+
+    try:
+        from ..runtime.staged_binary import discover_staged_binary_capability_from_env
+        from ..runtime.invocation_profile import build_invocation_profile
+
+        capability = discover_staged_binary_capability_from_env(env_runner)
+        metadata[STAGED_BINARY_CAPABILITY] = capability.to_dict()
+        profile = build_invocation_profile(state, capability)
+        metadata[INVOCATION_PROFILE] = profile.to_dict()
+    except Exception:
+        pass  # Keep existing metadata; validation will report the original failure
+    finally:
+        metadata.pop("_need_container_rediscovery", None)
+
+
 def dynamic_tools_enabled() -> bool:
-    return os.environ.get("CYBERGYM_ENABLE_DYNAMIC_TOOLS", "0").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
+    """Return whether dynamic tools should be exposed in the tool schema.
+
+    Dynamic tools are now always registered.  Individual executions still
+    fail closed in ``validate_input`` when staged binaries, invocation
+    profiles, or GDB are unavailable.
+    """
+    return True
 
 
 class RunCandidateTool(BaseTool):
@@ -68,6 +99,8 @@ class RunCandidateTool(BaseTool):
         candidate_path = str(args.get("candidate_path") or "").strip()
         if not candidate_path:
             return ToolValidationResult.fail("candidate_path is required")
+
+        _maybe_rediscover_from_container(state, runtime_context)
 
         metadata = getattr(state, "metadata", {}) or {}
         capability = metadata.get(STAGED_BINARY_CAPABILITY) or {}
@@ -175,6 +208,8 @@ class ProbeRuntimeFrontierTool(BaseTool):
             return ToolValidationResult.fail("candidate_path is required")
         if not str(args.get("objective_id") or "").strip():
             return ToolValidationResult.fail("objective_id is required")
+
+        _maybe_rediscover_from_container(state, runtime_context)
 
         metadata = getattr(state, "metadata", {}) or {}
         capability = metadata.get(STAGED_BINARY_CAPABILITY) or {}

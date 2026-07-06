@@ -18,7 +18,7 @@ Priority order (highest = most blocking):
 
 from __future__ import annotations
 
-import os
+import hashlib
 from typing import Any, TYPE_CHECKING
 
 from ..core.metadata_keys import (
@@ -48,6 +48,17 @@ def derive_feedback_action(
       target_ids: dict of scoped IDs (objective_id, transcript_id, etc.)
       prompt_instruction: instruction for the model
     """
+    if failed_gate in {
+        "no_crash_unknown",
+        "path_not_reached",
+        "trigger_wrong_signature",
+        "trigger_wrong_location",
+    }:
+        _ensure_transient_objective_for_feedback(
+            state,
+            _latest_feedback_candidate_path(state),
+        )
+
     # 1. Carrier sanity fail
     last_sanity = (state.metadata or {}).get("last_poc_sanity") or {}
     if isinstance(last_sanity, dict) and not last_sanity.get("passed", True):
@@ -363,8 +374,6 @@ def _runtime_diagnosis_action_if_applicable(
         "trigger_wrong_location",
     }:
         return None
-    if not _dynamic_tools_enabled_for_runtime():
-        return None
     if not _staged_runtime_ready(state):
         return None
 
@@ -430,17 +439,10 @@ def _runtime_diagnosis_action_if_applicable(
     return None
 
 
-def _dynamic_tools_enabled_for_runtime() -> bool:
-    return os.environ.get("CYBERGYM_ENABLE_DYNAMIC_TOOLS", "0").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
-
-
 def _staged_runtime_ready(state: CyberGymState) -> bool:
     metadata = getattr(state, "metadata", {}) or {}
+    if metadata.get("_need_container_rediscovery"):
+        return True
     capability = metadata.get(STAGED_BINARY_CAPABILITY) or {}
     profile = metadata.get(INVOCATION_PROFILE) or {}
     return (
@@ -469,6 +471,98 @@ def _latest_feedback_candidate_path(state: CyberGymState) -> str:
         if path:
             return path
     return ""
+
+
+def _ensure_transient_objective_for_feedback(
+    state: CyberGymState,
+    candidate_path: str,
+) -> None:
+    """Create a lightweight objective anchor for no-trigger diagnosis.
+
+    Dynamic diagnosis and frontier probes need a stable objective id.  Remote
+    traces showed repeated no-trigger loops with ``Active objective: (none)``,
+    so synthesize a conservative objective from the current sink/path/candidate
+    when the model has not recorded one explicitly.
+    """
+    objectives = list(getattr(state, "active_trigger_objectives", []) or [])
+    if any(isinstance(obj, dict) and obj.get("status") == "active" for obj in objectives):
+        return
+
+    ranked_path_id = _best_ranked_path_id(state)
+    target_function = ""
+    target_file = ""
+    target_line = 0
+
+    sinks = []
+    if hasattr(state, "confirmed_sink_candidates"):
+        try:
+            sinks = list(state.confirmed_sink_candidates() or [])
+        except Exception:
+            sinks = []
+    if not sinks:
+        sinks = [
+            item for item in list(getattr(state, "sink_candidates", []) or [])
+            if str(getattr(item, "status", "") or "") in {"confirmed", "candidate"}
+        ]
+
+    if sinks:
+        sink = sinks[0]
+        target_function = str(getattr(sink, "function", "") or "")
+        target_file = str(getattr(sink, "file", "") or "")
+        target_line = int(getattr(sink, "line", 0) or 0)
+        if (not target_file or not target_line) and getattr(sink, "location", ""):
+            loc_file, loc_line = _split_location(str(getattr(sink, "location") or ""))
+            target_file = target_file or loc_file
+            target_line = target_line or loc_line
+        ranked_path_id = ranked_path_id or str((getattr(sink, "metadata", {}) or {}).get("ranked_path_id") or "")
+    else:
+        ranked_paths = list(getattr(state, "ranked_vulnerability_paths", []) or [])
+        if ranked_paths:
+            path = ranked_paths[0]
+            endpoint = path.get("endpoint") or {}
+            target_function = str(endpoint.get("function") or path.get("function") or "")
+            target_file = str(endpoint.get("file") or path.get("file") or "")
+            target_line = int(endpoint.get("line") or path.get("line") or 0)
+            ranked_path_id = ranked_path_id or str(path.get("path_id") or "")
+
+    seed = "|".join(
+        [
+            str(getattr(state, "task_id", "") or ""),
+            candidate_path or str(getattr(state, "last_submitted_poc_path", "") or ""),
+            ranked_path_id,
+            target_function,
+            target_file,
+            str(target_line or ""),
+        ]
+    )
+    digest = hashlib.sha1(seed.encode("utf-8", errors="ignore")).hexdigest()[:10]
+    kind = str((getattr(state, "metadata", {}) or {}).get("crash_type_prior") or getattr(state, "bug_type", "") or "unknown_crash")
+    objective = {
+        "objective_id": f"auto_{digest}",
+        "status": "active",
+        "kind": kind or "unknown_crash",
+        "target_function": target_function,
+        "target_file": target_file,
+        "target_line": target_line,
+        "ranked_path_id": ranked_path_id,
+        "input_fields": [],
+        "source": "auto_feedback_no_trigger",
+        "candidate_path": candidate_path,
+    }
+    state.active_trigger_objectives = [*objectives, objective][-8:]
+    try:
+        from ..core.runtime_context_contract import bump_context_revision
+
+        bump_context_revision(state, "trigger_objectives")
+    except Exception:
+        pass
+
+
+def _split_location(location: str) -> tuple[str, int]:
+    raw_file, sep, raw_line = str(location or "").rpartition(":")
+    if sep and raw_line.isdigit():
+        return raw_file, int(raw_line)
+    return str(location or ""), 0
 
 
 def _active_objective_id(state: CyberGymState) -> str:

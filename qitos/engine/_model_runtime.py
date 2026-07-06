@@ -851,6 +851,14 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
                 suggested_sinks_text = metadata.get("_tui_suggested_sinks")
                 if isinstance(suggested_sinks_text, str) and suggested_sinks_text.strip():
                     stats["suggested_sinks"] = suggested_sinks_text
+                # Current Assessment (Confirmed/Likely/Dynamic Evidence/Unknown)
+                assessment_text = metadata.get("_tui_assessment")
+                if isinstance(assessment_text, str) and assessment_text.strip():
+                    stats["current_assessment"] = assessment_text
+                # Dynamic Evidence & Experiments details
+                experiments_text = metadata.get("_tui_experiments")
+                if isinstance(experiments_text, str) and experiments_text.strip():
+                    stats["experiments"] = experiments_text
         return stats
 
     @staticmethod
