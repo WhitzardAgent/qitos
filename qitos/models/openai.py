@@ -25,6 +25,30 @@ from .base import Model, ModelStreamChunk
 GLM_TOKENIZER_ENV_VARS = ("QITOS_GLM_TOKENIZER_PATH", "GLM_TOKENIZER_PATH")
 
 
+def _make_openai_client(api_key: str, base_url: str, timeout: Any) -> Any:
+    """Create an OpenAI client with optional inference-key sticky routing.
+
+    If the environment variable ``QITOS_INFERENCE_KEY`` is set, its value is
+    sent as the ``x-inspire-inference-key`` header on every request.  This
+    tells the upstream load balancer to route all requests that share the same
+    key to the same backend node, which improves KV-cache hit rates and reduces
+    latency jitter for a single task.
+    """
+    import openai
+
+    inference_key = os.environ.get("QITOS_INFERENCE_KEY")
+    if inference_key:
+        return openai.OpenAI(
+            api_key=api_key,
+            base_url=base_url,
+            timeout=timeout,
+            default_headers={"x-inspire-inference-key": inference_key},
+        )
+    return openai.OpenAI(
+        api_key=api_key, base_url=base_url, timeout=timeout,
+    )
+
+
 def _relocate_chat_template_kwargs(kwargs: Dict[str, Any]) -> Dict[str, Any]:
     """Move ``chat_template_kwargs`` from top-level kwargs into ``extra_body``.
 
@@ -245,8 +269,8 @@ class OpenAIModel(Model):
         import openai
 
         try:
-            client = openai.OpenAI(
-                api_key=self.api_key, base_url=self.base_url, timeout=self.timeout
+            client = _make_openai_client(
+                self.api_key, self.base_url, self.timeout
             )
 
             response = self._chat_completion(client, messages, **kwargs)
@@ -298,8 +322,8 @@ class OpenAIModel(Model):
         import openai
 
         self._last_usage = None
-        client = openai.OpenAI(
-            api_key=self.api_key, base_url=self.base_url, timeout=self.timeout
+        client = _make_openai_client(
+            self.api_key, self.base_url, self.timeout
         )
         return self._chat_completion(client, messages, **kwargs)
 
@@ -309,8 +333,8 @@ class OpenAIModel(Model):
 
         self._last_usage = None
         try:
-            client = openai.OpenAI(
-                api_key=self.api_key, base_url=self.base_url, timeout=self.timeout
+            client = _make_openai_client(
+                self.api_key, self.base_url, self.timeout
             )
             response = client.chat.completions.create(
                 model=self.model,
@@ -567,8 +591,8 @@ class OpenAICompatibleModel(Model):
         import openai
 
         try:
-            client = openai.OpenAI(
-                api_key=self.api_key, base_url=self.base_url, timeout=self.timeout
+            client = _make_openai_client(
+                self.api_key, self.base_url, self.timeout
             )
 
             response = self._chat_completion(client, messages, **kwargs)
@@ -671,8 +695,8 @@ class OpenAICompatibleModel(Model):
         import openai
 
         self._last_usage = None
-        client = openai.OpenAI(
-            api_key=self.api_key, base_url=self.base_url, timeout=self.timeout
+        client = _make_openai_client(
+            self.api_key, self.base_url, self.timeout
         )
         return self._chat_completion(client, messages, **kwargs)
 
@@ -701,8 +725,8 @@ class OpenAICompatibleModel(Model):
 
         self._last_usage = None
         try:
-            client = openai.OpenAI(
-                api_key=self.api_key, base_url=self.base_url, timeout=self.timeout
+            client = _make_openai_client(
+                self.api_key, self.base_url, self.timeout
             )
             # Build stream options — request usage in final chunk
             # Not all OpenAI-compatible APIs support this, so we wrap it
