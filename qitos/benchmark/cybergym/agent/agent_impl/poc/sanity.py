@@ -251,8 +251,24 @@ def inspect_poc_bytes(
     # Layer 2: corpus-aware checks
     _check_corpus(data, seed_path, issues)
 
-    # Layer 3: format-aware checks (existing)
-    if effective_format:
+    # Layer 3: format-aware checks
+    # For confirmed pack mode, use pack.validate() as authoritative
+    pack_mode_validated = False
+    if state is not None:
+        pack_mode = getattr(state, "pack_mode", {}) or {}
+        if pack_mode.get("mode") == "confirmed" and pack_mode.get("pack_id"):
+            try:
+                from ..knowledge.validation import validate_with_knowledge_pack
+                pack_report = validate_with_knowledge_pack(path, state)
+                if pack_report is not None:
+                    from ..knowledge.sanity_bridge import validation_to_sanity_issues
+                    pack_issues = validation_to_sanity_issues(pack_report)
+                    issues.extend(pack_issues)
+                    pack_mode_validated = True
+            except Exception:
+                pass  # Fall through to elif chain
+
+    if not pack_mode_validated and effective_format:
         fmt_key = effective_format.split("/")[0] if "/" in effective_format else effective_format
         if fmt_key == "font" or effective_format.startswith("font/"):
             check_font(data, effective_format, issues)

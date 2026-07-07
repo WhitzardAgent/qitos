@@ -155,6 +155,13 @@ class StateInitMixin:
         _initialize_dynamic_environment(state)
         _generate_sink_candidates(state)
 
+        # Eager pack selection — determine format mode from available evidence
+        try:
+            from ..knowledge.evidence import eager_pack_select
+            state.pack_mode = eager_pack_select(state)
+        except Exception:
+            state.pack_mode = {"mode": "unconfirmed"}
+
         # Build the immutable structural program graph before the first model
         # turn.  Failure is represented as PARTIAL_INDEX and never prevents the
         # agent from starting.

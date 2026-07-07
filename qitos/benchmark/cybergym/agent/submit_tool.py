@@ -232,7 +232,7 @@ class SubmitPoCTool(BaseTool):
             feedback_action = metadata.get("last_feedback_action") or {}
             if isinstance(feedback_action, dict) and feedback_action.get("blocks_submit"):
                 action = str(feedback_action.get("action") or "")
-                if action in {"run_candidate", "gdb_debug"}:
+                if action in {"gdb_debug"}:
                     reason = str(feedback_action.get("reason") or "")[:120]
                     return ToolValidationResult.fail(
                         f"submit_poc is blocked: {action} is required first. "

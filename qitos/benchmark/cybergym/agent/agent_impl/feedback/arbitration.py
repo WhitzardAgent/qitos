@@ -112,40 +112,12 @@ def derive_feedback_action(
                 "prompt_instruction": "Verify harness/oracle observability or switch objective before submitting more variants.",
             }
 
-    # 2c. GDB debug evidence: if gdb_debug has been run and returned results,
-    # check for pending reproduction requirement before falling through.
-    # Auto-release after 6+ steps stuck in the same hard-block to prevent
-    # infinite loops (the agent may not have gdb available in practice).
-    if getattr(state, "pending_reproduction", False) and not getattr(state, "gdb_unavailable", False):
-        feedback_action = (state.metadata or {}).get(LAST_FEEDBACK_ACTION) or {}
-        current_action = str(feedback_action.get("action") or "")
-        if current_action == "gdb_debug":
-            # Check how long we've been stuck in this block
-            mode_enter_step = int(getattr(state, "mode_enter_step", 0) or 0)
-            current_step = int(getattr(state, "current_step", 0) or 0)
-            steps_stuck = current_step - mode_enter_step if mode_enter_step else 0
-            if steps_stuck >= 6:
-                # Auto-release: latch gdb_unavailable and fall through
-                state.gdb_unavailable = True
-                state.pending_reproduction = False
-            else:
-                return {
-                    "action": "gdb_debug",
-                    "reason": "gdb_debug is required to diagnose the no-trigger result before submitting again.",
-                    "negative_evidence_kind": "",
-                    "blocks_submit": True,
-                    "target_ids": {"ranked_path_id": _best_ranked_path_id(state)},
-                    "prompt_instruction": "Call gdb_debug with appropriate commands to diagnose why the PoC fails.",
-                }
-        else:
-            return {
-                "action": "gdb_debug",
-                "reason": "gdb_debug is required to diagnose the no-trigger result before submitting again.",
-                "negative_evidence_kind": "",
-                "blocks_submit": True,
-                "target_ids": {"ranked_path_id": _best_ranked_path_id(state)},
-                "prompt_instruction": "Call gdb_debug with appropriate commands to diagnose why the PoC fails.",
-            }
+    # 2c. pending_diagnosis / pending_reproduction — run_candidate removed.
+    # These flags are no longer armed; just clear any stale values.
+    if getattr(state, "pending_diagnosis", False):
+        state.pending_diagnosis = False
+    if getattr(state, "pending_reproduction", False):
+        state.pending_reproduction = False
 
     # 3. Transcript gap
     fmt = getattr(state, "input_format", None)
@@ -400,28 +372,8 @@ def _runtime_diagnosis_action_if_applicable(
     if getattr(state, "gdb_unavailable", False):
         return None
 
-    # If pending_reproduction is armed, gdb_debug is mandatory
-    if getattr(state, "pending_reproduction", False):
-        candidate_path = _latest_feedback_candidate_path(state)
-        objective_id = _active_objective_id(state)
-        return {
-            "action": "gdb_debug",
-            "reason": (
-                "submit_poc returned no-trigger; gdb_debug is required to "
-                "diagnose why the candidate fails before submitting again."
-            ),
-            "negative_evidence_kind": "",
-            "blocks_submit": True,
-            "target_ids": {
-                "candidate_path": candidate_path,
-                "objective_id": objective_id,
-            },
-            "prompt_instruction": (
-                f"Call gdb_debug(poc_path={candidate_path!r}, "
-                f"objective_id={objective_id!r}) with appropriate GDB commands "
-                "to diagnose the failure. Only skip if you make a source-backed repair."
-            ),
-        }
+    # pending_diagnosis no longer forces run_candidate.
+    # Suggest gdb_debug directly when no GDB evidence exists for the candidate.
 
     if not _staged_runtime_ready(state):
         return None
@@ -432,59 +384,32 @@ def _runtime_diagnosis_action_if_applicable(
 
     objective_id = _active_objective_id(state)
     ranked_path_id = _best_ranked_path_id(state)
-    latest_evidence = _latest_runtime_evidence_for_candidate(state, candidate_path)
 
-    if not latest_evidence:
+    # Suggest gdb_debug as a SOFT recommendation when no GDB evidence exists.
+    latest_gdb = _latest_gdb_debug_for_candidate(state, candidate_path)
+    gdb_available = _gdb_available(state)
+    if latest_gdb is None and gdb_available:
         return {
-            "action": "run_candidate",
+            "action": "gdb_debug",
             "reason": (
-                f"Latest submit returned {failed_gate}; staged binary is available, "
-                "so classify whether the same candidate exits cleanly, is rejected, "
-                "times out, or crashes before replanning."
+                f"Latest submit returned {failed_gate}; gdb_debug may help "
+                "trace execution and diagnose why the candidate does not trigger."
             ),
             "negative_evidence_kind": "",
-            "blocks_submit": True,
+            "blocks_submit": False,  # SOFT suggestion: model can choose GDB or skip
             "target_ids": {
                 "candidate_path": candidate_path,
                 "objective_id": objective_id,
                 "ranked_path_id": ranked_path_id,
             },
             "prompt_instruction": (
-                f"Call run_candidate(candidate_path={candidate_path!r}, "
-                f"objective_id={objective_id!r}, purpose='classify_no_trigger'). "
-                "Only skip this if you first make a source-backed repair that invalidates the candidate."
+                f"Consider calling gdb_debug(poc_path={candidate_path!r}) to trace "
+                "execution and determine whether the vulnerable path is reached. "
+                "You may also proceed directly to repair the PoC based on what you know."
             ),
         }
 
-    # After run_candidate, if outcome suggests the path was reached but no crash,
-    # recommend gdb_debug for deeper diagnosis (instead of probe_runtime_frontier)
-    outcome = str(latest_evidence.get("outcome") or latest_evidence.get("conclusion") or "")
-    if outcome in {"clean_exit", "input_rejected", "timeout", "profile_unresolved", "environment_error"}:
-        # Check if gdb_debug evidence already exists for this candidate
-        latest_gdb = _latest_gdb_debug_for_candidate(state, candidate_path)
-        gdb_available = _gdb_available(state)
-        if latest_gdb is None and gdb_available:
-            return {
-                "action": "gdb_debug",
-                "reason": (
-                    f"run_candidate outcome={outcome}; use gdb_debug to trace "
-                    "execution and diagnose why the candidate does not trigger the vulnerability."
-                ),
-                "negative_evidence_kind": "",
-                "blocks_submit": True,
-                "target_ids": {
-                    "candidate_path": candidate_path,
-                    "objective_id": objective_id,
-                    "ranked_path_id": ranked_path_id,
-                },
-                "prompt_instruction": (
-                    f"Call gdb_debug(poc_path={candidate_path!r}, "
-                    f"objective_id={objective_id!r}) with GDB commands like "
-                    '"break <target_function>", "run", "bt", "info registers" to '
-                    "diagnose the failure. Repair based on GDB findings before submitting."
-                ),
-            }
-
+    # If GDB evidence already exists for this candidate, no further action needed
     return None
 
 

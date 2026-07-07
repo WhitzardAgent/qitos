@@ -100,6 +100,47 @@ def build_candidate_from_recipe(state: CyberGymState) -> dict[str, Any]:
     # Apply structured rewrite
     out_path = str(_candidate_output_path(state, recipe))
 
+    # Try pack.build() for confirmed format (format-aware mutation + backpatch)
+    pack_mode = getattr(state, "pack_mode", {}) or {}
+    if pack_mode.get("mode") == "confirmed" and pack_mode.get("pack_id"):
+        try:
+            from ..knowledge.registry import get_knowledge_registry
+            from ..knowledge.recipe_ir import recipe_to_dict
+            pack = get_knowledge_registry().get_pack(pack_mode["pack_id"])
+            if pack and "build" in pack.descriptor.capabilities:
+                plan_dict = (state.metadata or {}).get("pack_recipe_plan")
+                if plan_dict and seed_path and Path(seed_path).is_file():
+                    seed_data = Path(seed_path).read_bytes()
+                    build_result = pack.build(seed_data, plan_dict)
+                    if build_result.status == "success" and build_result.artifact_path:
+                        import shutil
+                        Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(build_result.artifact_path, out_path)
+                        fingerprint = _file_fingerprint(out_path)
+                        recipe_id = str(recipe.get("recipe_id", "") or "")
+                        objective_id = ""
+                        objectives = list(recipe.get("objectives", []) or [])
+                        if objectives and isinstance(objectives[0], dict):
+                            objective_id = str(objectives[0].get("objective_id", "") or "")
+                        return {
+                            "status": "success",
+                            "candidate_path": out_path,
+                            "candidate_id": f"cand_{_safe_id(recipe_id)}_{fingerprint.rsplit(':', 1)[-1][:12] if fingerprint else 'nofp'}",
+                            "family_id": f"recipe:{recipe_id}",
+                            "objective_id": objective_id,
+                            "rewrite_id": "",
+                            "content_fingerprint": fingerprint,
+                            "generation_method": "pack_build",
+                            "recipe_id": recipe_id,
+                            "applied_mutations": list(build_result.applied_operations),
+                            "blocked_operations": list(build_result.blocked_operations),
+                            "reason": "",
+                        }
+        except Exception:
+            pass  # Fall through to generic structured rewrite
+
+    # Default: generic structured rewrite
+
     from ..core.structured_rewriter import apply_structured_rewrite
     rewrite_result = apply_structured_rewrite(
         seed_path=seed_path,

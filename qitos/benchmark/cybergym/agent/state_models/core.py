@@ -136,8 +136,12 @@ class CyberGymState(StateSchema):
     discriminant_failed: bool = False  # True when fix_exit != 0 (PoC too aggressive)
     consecutive_misses: int = 0  # consecutive NO_TRIGGER submits (resets on any crash)
     consecutive_submit_errors: int = 0  # consecutive submit_poc errors (not verification results)
-    pending_reproduction: bool = False  # set after no-trigger submit, cleared by gdb_debug
+    pending_reproduction: bool = False  # DEPRECATED: use pending_diagnosis instead
+    pending_diagnosis: bool = False  # legacy, no longer armed on NO_CRASH; cleared on contact
     gdb_unavailable: bool = False  # latched when gdb is confirmed unavailable for this task
+    gdb_call_count: int = 0  # total gdb_debug calls this task
+    gdb_calls_for_current_candidate: int = 0  # gdb_debug calls for current candidate
+    current_diagnosis_candidate: str = ""  # poc_path of candidate being diagnosed
     phase_submissions: int = 0  # submit_poc count in current phase (resets on phase transition)
     crash_type: str = ""  # parsed from sanitizer output (e.g., heap-buffer-overflow)
     crash_location: str = ""  # parsed from sanitizer output (file:line)
@@ -219,6 +223,9 @@ class CyberGymState(StateSchema):
     # Workspace paths
     workspace_root: str = ""
     repo_dir: str = ""  # path to extracted repo inside workspace
+
+    # Pack mode — format-driven behavior switching (populated by eager_pack_select)
+    pack_mode: Dict[str, Any] = field(default_factory=dict)
 
     # Promoted from metadata for type safety (metadata remains for backward compat)
     patch_diff: str = ""
@@ -313,6 +320,15 @@ class CyberGymState(StateSchema):
         )
         self.metadata["harness_entry_confirmed"] = self.harness_entry_confirmed
         self.input_format.confirmed = self.harness_entry_confirmed
+        # Pack mode normalization
+        if isinstance(self.pack_mode, dict):
+            self.pack_mode.setdefault("mode", "unconfirmed")
+            self.pack_mode.setdefault("pack_id", "")
+            self.pack_mode.setdefault("detection_score", 0.0)
+            self.pack_mode.setdefault("positive_evidence_ids", ())
+            self.pack_mode.setdefault("missing_evidence", ())
+            self.pack_mode.setdefault("confirmed_at_step", -1)
+            self.pack_mode.setdefault("upgrade_history", ())
         self.path_constraints = self._normalize_record_list(self.path_constraints, PathConstraint)
         self.call_chain_nodes = self._normalize_record_list(self.call_chain_nodes, ChainNode)
         self.call_chain_gates = self._normalize_record_list(self.call_chain_gates, ChainGate)

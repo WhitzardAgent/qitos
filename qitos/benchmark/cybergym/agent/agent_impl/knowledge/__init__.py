@@ -21,7 +21,7 @@ Usage:
 from .backend_registry import BackendStatus, BackendRegistry, get_backend_registry
 from .capability_matrix import TaskCapability, generate_capability_matrix, compute_coverage_summary
 from .corpus import SeedRecord, SeedSelector, build_seed_records
-from .evidence import EvidenceView, build_evidence_view
+from .evidence import EvidenceView, build_evidence_view, eager_pack_select, maybe_upgrade_pack_mode, activate_pack_from_tool
 from .models import (
     BuildResult,
     CarrierContract,
@@ -30,6 +30,7 @@ from .models import (
     FieldInfo,
     Invariant,
     PackDescriptor,
+    PackMode,
     ParseResult,
     RecipeOperation,
     RecipePlan,
@@ -53,10 +54,14 @@ __all__ = [
     # Evidence
     "EvidenceView",
     "build_evidence_view",
+    "eager_pack_select",
+    "maybe_upgrade_pack_mode",
+    "activate_pack_from_tool",
     # Protocol
     "KnowledgePack",
     # Models
     "PackDescriptor",
+    "PackMode",
     "DetectionResult",
     "ParseResult",
     "FieldInfo",

@@ -274,67 +274,28 @@ class SectionMixin:
             lines.append("### Likely")
             lines.extend(likely_items)
 
-        # --- Dynamic Evidence: raw runtime facts from run_candidate and gdb_debug ---
+        # --- Dynamic Evidence: compact one-line summary only ---
+        # Full GDB/candidate output is rendered in the Experiments contract slots.
+        # The assessment only shows a one-line summary of the latest result.
         from ..core.metadata_keys import RUNTIME_EVIDENCE
         runtime_records = list(metadata.get(RUNTIME_EVIDENCE, []) or []) if isinstance(metadata, dict) else []
-        dynamic_items: List[str] = []
-        for record in runtime_records[-4:]:
-            if not isinstance(record, dict):
-                continue
-            source_kind = str(record.get("source_kind") or "")
+        if runtime_records:
+            latest = runtime_records[-1] if isinstance(runtime_records[-1], dict) else {}
+            source_kind = str(latest.get("source_kind") or "")
             if source_kind == "gdb_debug":
-                poc_path = str(record.get("poc_path") or "")
-                binary_path = str(record.get("binary_path") or "")
-                timed_out = record.get("timed_out", False)
-                cmds = record.get("commands") or []
-                cmds_str = " ".join(str(c) for c in cmds[:8])
-                # Render GDB output as multi-line block — the model needs full
-                # backtrace, variable values, breakpoint hit info to reason about
-                # why the PoC doesn't trigger.  Single-line truncation at 150 chars
-                # was losing the diagnostic value entirely.
-                output_text = str(record.get("output") or record.get("output_snippet") or "")
-                header_parts = [f"GDB debug: poc={poc_path}"]
-                if binary_path:
-                    header_parts.append(f"binary={binary_path}")
-                if cmds_str:
-                    header_parts.append(f"commands=[{cmds_str}]")
-                if timed_out:
-                    header_parts.append("TIMED_OUT")
-                dynamic_items.append(f"- {' | '.join(header_parts)} [source: gdb_debug]")
-                if output_text.strip():
-                    # Show up to 3000 chars of GDB output as indented block
-                    display = output_text[:3000]
-                    for line in display.splitlines():
-                        dynamic_items.append(f"  {line}")
+                gdb_outcome_parts = []
+                if latest.get("inconclusive"):
+                    gdb_outcome_parts.append("inconclusive")
+                elif latest.get("timed_out"):
+                    gdb_outcome_parts.append("timed_out")
+                else:
+                    rc = latest.get("returncode", -1)
+                    gdb_outcome_parts.append(f"rc={rc}")
+                gdb_summary = " | ".join(gdb_outcome_parts)
+                lines.append(f"- Latest GDB: {gdb_summary}")
             elif source_kind == "candidate_run":
-                outcome = str(record.get("outcome") or "")
-                candidate_path = str(record.get("candidate_path") or "")
-                sanitizer = str(record.get("sanitizer_kind") or "")
-                signal = str(record.get("signal_name") or "")
-                top_frame = str(record.get("top_frame") or "")
-                parts = [f"Run candidate: poc={candidate_path} outcome={outcome}"]
-                if sanitizer:
-                    parts.append(f"sanitizer={sanitizer}")
-                if signal:
-                    parts.append(f"signal={signal}")
-                if top_frame:
-                    parts.append(f"top_frame={top_frame}")
-                dynamic_items.append(f"- {' | '.join(parts)} [source: run_candidate]")
-            else:
-                # Legacy records without source_kind
-                outcome = str(record.get("conclusion") or record.get("outcome") or "")
-                candidate = str(record.get("candidate_digest") or "")[:12]
-                objective = str(record.get("objective_id") or "")
-                parts = [f"outcome={outcome}"]
-                if candidate:
-                    parts.append(f"candidate={candidate}")
-                if objective:
-                    parts.append(f"obj={objective}")
-                dynamic_items.append(f"- {' | '.join(parts)} [source: runtime]")
-        if dynamic_items:
-            lines.append("")
-            lines.append("### Dynamic Evidence")
-            lines.extend(dynamic_items)
+                run_outcome = str(latest.get("outcome") or "")
+                lines.append(f"- Latest run_candidate: {run_outcome}")
 
         # Assessment snippets are now in hard contract slots (Fix A)
 
@@ -906,8 +867,8 @@ class SectionMixin:
             lines.append("")
             lines.append(
                 f"**Pattern**: {consecutive} consecutive no-crash submissions. "
-                "Classify the miss with run_candidate before more variants: path not reached "
-                "vs. path reached but trigger condition unmet."
+                "Use gdb_debug to trace execution and diagnose why the candidate doesn't trigger: "
+                "path not reached vs. path reached but trigger condition unmet."
             )
 
         # Negative evidence impact display
@@ -1268,12 +1229,17 @@ class SectionMixin:
                 "- `record_sink_candidate` — if new sink identified",
             ]
         elif phase == "formulation":
-            return [
+            lines = [
                 "- `READ` / `GREP` — confirm remaining conditions",
                 "- `BASH(command)` / `WRITE(path, content)` — write PoC files",
                 "- `submit_poc(poc_path)` — submit ready PoCs",
                 "- `CorpusInspect` / `HexView` — inspect seed files before constructing candidates",
             ]
+            # Add confirm_format if format is not yet confirmed
+            pack_mode = getattr(state, "pack_mode", {}) or {}
+            if pack_mode.get("mode", "unconfirmed") != "confirmed":
+                lines.append("- `confirm_format(format_id, confidence, evidence)` — confirm input format to activate format-specific tools")
+            return lines
         elif phase == "verification":
             return [
                 "- `READ` / `GREP` — analyze verification feedback",

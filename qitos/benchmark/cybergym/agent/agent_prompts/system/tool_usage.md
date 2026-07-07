@@ -71,25 +71,21 @@ Why: Submit feedback is the oracle, but a non-crash alone does not prove where
 execution stopped. Use source-backed gates and typed feedback to decide whether
 to repair the carrier/path, revise the trigger recipe, or rotate candidates.
 
-### Dynamic Miss Diagnosis: submit_poc → run_candidate → probe_runtime_frontier
-Use this chain only when the tools are present in the tool list and the
-Next Action slot asks for runtime diagnosis.
+### Runtime Diagnosis After No-Crash: submit_poc → gdb_debug
+When `submit_poc` returns no crash and you need to understand why:
 
-1. `run_candidate(candidate_path=..., objective_id=..., purpose="classify_no_trigger")`
-   — run the exact latest candidate once against the staged vulnerable binary.
-2. If `run_candidate` reports `clean_exit`, `input_rejected`, `timeout`, or an
-   environment/profile issue and `probe_runtime_frontier` is available, call
-   `probe_runtime_frontier(candidate_path=..., objective_id=..., path_id=...)`.
-3. Use the returned `first_unreached_role` / `last_hit_role` to pick the repair:
-   harness/parser miss → repair carrier or harness protocol; dispatch/sink miss
-   → localize selector/field; sink reached but trigger unmet → revise trigger
-   bytes/constraints.
-4. Do not paste or invent GDB commands. The frontier tool generates a bounded
-   script from source-backed probe points and returns compact evidence.
+1. `gdb_debug(poc_path=..., commands="b <vuln_func>\nrun\nbt\ninfo reg")`
+   — set a breakpoint at the vulnerable function, run the PoC, and inspect
+   whether the breakpoint was hit and what happened.
+2. If the breakpoint was NOT hit: the PoC didn't reach the vulnerable path.
+   Repair the carrier format, fix parser acceptance, or adjust input fields.
+3. If the breakpoint WAS hit but no crash: the trigger condition wasn't met.
+   Revise the trigger bytes, adjust mutation offsets, or check sanitizer type.
+4. Keep GDB sessions short — 3 commands max per call, 8 total per task.
 
 Why: A non-crash from `submit_poc` does not tell whether the candidate missed
-the harness, parser, sink, or final trigger condition. Runtime evidence is a
-diagnostic aid; `submit_poc` remains the benchmark verdict.
+the harness, parser, sink, or final trigger condition. GDB traces the actual
+execution path. `submit_poc` remains the benchmark verdict.
 
 ### Parallel Chain Coverage (investigation phase)
 Call these together in one step to cover the full data flow:

@@ -196,6 +196,15 @@ KNOWLEDGE_BACKENDS: str = "knowledge_backends"
 CARRIER_CONTRACT: str = "carrier_contract"
 """Owner: knowledge — confirmed CarrierContract from pack.derive_contract()."""
 
+PACK_MODE: str = "pack_mode"
+"""Owner: knowledge — active PackMode dict (mode, pack_id, detection_score, etc.)."""
+
+PACK_RECIPE_PLAN: str = "pack_recipe_plan"
+"""Owner: knowledge — RecipePlan dict from pack.plan() for confirmed format."""
+
+PACK_PARSE_RESULT: str = "pack_parse_result"
+"""Owner: knowledge — ParseResult dict from pack.parse() for confirmed format."""
+
 # ---------------------------------------------------------------------------
 # Frontier
 # ---------------------------------------------------------------------------

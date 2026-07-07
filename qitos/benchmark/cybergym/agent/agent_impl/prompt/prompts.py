@@ -75,6 +75,46 @@ class PromptsMixin:
             parts.append("\n".join(actions.split("\n")[:50]))
         return "\n".join(parts)
 
+    def _format_guidance_prompt(self, state: CyberGymState) -> str:
+        """Render format-specific guidance from the active pack mode."""
+        pack_mode = getattr(state, "pack_mode", {}) or {}
+        mode = pack_mode.get("mode", "unconfirmed")
+        pack_id = pack_mode.get("pack_id", "")
+
+        if mode == "unconfirmed" or not pack_id:
+            return ""
+
+        if mode == "candidate":
+            score = pack_mode.get("detection_score", 0.0)
+            missing = pack_mode.get("missing_evidence", ())
+            return (
+                f"\n## Format Hint (candidate, score={score:.2f})\n"
+                f"The input may be **{pack_id}** format. Verify using corpus inspection or hex view,\n"
+                f"then use `confirm_format` to activate format-specific tools.\n"
+                f"Missing evidence: {', '.join(missing[:3]) or 'none'}\n"
+            )
+
+        # confirmed: load format-specific guidance
+        resource = prompt_resource(f"format_guidance/{pack_id}.md")
+        if resource:
+            return f"\n## Format Guidance: {pack_id}\n" + resource
+
+        # Generic confirmed guidance from carrier contract
+        metadata = getattr(state, "metadata", {}) or {}
+        contract = metadata.get("carrier_contract")
+        protected = ""
+        derived = ""
+        if isinstance(contract, dict):
+            protected = ", ".join(list(contract.get("protected_fields", []))[:5])
+            derived = ", ".join(list(contract.get("derived_fields", []))[:5])
+        lines = [f"\n## Format: {pack_id} (confirmed)"]
+        if protected:
+            lines.append(f"- Protected fields (do not overwrite): {protected}")
+        if derived:
+            lines.append(f"- Derived fields (auto-recomputed): {derived}")
+        lines.append("- Pack-driven build handles checksums, lengths, and cross-references")
+        return "\n".join(lines)
+
     def base_persona_prompt(self, state: CyberGymState) -> str:
         return render_prompt_resource("system/base_persona.md", project_root=PROJECT_ARTIFACT_ROOT.as_posix())
 
@@ -85,6 +125,10 @@ class PromptsMixin:
             parts.append(self._bug_type_guidance(state.bug_type, state.poc_strategy))
         if state.cve_id:
             parts.append(f"\n## CVE ID: {state.cve_id}")
+        # Format-specific guidance from pack mode
+        format_guidance = self._format_guidance_prompt(state)
+        if format_guidance:
+            parts.append(format_guidance)
         proc = self._procedure_memory_guidance(state)
         if proc:
             parts.append(proc)

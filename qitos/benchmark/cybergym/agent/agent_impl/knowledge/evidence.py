@@ -187,3 +187,305 @@ def build_evidence_view(state: Any) -> EvidenceView:
         harness_carrier_stack=harness_carrier_stack,
         source_backed_hints=tuple(source_hints),
     )
+
+
+# ---------------------------------------------------------------------------
+# Eager pack selection — runs at init_state time
+# ---------------------------------------------------------------------------
+
+_MODE_ORDER = {"unconfirmed": 0, "candidate": 1, "confirmed": 2}
+
+
+def eager_pack_select(state: Any) -> dict[str, Any]:
+    """Run pack selection at init_state time.
+
+    Returns a PackMode dict for storage on state.pack_mode.
+    Uses evidence already populated during state_init (corpus magics,
+    harness protocols, input_format, etc.).
+    """
+    try:
+        from .registry import get_knowledge_registry
+
+        registry = get_knowledge_registry()
+        if registry.is_empty():
+            return {"mode": "unconfirmed", "pack_id": "", "detection_score": 0.0,
+                    "positive_evidence_ids": (), "missing_evidence": (),
+                    "confirmed_at_step": -1, "upgrade_history": ()}
+
+        evidence = build_evidence_view(state)
+        selected = registry.select_packs(evidence)
+
+        if not selected:
+            return {"mode": "unconfirmed", "pack_id": "", "detection_score": 0.0,
+                    "positive_evidence_ids": (), "missing_evidence": (),
+                    "confirmed_at_step": -1, "upgrade_history": ()}
+
+        pack, det_result = selected[0]
+
+        # Map detection decision to mode
+        if det_result.decision == "confirmed" and det_result.score >= 0.7:
+            mode = "confirmed"
+        elif det_result.decision == "candidate" and det_result.score >= 0.2:
+            mode = "candidate"
+        else:
+            mode = "unconfirmed"
+
+        step = int(getattr(state, "current_step", 0) or 0)
+        history = ()
+        if mode != "unconfirmed":
+            history = (f"unconfirmed->{mode}@init_step{step}",)
+
+        return {
+            "mode": mode,
+            "pack_id": pack.descriptor.pack_id if mode != "unconfirmed" else "",
+            "detection_score": det_result.score,
+            "positive_evidence_ids": det_result.positive_evidence_ids,
+            "missing_evidence": det_result.missing_evidence,
+            "confirmed_at_step": step if mode != "unconfirmed" else -1,
+            "upgrade_history": history,
+        }
+
+    except Exception:
+        # Never crash init_state — return safe default
+        return {"mode": "unconfirmed", "pack_id": "", "detection_score": 0.0,
+                "positive_evidence_ids": (), "missing_evidence": (),
+                "confirmed_at_step": -1, "upgrade_history": ()}
+
+
+def maybe_upgrade_pack_mode(state: Any) -> bool:
+    """Re-run detection with current state. Only upgrades, never downgrades.
+
+    When upgraded to confirmed, also runs parse→derive_contract→plan pipeline
+    and stores results in state.metadata.
+
+    Returns True if pack_mode was upgraded.
+    """
+    current = getattr(state, "pack_mode", {}) or {}
+    current_mode = current.get("mode", "unconfirmed")
+
+    try:
+        from .registry import get_knowledge_registry
+
+        registry = get_knowledge_registry()
+        if registry.is_empty():
+            return False
+
+        evidence = build_evidence_view(state)
+        selected = registry.select_packs(evidence)
+
+        if not selected:
+            return False
+
+        pack, det_result = selected[0]
+
+        # Determine new mode
+        if det_result.decision == "confirmed" and det_result.score >= 0.7:
+            new_mode = "confirmed"
+        elif det_result.decision == "candidate" and det_result.score >= 0.2:
+            new_mode = "candidate"
+        else:
+            return False
+
+        # Only upgrade
+        if _MODE_ORDER.get(new_mode, 0) <= _MODE_ORDER.get(current_mode, 0):
+            return False
+
+        # Upgrade
+        step = int(getattr(state, "current_step", 0) or 0)
+        upgrade_record = f"{current_mode}->{new_mode}@step{step}"
+        history = list(current.get("upgrade_history", ()))
+        history.append(upgrade_record)
+
+        state.pack_mode = {
+            "mode": new_mode,
+            "pack_id": pack.descriptor.pack_id,
+            "detection_score": det_result.score,
+            "positive_evidence_ids": det_result.positive_evidence_ids,
+            "missing_evidence": det_result.missing_evidence,
+            "confirmed_at_step": step,
+            "upgrade_history": tuple(history),
+        }
+
+        # If upgraded to confirmed, activate full pipeline
+        if new_mode == "confirmed":
+            _activate_confirmed_pack(state, pack, evidence)
+
+        # Force observation refresh
+        try:
+            from ..core.runtime_context_contract import bump_context_revision
+            bump_context_revision(state, "domain_packs")
+        except Exception:
+            pass
+
+        return True
+
+    except Exception:
+        return False
+
+
+def activate_pack_from_tool(state: Any, pack_id: str, confidence: str, evidence_text: str) -> dict[str, Any]:
+    """Activate a pack from the confirm_format tool.
+
+    Validates the pack_id against the registry, updates state.pack_mode,
+    and optionally runs the full pipeline for confirmed mode.
+
+    Returns updated PackMode dict.
+    """
+    from .registry import get_knowledge_registry
+
+    current = getattr(state, "pack_mode", {}) or {}
+    current_mode = current.get("mode", "unconfirmed")
+
+    registry = get_knowledge_registry()
+
+    # Handle "unknown" — reset to unconfirmed
+    if pack_id == "unknown":
+        if _MODE_ORDER.get("unconfirmed", 0) < _MODE_ORDER.get(current_mode, 0):
+            # Don't downgrade
+            return dict(current)
+        state.pack_mode = {
+            "mode": "unconfirmed", "pack_id": "", "detection_score": 0.0,
+            "positive_evidence_ids": (), "missing_evidence": (),
+            "confirmed_at_step": -1, "upgrade_history": current.get("upgrade_history", ()),
+        }
+        try:
+            from ..core.runtime_context_contract import bump_context_revision
+            bump_context_revision(state, "domain_packs")
+        except Exception:
+            pass
+        return dict(state.pack_mode)
+
+    # Look up pack
+    pack = registry.get_pack(pack_id)
+    if pack is None:
+        # Pack not registered — still respect agent's confidence level.
+        # Don't show "registered_pack" as missing evidence; the agent
+        # has confirmed the format and the pack registry is an internal detail.
+        step = int(getattr(state, "current_step", 0) or 0)
+        mode = "confirmed" if confidence == "confirmed" else "candidate"
+        score = 0.7 if confidence == "confirmed" else 0.3
+        state.pack_mode = {
+            "mode": mode, "pack_id": pack_id, "detection_score": score,
+            "positive_evidence_ids": ("agent_inference",),
+            "missing_evidence": (),
+            "confirmed_at_step": step if mode == "confirmed" else -1,
+            "upgrade_history": current.get("upgrade_history", ())
+                              + (f"{current_mode}->{mode}@step{step}",),
+        }
+        try:
+            from ..core.runtime_context_contract import bump_context_revision
+            bump_context_revision(state, "domain_packs")
+        except Exception:
+            pass
+        return dict(state.pack_mode)
+
+    # Determine mode from confidence parameter
+    new_mode = "confirmed" if confidence == "confirmed" else "candidate"
+
+    # Only upgrade
+    if _MODE_ORDER.get(new_mode, 0) <= _MODE_ORDER.get(current_mode, 0):
+        # Already at this level or higher — update pack_id if different
+        if current.get("pack_id") != pack_id:
+            # Allow switching pack at same level
+            pass
+        else:
+            return dict(current)
+
+    step = int(getattr(state, "current_step", 0) or 0)
+    upgrade_record = f"{current_mode}->{new_mode}@step{step}"
+    history = list(current.get("upgrade_history", ()))
+    history.append(upgrade_record)
+
+    score = 0.9 if new_mode == "confirmed" else 0.5
+    state.pack_mode = {
+        "mode": new_mode,
+        "pack_id": pack_id,
+        "detection_score": score,
+        "positive_evidence_ids": ("agent_confirm",) + (() if not evidence_text else ("agent_evidence",)),
+        "missing_evidence": (),
+        "confirmed_at_step": step if new_mode == "confirmed" else -1,
+        "upgrade_history": tuple(history),
+    }
+
+    # Activate full pipeline for confirmed
+    if new_mode == "confirmed":
+        ev = build_evidence_view(state)
+        _activate_confirmed_pack(state, pack, ev)
+
+    try:
+        from ..core.runtime_context_contract import bump_context_revision
+        bump_context_revision(state, "domain_packs")
+    except Exception:
+        pass
+
+    return dict(state.pack_mode)
+
+
+def _activate_confirmed_pack(state: Any, pack: Any, evidence: EvidenceView) -> None:
+    """Run full pack pipeline for confirmed mode and store results."""
+    metadata = getattr(state, "metadata", {})
+    if not isinstance(metadata, dict):
+        return
+
+    try:
+        # Parse best seed
+        seed_path = _find_best_seed(state)
+        if seed_path:
+            try:
+                with open(seed_path, "rb") as f:
+                    seed_bytes = f.read()
+                parse_result = pack.parse(seed_bytes)
+                # Store serialized parse result
+                metadata["pack_parse_result"] = {
+                    "status": parse_result.status,
+                    "carrier_family": parse_result.carrier_family,
+                    "version": parse_result.version,
+                    "node_count": parse_result.node_count,
+                    "field_map": {
+                        name: {"offset": fi.offset, "width": fi.width,
+                               "derived": fi.derived, "protected": fi.protected}
+                        for name, fi in list(parse_result.field_map.items())[:30]
+                    },
+                }
+            except Exception:
+                pass
+
+        # Derive carrier contract
+        try:
+            contract = pack.derive_contract(parse_result if 'parse_result' in dir() else None, None)
+            metadata["carrier_contract"] = {
+                "format_id": contract.format_id,
+                "seed_required": contract.seed_required,
+                "minimal_seed_size": contract.minimal_seed_size,
+                "required_fields": list(contract.required_fields)[:10],
+                "derived_fields": list(contract.derived_fields)[:10],
+                "protected_fields": list(contract.protected_fields)[:10],
+                "harness_acceptance_hints": list(contract.harness_acceptance_hints)[:5],
+            }
+        except Exception:
+            pass
+
+    except Exception:
+        pass
+
+
+def _find_best_seed(state: Any) -> str:
+    """Find the best seed file path from state."""
+    # Check recipe seed first
+    recipe = {}
+    if hasattr(state, "get_poc_recipe"):
+        recipe = state.get_poc_recipe()
+    seed_path = recipe.get("carrier", {}).get("seed_path", "")
+    if seed_path:
+        import os
+        if os.path.exists(seed_path):
+            return seed_path
+
+    # Fall back to first corpus file
+    corpus_files = list(getattr(state, "corpus_files", []) or [])
+    for f in corpus_files:
+        import os
+        if os.path.exists(f):
+            return f
+
+    return ""

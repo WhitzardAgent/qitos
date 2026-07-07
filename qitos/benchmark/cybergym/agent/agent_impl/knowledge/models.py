@@ -210,6 +210,27 @@ class ValidationReport:
 
 
 # ---------------------------------------------------------------------------
+# Pack mode — format-driven behavior switching
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class PackMode:
+    """Active pack mode — determines how format-specific knowledge drives behavior.
+
+    Stored on state.pack_mode (as dict for serialization), persists across turns.
+    Upgraded by re-evaluation; never downgraded without explicit reason.
+    """
+
+    mode: Literal["unconfirmed", "candidate", "confirmed"] = "unconfirmed"
+    pack_id: str = ""                    # e.g. "pdf", "sfnt"
+    detection_score: float = 0.0
+    positive_evidence_ids: tuple[str, ...] = ()
+    missing_evidence: tuple[str, ...] = ()
+    confirmed_at_step: int = -1          # step when mode became confirmed/candidate
+    upgrade_history: tuple[str, ...] = ()  # ["unconfirmed->candidate@step3", ...]
+
+
+# ---------------------------------------------------------------------------
 # Repair
 # ---------------------------------------------------------------------------
 

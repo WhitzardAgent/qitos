@@ -88,9 +88,17 @@ def _runtime_capability_summary(state: CyberGymState) -> str:
 
     # Early rediscovery: if _need_container_rediscovery is set, try
     # host-side probe again — the container may now be running and /out
-    # may be visible.
+    # may be visible. GDB works inside the container, so don't emit a
+    # misleading "gdb=false reason=binary_root_missing:/out" line.
     if metadata.get("_need_container_rediscovery"):
         _try_host_side_rediscovery(state)
+        # Re-check after rediscovery attempt
+        capability = metadata.get(STAGED_BINARY_CAPABILITY) or {}
+        if isinstance(capability, dict) and capability.get("available") and capability.get("gdb_available"):
+            return ""
+        # Even if host-side rediscovery didn't succeed, GDB is available
+        # inside the container — don't show gdb=false to the agent.
+        return ""
 
     capability = metadata.get(STAGED_BINARY_CAPABILITY) or {}
 
@@ -231,7 +239,7 @@ def _runtime_evidence_gap_line(state: CyberGymState) -> str:
                     return ""
     return (
         f"- Evidence gap: latest submit no-trigger for {candidate}; "
-        "no run_candidate evidence yet."
+        "no runtime evidence yet."
     )
 
 
@@ -665,16 +673,6 @@ def derive_contract_next_action_block(state: CyberGymState) -> Dict[str, str]:
         action = feedback_action.get("action", "")
         reason = feedback_action.get("reason", "")
         target_ids = feedback_action.get("target_ids", {}) or {}
-        if action == "run_candidate":
-            candidate_path = str(target_ids.get("candidate_path") or "")
-            objective_id = str(target_ids.get("objective_id") or "")
-            return {
-                "required": "run_candidate",
-                "why": reason[:200],
-                "target": f"candidate_path={candidate_path}; objective_id={objective_id}",
-                "stop_condition": "runtime evidence is recorded for this candidate",
-                "do_not": "submit another PoC or continue broad source reading before runtime diagnosis",
-            }
         if action == "gdb_debug":
             candidate_path = str(target_ids.get("candidate_path") or "")
             objective_id = str(target_ids.get("objective_id") or "")
@@ -891,6 +889,28 @@ def render_context_contract_slots(state: CyberGymState) -> Dict[str, List[str]]:
     if cap:
         slots["assessment"].append(cap)
 
+    # Pack mode format status
+    pack_mode = getattr(state, "pack_mode", {}) or {}
+    pm_mode = pack_mode.get("mode", "unconfirmed")
+    pm_pack = pack_mode.get("pack_id", "")
+    if pm_mode == "confirmed" and pm_pack:
+        pm_score = pack_mode.get("detection_score", 0.0)
+        slots["assessment"].append(f"- Format: {pm_pack} (confirmed, score={pm_score:.2f})")
+    elif pm_mode == "candidate" and pm_pack:
+        pm_score = pack_mode.get("detection_score", 0.0)
+        pm_missing = pack_mode.get("missing_evidence", ())
+        missing_str = ", ".join(pm_missing[:3]) or "none"
+        slots["assessment"].append(f"- Format: {pm_pack} (candidate, score={pm_score:.2f}, missing: {missing_str})")
+    else:
+        # Format hint: suggest confirmation when unconfirmed/candidate during formulation
+        phase = str(getattr(state, "current_phase", "") or "")
+        if phase in ("formulation", "verification"):
+            slots["assessment"].append(
+                "- Format: unknown — consider `confirm_format` after identifying format from corpus/harness"
+            )
+        else:
+            slots["assessment"].append("- Format: unknown (no matching knowledge pack)")
+
     # 1. Active objective
     objectives = list(getattr(state, "active_trigger_objectives", []) or [])
     active_objs = [o for o in objectives if o.get("status") == "active"]
@@ -955,11 +975,35 @@ def render_context_contract_slots(state: CyberGymState) -> Dict[str, List[str]]:
         else:
             slots["assessment"].append("- Consistency status: PASS")
 
-    # Dynamic diagnosis state
-    if getattr(state, "pending_reproduction", False) and not getattr(state, "gdb_unavailable", False):
-        slots["assessment"].append("- Reproduction required: gdb_debug must be called before next submit")
-    elif getattr(state, "gdb_unavailable", False):
-        slots["assessment"].append("- GDB unavailable: dynamic diagnosis not possible; use static analysis")
+    # Sanitizer inference from bug type
+    bug_type = str(getattr(state, "bug_type", "") or "").lower()
+    _MSAN_KEYWORDS = ("uninitialized", "uninit", "use-of-uninitialized")
+    _UBSAN_KEYWORDS = ("undefined-behavior", "signed-integer-overflow",
+                       "shift-overflow", "unsigned-integer-overflow",
+                       "null-pointer", "alignment")
+    if any(kw in bug_type for kw in _MSAN_KEYWORDS):
+        slots["assessment"].append(
+            "- Sanitizer: MSAN (use-of-uninitialized-value bugs require "
+            "MemorySanitizer detection; ASAN cannot detect these)")
+    elif any(kw in bug_type for kw in _UBSAN_KEYWORDS):
+        slots["assessment"].append(
+            "- Sanitizer: UBSan (undefined behavior detected by "
+            "UndefinedBehaviorSanitizer)")
+
+    # Dynamic diagnosis state — run_candidate removed, just clear stale flags
+    if getattr(state, "pending_diagnosis", False):
+        state.pending_diagnosis = False
+    if getattr(state, "pending_reproduction", False):
+        state.pending_reproduction = False
+
+    # GDB diagnostic budget display
+    gdb_count = int(getattr(state, "gdb_call_count", 0) or 0)
+    if gdb_count > 0:
+        candidate_count = int(getattr(state, "gdb_calls_for_current_candidate", 0) or 0)
+        slots["assessment"].append(
+            f"- GDB budget: {gdb_count}/8 total; "
+            f"{candidate_count}/3 for current candidate"
+        )
 
     # === Vulnerability Path slots ===
 
@@ -1021,11 +1065,45 @@ def render_context_contract_slots(state: CyberGymState) -> Dict[str, List[str]]:
     if open_gaps:
         slots["conditions"].append(f"- Recipe gaps ({len(open_gaps)}): {', '.join(str(g)[:60] for g in open_gaps[:4])}")
 
-    domain_packs = list((state.metadata or {}).get("domain_packs", []) or [])
-    for pack in domain_packs[:2]:
-        slots["conditions"].append(
-            f"- Domain pack {pack.get('pack', '')}: status={pack.get('status', '')}"
-        )
+    # Pack mode — format-specific conditions
+    pm = getattr(state, "pack_mode", {}) or {}
+    pm_mode = pm.get("mode", "unconfirmed")
+    pm_pack = pm.get("pack_id", "")
+    if pm_mode == "confirmed" and pm_pack:
+        # Rich rendering: CarrierContract + ParseResult + RecipePlan
+        contract_dict = (state.metadata or {}).get("carrier_contract")
+        if isinstance(contract_dict, dict):
+            slots["conditions"].append(f"- Carrier contract: {contract_dict.get('format_id', pm_pack)}")
+            protected = list(contract_dict.get('protected_fields', []))[:5]
+            derived = list(contract_dict.get('derived_fields', []))[:5]
+            if protected:
+                slots["conditions"].append(f"  Protected fields (do NOT overwrite): {', '.join(protected)}")
+            if derived:
+                slots["conditions"].append(f"  Derived fields (auto-recomputed on build): {', '.join(derived)}")
+        parse_dict = (state.metadata or {}).get("pack_parse_result")
+        if isinstance(parse_dict, dict):
+            slots["conditions"].append(
+                f"- Parsed: {parse_dict.get('node_count', '?')} nodes, "
+                f"family={parse_dict.get('carrier_family', '?')}, "
+                f"version={parse_dict.get('version', '?')}"
+            )
+        recipe_plan = (state.metadata or {}).get("pack_recipe_plan")
+        if isinstance(recipe_plan, dict):
+            ops = recipe_plan.get('operations', [])
+            invs = recipe_plan.get('invariants', [])
+            slots["conditions"].append(f"- Recipe plan: {len(ops)} operations, {len(invs)} invariants")
+    elif pm_mode == "candidate" and pm_pack:
+        slots["conditions"].append(f"- Format candidate: {pm_pack} (score={pm.get('detection_score', 0):.2f})")
+        pm_missing = pm.get("missing_evidence", ())
+        if pm_missing:
+            slots["conditions"].append(f"  Missing evidence: {', '.join(pm_missing[:3])}")
+    else:
+        # Fallback: legacy domain_packs for backward compat
+        domain_packs = list((state.metadata or {}).get("domain_packs", []) or [])
+        for pack in domain_packs[:2]:
+            slots["conditions"].append(
+                f"- Domain pack {pack.get('pack', '')}: status={pack.get('status', '')}"
+            )
 
     numeric_constraints = list((state.metadata or {}).get("numeric_constraints", []) or [])
     if numeric_constraints:
@@ -1068,17 +1146,23 @@ def render_context_contract_slots(state: CyberGymState) -> Dict[str, List[str]]:
     if evidence_gap:
         slots["experiments"].append(evidence_gap)
 
-    # 2. Runtime evidence (compact only; full stdout/stderr stays in artifacts)
+    # 2. Runtime evidence (compact; full output only for latest GDB record)
     runtime_records = [
         item for item in list((state.metadata or {}).get(RUNTIME_EVIDENCE, []) or [])
         if isinstance(item, dict)
     ]
-    for record in runtime_records[-4:]:
+    n_records = len(runtime_records[-4:])
+    for idx, record in enumerate(runtime_records[-4:]):
         source_kind = str(record.get("source_kind") or "")
+        is_latest = (idx == n_records - 1)
         if source_kind == "gdb_debug":
             poc_path = str(record.get("poc_path") or "")
             binary_path = str(record.get("binary_path") or "")
+            input_mode_val = str(record.get("input_mode") or "")
             timed_out = record.get("timed_out", False)
+            inconclusive = record.get("inconclusive", False)
+            returncode = record.get("returncode")
+            elapsed = record.get("elapsed_ms", 0)
             cmds = record.get("commands") or []
             cmds_str = " ".join(str(c) for c in cmds[:8])
             parts = [f"source=gdb_debug"]
@@ -1086,15 +1170,27 @@ def render_context_contract_slots(state: CyberGymState) -> Dict[str, List[str]]:
                 parts.append(f"poc={poc_path}")
             if binary_path:
                 parts.append(f"binary={binary_path}")
+            if input_mode_val:
+                parts.append(f"input_mode={input_mode_val}")
             parts.append(f"commands=[{cmds_str}]")
+            if inconclusive:
+                parts.append("INCONCLUSIVE")
             if timed_out:
                 parts.append("TIMED_OUT")
+            if returncode is not None and returncode != -1:
+                parts.append(f"rc={returncode}")
+            if elapsed:
+                parts.append(f"{elapsed}ms")
             slots["experiments"].append("- Runtime evidence: " + " ".join(parts))
-            # Include GDB output body for model reasoning
+            # Only render full output for the latest record; older records get a compact summary
             output_text = str(record.get("output") or record.get("output_snippet") or "")
             if output_text.strip():
-                for line in output_text[:3000].splitlines():
-                    slots["experiments"].append(f"  {line}")
+                if is_latest:
+                    for line in output_text[:1500].splitlines():
+                        slots["experiments"].append(f"  {line}")
+                else:
+                    compact = output_text.strip().split("\n")[0][:120]
+                    slots["experiments"].append(f"  output_summary: {compact}")
         elif source_kind == "candidate_run":
             outcome = str(record.get("outcome") or "")
             candidate = str(record.get("candidate_digest") or "")[:12]

@@ -296,6 +296,11 @@ class GdbDebugTool(BaseTool):
         try:
             candidate = _resolve_candidate(poc_path, workspace_root)
         except ValueError as exc:
+            # Path validation error: clear pending_diagnosis to prevent
+            # hard block deadlock where the model can only call a tool
+            # that always fails validation
+            if state is not None and getattr(state, "pending_diagnosis", False):
+                state.pending_diagnosis = False
             return ToolValidationResult.fail(str(exc))
         if not candidate.exists():
             return ToolValidationResult.fail(f"PoC file does not exist: {candidate}")
@@ -326,6 +331,38 @@ class GdbDebugTool(BaseTool):
         if not commands:
             commands = list(_DEFAULT_GDB_COMMANDS)
 
+        # Dedup check: if the same commands were already run for this PoC,
+        # return cached output instead of re-running GDB
+        commands_key = "|".join(str(c) for c in commands)
+        evidence_list = metadata.get(RUNTIME_EVIDENCE, []) if isinstance(metadata, dict) else []
+        if isinstance(evidence_list, list):
+            for rec in reversed(evidence_list[-6:]):
+                if not isinstance(rec, dict):
+                    continue
+                if rec.get("source_kind") != "gdb_debug":
+                    continue
+                recorded_path = str(rec.get("poc_path") or "").strip()
+                if recorded_path != poc_path:
+                    continue
+                recorded_cmds = "|".join(str(c) for c in (rec.get("commands") or []))
+                if recorded_cmds == commands_key:
+                    cached_output = str(rec.get("output") or rec.get("output_snippet") or "")
+                    return {
+                        "status": "success",
+                        "poc_path": poc_path,
+                        "binary_path": str(rec.get("binary_path") or ""),
+                        "input_mode": str(rec.get("input_mode") or ""),
+                        "commands": commands,
+                        "output": cached_output[:2000] + "\n[DEDUPLICATED: same commands already run]",
+                        "output_truncated": True,
+                        "deduplicated": True,
+                        "timed_out": False,
+                        "returncode": rec.get("returncode", -1),
+                        "inconclusive": False,
+                        "elapsed_ms": 0,
+                        "objective_id": str(args.get("objective_id") or ""),
+                    }
+
         # Resolve binary path: explicit > invocation profile > capability > /out fallback
         binary_path = str(args.get("binary_path") or "").strip()
         if not binary_path and isinstance(profile, dict):
@@ -348,11 +385,17 @@ class GdbDebugTool(BaseTool):
                 except Exception:
                     pass
 
-        # Resolve input mode: explicit > invocation profile > default "arg"
+        # Resolve input mode: LOCK to invocation profile to prevent execution
+        # mismatch with run_candidate (which always uses the profile mode).
+        # Model override is ignored when the profile has a resolved mode.
         input_mode = str(args.get("input_mode") or "")
-        if not input_mode:
-            profile_mode = str(profile.get("mode") or "") if isinstance(profile, dict) else ""
+        profile_mode = str(profile.get("mode") or "") if isinstance(profile, dict) else ""
+        if profile_mode in ("argv_file", "stdin"):
+            # Profile is resolved — lock to it, ignore model override
             input_mode = "stdin" if profile_mode == "stdin" else "arg"
+        elif not input_mode:
+            # No profile mode and no explicit — default to "arg"
+            input_mode = "arg"
 
         try:
             timeout = int(args.get("timeout") or 30)
@@ -381,7 +424,7 @@ class GdbDebugTool(BaseTool):
         try:
             env_runner = (runtime_context or {}).get("env")
             if env_runner is not None and hasattr(env_runner, "cmd"):
-                output, stderr = _run_gdb_env(
+                output, stderr, rc = _run_gdb_env(
                     env_runner=env_runner,
                     binary_path=binary_path,
                     poc_path=_candidate_display_path(poc_file, workspace_root),
@@ -391,7 +434,7 @@ class GdbDebugTool(BaseTool):
                     library_path=library_path,
                 )
             else:
-                output, stderr = _run_gdb_local(
+                output, stderr, rc = _run_gdb_local(
                     binary_path=binary_path,
                     poc_path=poc_file,
                     commands=commands,
@@ -421,16 +464,22 @@ class GdbDebugTool(BaseTool):
 
         output_tail, truncated = _tail_gdb_output(combined, _MAX_GDB_OUTPUT_CHARS)
 
-        # Determine if GDB timed out
-        # Heuristic: timeout exit codes are 124 (timeout) or 137 (SIGKILL)
+        # Determine if GDB timed out using real returncode + heuristic
         timed_out = False
-        rc = -1  # We don't have the exact return code from combined output
-        # Check for timeout indicators in the output
-        if "Timer expired" in combined or "Interrupted" in combined:
+        if rc in (124, 137):  # timeout / SIGKILL exit codes
+            timed_out = True
+        elif "Timer expired" in combined or "Interrupted" in combined:
             timed_out = True
 
-        # Successful execution — clear the reproduction checkpoint
-        _settle_reproduction(state, latch=False)
+        # D4 fix: Empty GDB output is inconclusive, not success
+        inconclusive = False
+        if not combined.strip() and not timed_out:
+            inconclusive = True
+            # Do NOT clear pending_diagnosis for inconclusive results
+            # _settle_reproduction will NOT be called
+        else:
+            # Successful execution — clear the reproduction checkpoint
+            _settle_reproduction(state, latch=False)
 
         return {
             "status": "success",
@@ -442,6 +491,8 @@ class GdbDebugTool(BaseTool):
             "output": output_tail,
             "output_truncated": truncated,
             "timed_out": timed_out,
+            "returncode": rc if rc is not None else -1,
+            "inconclusive": inconclusive,
             "elapsed_ms": elapsed_ms,
             "objective_id": objective_id or "",
         }
@@ -581,7 +632,7 @@ def _run_gdb_local(
     stderr = _ASLR_WARNING_RE.sub("", stderr).strip()
     # Only return stderr when there was a non-zero exit
     stderr_filtered = stderr if completed.returncode not in (0, None) else ""
-    return stdout, stderr_filtered
+    return stdout, stderr_filtered, completed.returncode
 
 
 def _run_gdb_env(
@@ -615,7 +666,7 @@ def _run_gdb_env(
     # Filter harmless ASLR warning from stderr
     stderr = _ASLR_WARNING_RE.sub("", stderr).strip()
     stderr_filtered = stderr if rc not in (0, None) else ""
-    return stdout, stderr_filtered
+    return stdout, stderr_filtered, rc
 
 
 def _tail_gdb_output(text: str, limit: int) -> tuple[str, bool]:
@@ -636,12 +687,14 @@ def _settle_reproduction(state: Any, latch: bool) -> None:
     """
     if state is None:
         return
-    if not getattr(state, "pending_reproduction", False):
+    # Check both pending_reproduction (legacy) and pending_diagnosis (current)
+    if not getattr(state, "pending_reproduction", False) and not getattr(state, "pending_diagnosis", False):
         return
     try:
         if latch:
             state.gdb_unavailable = True
         state.pending_reproduction = False
+        state.pending_diagnosis = False
     except Exception:
         pass
 

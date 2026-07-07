@@ -50,6 +50,7 @@ RECORD_GATE = "record_gate"
 RECORD_SINK_CANDIDATE = "record_sink_candidate"
 SET_CRASH_TYPE = "set_crash_type"
 SWITCH_PHASE = "switch_phase"
+CONFIRM_FORMAT = "confirm_format"
 ANALYZE_SINK_CANDIDATE = "analyze_sink_candidate"
 ANALYSIS_QUERY_TOOLS = frozenset({
     "discover_sink_navigation_leads", "expand_candidate_neighborhood",
@@ -83,6 +84,7 @@ TRACKING_TOOLS = frozenset({
     RECORD_SINK_CANDIDATE,
     SET_CRASH_TYPE,
     SWITCH_PHASE,
+    CONFIRM_FORMAT,
 })
 
 READ_ONLY_TOOLS = frozenset({

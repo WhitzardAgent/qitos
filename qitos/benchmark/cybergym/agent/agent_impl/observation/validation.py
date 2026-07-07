@@ -53,6 +53,7 @@ from ...tool_names import (
     RECORD_SINK_CANDIDATE,
     ANALYZE_SINK_CANDIDATE,
     ANALYSIS_QUERY_TOOLS,
+    CONFIRM_FORMAT,
 )
 
 
@@ -173,8 +174,10 @@ class ValidationMixin:
             return "chain_checkpoint_pending"
         if getattr(state, "pending_gates_checkpoint", False):
             return "gates_checkpoint_pending"
+        if getattr(state, "pending_diagnosis", False) and not getattr(state, "gdb_unavailable", False):
+            return "diagnosis_required"
         if getattr(state, "pending_reproduction", False) and not getattr(state, "gdb_unavailable", False):
-            return "reproduce_required"
+            return "diagnosis_required"
         if state.pending_reflection:
             return "reflection_pending"
         # P43: add a 2-step cooldown after post_submit_miss so the agent
@@ -775,20 +778,26 @@ class ValidationMixin:
                 names.add(tool_name)
         if brief:
             names.add("get_analysis_result")
+        # confirm_format: available when format is not yet confirmed
+        pack_mode = getattr(state, "pack_mode", {}) or {}
+        if pack_mode.get("mode", "unconfirmed") != "confirmed":
+            names.add(CONFIRM_FORMAT)
         return names
 
     @staticmethod
     def _required_dynamic_tool_name(state: CyberGymState) -> str:
         """Return the dynamic tool mandated by feedback arbitration, if any."""
-        # pending_reproduction takes precedence: gdb_debug is mandatory
-        if getattr(state, "pending_reproduction", False) and not getattr(state, "gdb_unavailable", False):
-            return GDB_DEBUG
+        # Clear stale pending_diagnosis/pending_reproduction (run_candidate removed)
+        if getattr(state, "pending_diagnosis", False):
+            state.pending_diagnosis = False
+        if getattr(state, "pending_reproduction", False):
+            state.pending_reproduction = False
         metadata = getattr(state, "metadata", {}) or {}
         feedback_action = metadata.get(LAST_FEEDBACK_ACTION) or {}
         if not isinstance(feedback_action, dict) or not feedback_action.get("blocks_submit"):
             return ""
         action = str(feedback_action.get("action") or "")
-        if action in {RUN_CANDIDATE, GDB_DEBUG}:
+        if action == GDB_DEBUG:
             return action
         return ""
 

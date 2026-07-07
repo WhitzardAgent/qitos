@@ -1377,3 +1377,137 @@ class SetCrashTypeTool(BaseTool):
             "crash_type": normalized,
             "original_input": raw,
         }
+
+
+class ConfirmFormatTool(BaseTool):
+    """Confirm or update the detected input format for this task.
+
+    The LLM calls this after identifying the input format from harness source,
+    corpus inspection, or other evidence. This activates format-specific
+    construction tools, validation, and prompt guidance.
+    """
+
+    # Valid format identifiers matching knowledge pack IDs
+    _VALID_FORMATS = frozenset({
+        "pdf", "sfnt", "packet", "elf", "image", "codec",
+        "structured_text", "crypto", "archive", "cad", "audio", "unknown",
+    })
+
+    def __init__(self) -> None:
+        super().__init__(
+            ToolSpec(
+                name="confirm_format",
+                description=(
+                    "Confirm or update the detected input format for this task. "
+                    "Use after identifying the format from harness source, corpus "
+                    "inspection, or hex_view of seed files. This activates "
+                    "format-specific construction tools, validation, and guidance. "
+                    "Valid formats: pdf, sfnt, packet, elf, image, codec, "
+                    "structured_text, crypto, archive, cad, audio. Use 'unknown' "
+                    "to reset if the format is truly unclear."
+                ),
+                parameters={
+                    "format_id": {
+                        "type": "string",
+                        "description": (
+                            "Format identifier: pdf, sfnt, packet, elf, image, "
+                            "codec, structured_text, crypto, archive, cad, audio, "
+                            "or unknown"
+                        ),
+                    },
+                    "confidence": {
+                        "type": "string",
+                        "description": (
+                            "\"confirmed\" if based on strong evidence (corpus magic, "
+                            "harness API, fuzzer name). \"candidate\" if based on "
+                            "weaker evidence (description keywords, project name)."
+                        ),
+                    },
+                    "evidence": {
+                        "type": "string",
+                        "description": (
+                            "Brief description of what evidence supports this "
+                            "format identification"
+                        ),
+                    },
+                },
+                required=["format_id"],
+            )
+        )
+
+    def validate_input(
+        self, args: Dict[str, Any], runtime_context: Optional[Dict[str, Any]] = None
+    ) -> ToolValidationResult:
+        _ = runtime_context
+        fmt = str(args.get("format_id") or "").strip().lower()
+        if not fmt:
+            return ToolValidationResult.fail("format_id is required")
+        if fmt not in self._VALID_FORMATS:
+            return ToolValidationResult.fail(
+                f"Unknown format_id '{fmt}'. Valid: {', '.join(sorted(self._VALID_FORMATS))}"
+            )
+        confidence = str(args.get("confidence") or "candidate").strip().lower()
+        if confidence not in ("candidate", "confirmed"):
+            return ToolValidationResult.fail(
+                "confidence must be 'candidate' or 'confirmed'"
+            )
+        return ToolValidationResult.ok()
+
+    def execute(
+        self, args: Dict[str, Any], runtime_context: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        from .agent_impl.knowledge.evidence import activate_pack_from_tool
+
+        state = (runtime_context or {}).get("state")
+        fmt = str(args.get("format_id") or "").strip().lower()
+        confidence = str(args.get("confidence") or "candidate").strip().lower()
+        evidence_text = str(args.get("evidence") or "").strip()
+
+        if state is None:
+            return {"status": "error", "message": "no state available"}
+
+        try:
+            updated = activate_pack_from_tool(state, fmt, confidence, evidence_text)
+        except Exception as e:
+            return {
+                "status": "error",
+                "message": f"failed to activate format: {e}",
+                "format_id": fmt,
+            }
+
+        mode = updated.get("mode", "unconfirmed")
+        pack_id = updated.get("pack_id", "")
+        score = updated.get("detection_score", 0.0)
+
+        result = {
+            "status": "success",
+            "format_id": fmt,
+            "mode": mode,
+            "pack_id": pack_id,
+            "detection_score": score,
+        }
+
+        # Report activated capabilities
+        if mode == "confirmed" and pack_id:
+            try:
+                from .agent_impl.knowledge.registry import get_knowledge_registry
+                registry = get_knowledge_registry()
+                pack = registry.get_pack(pack_id)
+                if pack:
+                    result["capabilities"] = sorted(pack.descriptor.capabilities)
+                    result["backend_available"] = True
+            except Exception:
+                pass
+            result["message"] = (
+                f"Format {pack_id} confirmed. Format-specific validation, "
+                f"recipe planning, and build pipeline activated."
+            )
+        elif mode == "candidate":
+            result["message"] = (
+                f"Format {pack_id} set as candidate. Use confirm_format "
+                f"with confidence='confirmed' after stronger evidence."
+            )
+        else:
+            result["message"] = "Format reset to unknown."
+
+        return result

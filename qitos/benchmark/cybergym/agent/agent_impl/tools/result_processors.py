@@ -90,46 +90,8 @@ def _refresh_feedback_action_after_dynamic_result(agent: Any, state: CyberGymSta
     state.metadata[LAST_FEEDBACK_ACTION] = action
     bump_context_revision(state, "feedback_action")
 
-@register_handler("run_candidate")
-def handle_run_candidate_result(agent: Any, state: CyberGymState, result: Any, output: Any) -> None:
-    """Persist compact dynamic execution evidence — raw facts only, no auto-classification."""
-    if not isinstance(output, dict):
-        _refresh_feedback_action_after_dynamic_result(agent, state)
-        return
-    if output.get("status") != "success":
-        _refresh_feedback_action_after_dynamic_result(agent, state)
-        return
-
-    from ..core.runtime_context_contract import bump_context_revision
-
-    evidence_list = state.metadata.setdefault(RUNTIME_EVIDENCE, [])
-    if not isinstance(evidence_list, list):
-        evidence_list = []
-        state.metadata[RUNTIME_EVIDENCE] = evidence_list
-
-    evidence_id = f"rte_{len(evidence_list):04d}"
-    record = {
-        "evidence_id": evidence_id,
-        "source_kind": "candidate_run",
-        "candidate_digest": output.get("candidate_digest", ""),
-        "candidate_path": output.get("candidate_path", ""),
-        "objective_id": output.get("objective_id", ""),
-        "outcome": output.get("outcome", ""),
-        "purpose": output.get("purpose", ""),
-        "top_frame": output.get("top_frame", ""),
-        "sanitizer_kind": output.get("sanitizer_kind", ""),
-        "signal_name": output.get("signal_name", ""),
-        "evidence_ref": output.get("evidence_ref", ""),
-        "observed_at_step": int(getattr(state, "current_step", 0) or 0),
-    }
-    evidence_list.append(record)
-    state.metadata[RUNTIME_EVIDENCE] = evidence_list[-12:]
-
-    # No auto-classification — raw facts only. The model interprets outcomes
-    # via the Dynamic Evidence section in the observation.
-
-    bump_context_revision(state, "runtime_evidence")
-    _refresh_feedback_action_after_dynamic_result(agent, state)
+# run_candidate handler removed — tool unregistered due to zero diagnostic value.
+# The gdb_debug handler still uses _refresh_feedback_action_after_dynamic_result.
 
 
 @register_handler("gdb_debug")
@@ -157,6 +119,8 @@ def handle_gdb_debug_result(agent: Any, state: CyberGymState, result: Any, outpu
         "commands_stripped": output.get("commands_stripped", False),
         "timed_out": output.get("timed_out", False),
         "output_truncated": output.get("output_truncated", False),
+        "returncode": output.get("returncode", -1),
+        "inconclusive": output.get("inconclusive", False),
         "objective_id": output.get("objective_id", ""),
         "observed_at_step": int(getattr(state, "current_step", 0) or 0),
         "elapsed_ms": output.get("elapsed_ms", 0),
@@ -176,12 +140,35 @@ def handle_gdb_debug_result(agent: Any, state: CyberGymState, result: Any, outpu
     # No negative_evidence generation.
     # The model interprets raw GDB output via Dynamic Evidence section.
 
+    # GDB diagnostic budget: track per-candidate and total call counts
+    MAX_GDB_PER_CANDIDATE = 3
+    MAX_GDB_TOTAL = 8
+    gdb_count = int(getattr(state, "gdb_call_count", 0) or 0) + 1
+    state.gdb_call_count = gdb_count
+    poc_path = str(output.get("poc_path", "") or "")
+    current_diag = str(getattr(state, "current_diagnosis_candidate", "") or "")
+    if poc_path and poc_path != current_diag:
+        # Candidate changed — reset per-candidate counter
+        state.current_diagnosis_candidate = poc_path
+        state.gdb_calls_for_current_candidate = 1
+    else:
+        candidate_count = int(getattr(state, "gdb_calls_for_current_candidate", 0) or 0) + 1
+        state.gdb_calls_for_current_candidate = candidate_count
+    # Latch gdb_unavailable if budget exceeded
+    if (int(getattr(state, "gdb_calls_for_current_candidate", 0) or 0) >= MAX_GDB_PER_CANDIDATE
+            or gdb_count >= MAX_GDB_TOTAL):
+        state.gdb_unavailable = True
+
     # Clear pending_reproduction flag (GDB diagnosis complete)
     from ..tools.dynamic_execution import _settle_reproduction
     if output.get("status") == "error":
         _settle_reproduction(state, latch=True)
     else:
         _settle_reproduction(state, latch=False)
+
+    # Clear pending_diagnosis: dynamic diagnosis is complete
+    if getattr(state, "pending_diagnosis", False):
+        state.pending_diagnosis = False
 
     bump_context_revision(state, "runtime_evidence")
     _refresh_feedback_action_after_dynamic_result(agent, state)

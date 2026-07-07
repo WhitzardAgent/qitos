@@ -316,17 +316,32 @@ def _select_domain_pack_results(state: CyberGymState) -> list[dict[str, Any]]:
         if not selected:
             return []
 
+        # Check if pack mode is confirmed — use full pipeline
+        pack_mode = getattr(state, "pack_mode", {}) or {}
+        pm_mode = pack_mode.get("mode", "unconfirmed")
+        pm_pack = pack_mode.get("pack_id", "")
+
         # Convert to legacy dict format for backward compatibility
         packs: list[dict[str, Any]] = []
         for pack, det_result in selected:
+            pack_id = pack.descriptor.pack_id
+
+            # For confirmed mode with matching pack, try full pipeline
+            if pm_mode == "confirmed" and pm_pack == pack_id:
+                pack_dict = _build_confirmed_pack_result(state, pack, det_result)
+                if pack_dict:
+                    packs.append(pack_dict)
+                    continue
+
+            # Default: lightweight dict
             pack_dict: dict[str, Any] = {
-                "pack": pack.descriptor.pack_id,
+                "pack": pack_id,
                 "match_score": round(det_result.score, 3),
                 "status": "ready" if det_result.decision == "confirmed" else "partial",
                 "recipe_patch": {"carrier": {"format": pack.descriptor.carrier_families[0] if pack.descriptor.carrier_families else "", "seed_policy": "minimal_template_ok"}},
-                "rewrite_plan": {"operations": [], "invariants": [f"preserve_{pack.descriptor.pack_id}_carrier"]},
+                "rewrite_plan": {"operations": [], "invariants": [f"preserve_{pack_id}_carrier"]},
                 "open_gaps": list(det_result.missing_evidence),
-                "sanity_expectations": [{"kind": "format", "expected": pack.descriptor.pack_id, "description": f"preserve {pack.descriptor.pack_id} carrier"}],
+                "sanity_expectations": [{"kind": "format", "expected": pack_id, "description": f"preserve {pack_id} carrier"}],
             }
             packs.append(pack_dict)
 
@@ -336,6 +351,90 @@ def _select_domain_pack_results(state: CyberGymState) -> list[dict[str, Any]]:
         return packs
     except Exception:
         return []
+
+
+def _build_confirmed_pack_result(
+    state: CyberGymState,
+    pack: Any,
+    det_result: Any,
+) -> dict[str, Any] | None:
+    """Build a rich pack result using the full pipeline for confirmed mode."""
+    import os
+    try:
+        from ..knowledge.recipe_ir import recipe_to_dict
+
+        # Parse best seed if not already done
+        parse_dict = (state.metadata or {}).get("pack_parse_result")
+        if not parse_dict:
+            seed_path = ""
+            recipe = state.get_poc_recipe() if hasattr(state, "get_poc_recipe") else {}
+            seed_path = recipe.get("carrier", {}).get("seed_path", "")
+            if not seed_path:
+                corpus = list(getattr(state, "corpus_files", []) or [])
+                seed_path = corpus[0] if corpus else ""
+            if seed_path and os.path.exists(seed_path):
+                with open(seed_path, "rb") as f:
+                    seed_bytes = f.read()
+                parse_result = pack.parse(seed_bytes)
+                parse_dict = {
+                    "status": parse_result.status,
+                    "carrier_family": parse_result.carrier_family,
+                    "version": parse_result.version,
+                    "node_count": parse_result.node_count,
+                }
+                state.metadata["pack_parse_result"] = parse_dict
+
+        # Derive carrier contract if not already done
+        contract_dict = (state.metadata or {}).get("carrier_contract")
+        if not contract_dict:
+            contract = pack.derive_contract(None, None)
+            contract_dict = {
+                "format_id": contract.format_id,
+                "seed_required": contract.seed_required,
+                "derived_fields": list(contract.derived_fields)[:10],
+                "protected_fields": list(contract.protected_fields)[:10],
+            }
+            state.metadata["carrier_contract"] = contract_dict
+
+        # Build recipe plan from pack if parse succeeded
+        operations = []
+        invariants = list(contract_dict.get("protected_fields", []))
+        if parse_dict and parse_dict.get("status") in ("success", "partial"):
+            try:
+                plan = pack.plan(None, None, None)
+                plan_dict = recipe_to_dict(plan)
+                state.metadata["pack_recipe_plan"] = plan_dict
+                operations = plan_dict.get("operations", [])
+                invariants = list(dict.fromkeys(
+                    invariants + [inv.get("expression", "") for inv in plan_dict.get("invariants", []) if inv.get("expression")]
+                ))
+            except Exception:
+                pass
+
+        return {
+            "pack": pack.descriptor.pack_id,
+            "match_score": round(det_result.score, 3),
+            "status": "ready",
+            "recipe_patch": {
+                "carrier": {
+                    "format": contract_dict.get("format_id", pack.descriptor.carrier_families[0] if pack.descriptor.carrier_families else ""),
+                    "seed_policy": "pack_driven",
+                },
+            },
+            "rewrite_plan": {
+                "operations": operations,
+                "invariants": invariants[:10],
+            },
+            "open_gaps": list(det_result.missing_evidence),
+            "sanity_expectations": [
+                {"kind": "format", "expected": pack.descriptor.pack_id,
+                 "description": f"preserve {pack.descriptor.pack_id} carrier structure"},
+                {"kind": "protected_fields", "expected": str(contract_dict.get("protected_fields", []))[:80],
+                 "description": "do not overwrite protected fields"},
+            ],
+        }
+    except Exception:
+        return None
 
 
 def _apply_domain_pack_patch(recipe: dict[str, Any], packs: list[dict[str, Any]]) -> None:
