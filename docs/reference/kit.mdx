@@ -928,7 +928,8 @@ def __init__(
     system_prompt: Optional[str] = None,
     temperature: float = 0.7,
     max_tokens: int = 2048,
-    timeout: int = 60,
+    timeout: int = 120,
+    inference_key: Optional[str] = None,
 )
 ```
 
@@ -940,7 +941,8 @@ def __init__(
 | `system_prompt` | `None` | Prepended as a system message to every call |
 | `temperature` | `0.7` | Sampling temperature |
 | `max_tokens` | `2048` | Maximum tokens in the response |
-| `timeout` | `60` | Request timeout in seconds |
+| `timeout` | `120` | Request timeout in seconds |
+| `inference_key` | `None` | Optional sticky-routing key sent as `x-inspire-inference-key`; falls back to `QITOS_INFERENCE_KEY` when unset |
 
 **Usage**
 

@@ -295,6 +295,84 @@ def test_openai_compatible_model_formats_multimodal_chat_messages(tmp_path, monk
     assert image_block["image_url"]["url"].startswith("data:image/png;base64,")
 
 
+def test_openai_compatible_model_uses_instance_inference_key(monkeypatch) -> None:
+    captured = {}
+
+    class _FakeCompletions:
+        def create(self, **kwargs):
+            captured["messages"] = kwargs["messages"]
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(
+                            content="Final Answer: routed", tool_calls=None
+                        )
+                    )
+                ],
+                usage=None,
+            )
+
+    class _FakeClient:
+        def __init__(self, **kwargs):
+            captured["client_kwargs"] = kwargs
+            self.chat = SimpleNamespace(completions=_FakeCompletions())
+
+    fake_openai = SimpleNamespace(OpenAI=lambda **kwargs: _FakeClient(**kwargs), APIError=Exception)
+    monkeypatch.setitem(sys.modules, "openai", fake_openai)
+    monkeypatch.setenv("QITOS_INFERENCE_KEY", "env-key")
+
+    llm = OpenAICompatibleModel(
+        model="gpt-4.1-mini",
+        api_key="test-key",
+        base_url="https://example.test/v1",
+        inference_key="instance-key",
+    )
+    out = llm([{"role": "user", "content": "Route me"}])
+
+    assert out == "Final Answer: routed"
+    assert captured["client_kwargs"]["default_headers"] == {
+        "x-inspire-inference-key": "instance-key"
+    }
+
+
+def test_openai_compatible_model_falls_back_to_env_inference_key(monkeypatch) -> None:
+    captured = {}
+
+    class _FakeCompletions:
+        def create(self, **kwargs):
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(
+                            content="Final Answer: env routed", tool_calls=None
+                        )
+                    )
+                ],
+                usage=None,
+            )
+
+    class _FakeClient:
+        def __init__(self, **kwargs):
+            captured["client_kwargs"] = kwargs
+            self.chat = SimpleNamespace(completions=_FakeCompletions())
+
+    fake_openai = SimpleNamespace(OpenAI=lambda **kwargs: _FakeClient(**kwargs), APIError=Exception)
+    monkeypatch.setitem(sys.modules, "openai", fake_openai)
+    monkeypatch.setenv("QITOS_INFERENCE_KEY", "env-key")
+
+    llm = OpenAICompatibleModel(
+        model="gpt-4.1-mini",
+        api_key="test-key",
+        base_url="https://example.test/v1",
+    )
+    out = llm([{"role": "user", "content": "Route me"}])
+
+    assert out == "Final Answer: env routed"
+    assert captured["client_kwargs"]["default_headers"] == {
+        "x-inspire-inference-key": "env-key"
+    }
+
+
 def test_openai_compatible_model_retries_and_uses_120s_timeout(monkeypatch) -> None:
     captured = {"attempts": 0, "client_kwargs": None}
 

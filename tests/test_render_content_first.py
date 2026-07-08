@@ -90,6 +90,120 @@ def test_content_first_renderer_prioritizes_terminal_observation() -> None:
     assert obs["secondary"]["title"] == "Tool Observation"
 
 
+def test_content_first_renderer_renders_nested_tool_output_readably() -> None:
+    renderer = ContentFirstRenderer(max_preview_chars=200)
+    obs_evt = RenderEvent(
+        channel="observation",
+        node="action_results",
+        step_id=0,
+        payload={
+            "action_results": [
+                {
+                    "status": "success",
+                    "output": {
+                        "status": "success",
+                        "poc_path": "/tmp/poc",
+                        "returncode": 0,
+                        "commands": ["break main", "run /tmp/poc", "bt"],
+                        "output": (
+                            "Breakpoint 1, main () at harness.cc:12\n"
+                            "Runtime evidence: sink reached\n"
+                            "Inferior 1 exited normally"
+                        ),
+                    },
+                    "error": None,
+                    "metadata": {"tool_name": "gdb_debug", "attempts": 1},
+                }
+            ]
+        },
+    )
+
+    obs = renderer.observation_summary(obs_evt)
+
+    assert isinstance(obs, dict)
+    assert obs.get("title") == "gdb_debug"
+    body = str(obs.get("body"))
+    assert "tool_name=gdb_debug" in body
+    assert "poc_path=/tmp/poc" in body
+    assert "returncode=0" in body
+    assert "Commands:" in body
+    assert "  - break main" in body
+    assert "Output:" in body
+    assert "Breakpoint 1, main () at harness.cc:12" in body
+    assert "Runtime evidence: sink reached" in body
+    assert '"output"' not in body
+    assert "{\n" not in body
+
+
+def test_content_first_renderer_deduplicates_promoted_string_output() -> None:
+    renderer = ContentFirstRenderer(max_preview_chars=200)
+    obs_evt = RenderEvent(
+        channel="observation",
+        node="action_results",
+        step_id=0,
+        payload={
+            "action_results": [
+                {
+                    "status": "success",
+                    "output": "same visible text\nsecond line",
+                    "content": "same visible text\nsecond line",
+                    "metadata": {"tool_name": "run_candidate"},
+                }
+            ]
+        },
+    )
+
+    obs = renderer.observation_summary(obs_evt)
+
+    assert isinstance(obs, dict)
+    body = str(obs.get("body"))
+    assert body.count("same visible text") == 1
+    assert "Output:" in body
+    assert "Content:" not in body
+
+
+def test_claude_style_hook_renders_nested_tool_output_readably() -> None:
+    hook = ClaudeStyleHook(max_preview_chars=200)
+    hook.console = Console(record=True, width=140)
+    hook.on_render_event(
+        RenderEvent(
+            channel="observation",
+            node="action_results",
+            step_id=0,
+            payload={
+                "action_results": [
+                    {
+                        "status": "success",
+                        "output": {
+                            "status": "success",
+                            "poc_path": "/tmp/poc",
+                            "returncode": 0,
+                            "commands": ["break main", "run /tmp/poc"],
+                            "output": (
+                                "Breakpoint 1, main () at harness.cc:12\n"
+                                "Runtime evidence: sink reached"
+                            ),
+                        },
+                        "metadata": {"tool_name": "gdb_debug", "attempts": 1},
+                    }
+                ]
+            },
+        )
+    )
+
+    text = hook.console.export_text()
+
+    assert "Observation Title: gdb_debug" in text
+    assert "tool_name=gdb_debug" in text
+    assert "poc_path=/tmp/poc" in text
+    assert "Commands:" in text
+    assert "  - break main" in text
+    assert "Output:" in text
+    assert "Runtime evidence: sink reached" in text
+    assert '"output"' not in text
+    assert "{\n" not in text
+
+
 def test_claude_style_hook_shows_context_state_without_dumping_messages() -> None:
     hook = ClaudeStyleHook(max_preview_chars=200)
     hook.console = Console(record=True, width=120)
@@ -256,6 +370,7 @@ def test_claude_style_hook_prints_agent_composition() -> None:
 
     class _LLM:
         model_name = "Qwen/Qwen3-8B"
+        inference_key = "cybergym-arvo-3938-testkey"
 
     class _Agent:
         llm = _LLM()
@@ -285,4 +400,5 @@ def test_claude_style_hook_prints_agent_composition() -> None:
     text = hook.console.export_text()
     assert "AGENT COMPOSITION" in text
     assert "Qwen/Qwen3-8B" in text
+    assert "cybergym-arvo-3938-testkey" in text
     assert "web_search" in text

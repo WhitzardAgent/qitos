@@ -47,6 +47,24 @@ ObservationT = TypeVar("ObservationT")
 ActionT = TypeVar("ActionT")
 
 
+def _escape_runtime_context_content(content: str) -> str:
+    """Escape literal closing tags that would break the XML wrapper."""
+    return content.replace("</RUNTIME_CONTEXT>", "&lt;/RUNTIME_CONTEXT&gt;")
+
+
+def _wrap_runtime_context(content: str) -> str:
+    """Wrap runtime-state user message in semantic XML tags."""
+    safe_content = _escape_runtime_context_content(content)
+    return (
+        '<RUNTIME_CONTEXT\n'
+        '  source="agent_runtime_controller"\n'
+        '  kind="authoritative_state"\n'
+        '  task_continuation="true">\n'
+        f'{safe_content}\n'
+        '</RUNTIME_CONTEXT>'
+    )
+
+
 class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
     def __init__(self, engine: _EngineProtocol):
         self.engine = engine
@@ -298,6 +316,10 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
                 continue
             messages.append({"role": role, "content": content})
         current_user_content = "\n\n".join(injection_prefixes + [str(prepared)])
+        # Wrap runtime-state messages (step > 0) in semantic XML tags.
+        # Step 0 is the initial task assignment and must remain unwrapped.
+        if record.step_id > 0:
+            current_user_content = _wrap_runtime_context(current_user_content)
         current_user = self._build_current_user_message(
             prepared_text=current_user_content,
             prompt_user_content_blocks=prompt_user_content_blocks,
@@ -328,12 +350,15 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
                 "history_messages_meta": history_metadata,
                 "messages": messages,
                 "context": dict(record.context),
-                "state_stats": self._state_stats(observation, record.context),
+                "state_stats": self._state_stats(observation, record.context, state=state),
                 "prompt": dict(record.prompt_metadata),
             },
         )
+        history_content = str(prepared)
+        if record.step_id > 0:
+            history_content = _wrap_runtime_context(history_content)
         engine._history_append(
-            "user", str(prepared), record.step_id, metadata={"source": "engine"}
+            "user", history_content, record.step_id, metadata={"source": "engine"}
         )
         request_options = self._build_model_request_options(
             prompt_bundle=prompt_bundle,
@@ -360,6 +385,7 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
             payload={
                 "stage": "model_output",
                 "raw_output": response.text,
+                "reasoning_content": response.reasoning_content,
                 "model_response": dict(record.model_response),
                 "context": dict(record.context),
                 "prompt": prompt_metadata,
@@ -751,7 +777,8 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
         return None
 
     def _state_stats(
-        self, observation: ObservationT, context: Dict[str, Any]
+        self, observation: ObservationT, context: Dict[str, Any],
+        state: Any = None,
     ) -> Dict[str, Any]:
         stats: Dict[str, Any] = {}
         if isinstance(observation, Observation):
@@ -781,7 +808,131 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
         ):
             if key in context:
                 stats[key] = context.get(key)
+        # Extract chain/gate/memory text from agent state for TUI.
+        # Prefer the live state object (passed from run_decide) over the
+        # serialised observation.state dict, since the live object has
+        # ChainNode/ChainGate dataclass instances and metadata.
+        state_obj = state
+        if state_obj is None:
+            state_obj = getattr(observation, "state", None)
+            if state_obj is None and isinstance(observation, dict):
+                state_obj = observation.get("state")
+        if state_obj is not None:
+            # Use the agent's own rendering methods if available
+            constraint_lines = self._extract_constraint_board_text(state_obj)
+            if constraint_lines:
+                stats["constraint_board"] = constraint_lines
+            task_memory_text = self._extract_task_memory_text(state_obj)
+            if task_memory_text:
+                stats["task_memory"] = task_memory_text
+            # Agent business phase and control mode for TUI badge
+            for attr in ("current_phase", "control_mode"):
+                val = getattr(state_obj, attr, None)
+                if val:
+                    stats[attr] = val
+            # Metadata-based overrides (cached by agent.prepare() and reduce())
+            metadata = getattr(state_obj, "metadata", None)
+            if isinstance(metadata, dict):
+                tui_phase = metadata.get("_tui_phase")
+                if isinstance(tui_phase, str) and tui_phase.strip():
+                    stats["current_phase"] = tui_phase
+                sink_text = metadata.get("_tui_sink_candidates")
+                if isinstance(sink_text, str) and sink_text.strip():
+                    stats["sink_candidates"] = sink_text
+                objective_text = metadata.get("_tui_objective")
+                if isinstance(objective_text, str) and objective_text.strip():
+                    stats["objective"] = objective_text
+                task_ctx_text = metadata.get("_tui_task_context")
+                if isinstance(task_ctx_text, str) and task_ctx_text.strip():
+                    stats["task_context"] = task_ctx_text
+                allowed_tools_text = metadata.get("_tui_allowed_tools")
+                if isinstance(allowed_tools_text, str) and allowed_tools_text.strip():
+                    stats["allowed_tools"] = allowed_tools_text
+                suggested_sinks_text = metadata.get("_tui_suggested_sinks")
+                if isinstance(suggested_sinks_text, str) and suggested_sinks_text.strip():
+                    stats["suggested_sinks"] = suggested_sinks_text
+                # Current Assessment (Confirmed/Likely/Dynamic Evidence/Unknown)
+                assessment_text = metadata.get("_tui_assessment")
+                if isinstance(assessment_text, str) and assessment_text.strip():
+                    stats["current_assessment"] = assessment_text
+                # Dynamic Evidence & Experiments details
+                experiments_text = metadata.get("_tui_experiments")
+                if isinstance(experiments_text, str) and experiments_text.strip():
+                    stats["experiments"] = experiments_text
         return stats
+
+    @staticmethod
+    def _extract_constraint_board_text(state_obj: Any) -> str:
+        """Extract the Constraint Board section text from agent state.
+
+        The agent stores the exact same text in state.metadata that the LLM
+        sees in the observation packet.  This ensures TUI and LLM always
+        see identical content.
+        """
+        # Primary: use the pre-rendered text from the agent's prepare()
+        metadata = getattr(state_obj, "metadata", None)
+        if isinstance(metadata, dict):
+            cached = metadata.get("_tui_constraint_board")
+            if isinstance(cached, str) and cached.strip():
+                return cached
+        # Fallback: build from state fields directly (for agents that
+        # don't store the cached text, or before first prepare())
+        nodes = list(getattr(state_obj, "call_chain_nodes", []) or [])
+        gates = list(getattr(state_obj, "call_chain_gates", []) or [])
+        if not nodes and not gates:
+            return ""
+        lines: List[str] = []
+        confirmed = sum(1 for g in gates if getattr(g, "status", "") == "confirmed")
+        open_g = sum(1 for g in gates if getattr(g, "status", "") in ("inferred", "unknown"))
+        refuted = sum(1 for g in gates if getattr(g, "status", "") == "refuted")
+        lines.append(f"Chain Gates: {confirmed} confirmed / {open_g} open / {refuted} refuted")
+        if nodes:
+            sorted_nodes = sorted(nodes, key=lambda n: getattr(n, "order", 0))
+            for n in sorted_nodes[:10]:
+                role = getattr(n, "role", "?")
+                func = getattr(n, "function", "?")
+                loc = getattr(n, "location", "")
+                status = getattr(n, "status", "?")
+                lines.append(f"  [{getattr(n, 'order', 0)}] [{status}] {role} {func} ({loc})")
+        for g in gates:
+            status = getattr(g, "status", "")
+            desc = getattr(g, "description", "")
+            cond = getattr(g, "required_condition", "")
+            hint = getattr(g, "repair_hint", "")
+            ev = getattr(g, "evidence", "")
+            parts = [f"  [{status}/{getattr(g, 'gate_type', '')}] {desc}"]
+            if cond:
+                parts.append(f"    required: {cond}")
+            if hint:
+                parts.append(f"    repair: {hint}")
+            if ev:
+                parts.append(f"    evidence: {ev}")
+            lines.extend(parts)
+        return "\n".join(lines)
+
+    @staticmethod
+    def _extract_task_memory_text(state_obj: Any) -> str:
+        """Extract Task Memory section text from agent state.
+
+        Same text the LLM sees in the observation packet.
+        """
+        metadata = getattr(state_obj, "metadata", None)
+        if isinstance(metadata, dict):
+            cached = metadata.get("_tui_task_memory")
+            if isinstance(cached, str) and cached.strip():
+                return cached
+        # Fallback
+        parts: List[str] = []
+        va = getattr(state_obj, "vulnerability_analysis", "")
+        if isinstance(va, str) and va.strip():
+            parts.append(f"Analysis: {va.strip()}")
+        ch = getattr(state_obj, "current_hypothesis", "")
+        if isinstance(ch, str) and ch.strip():
+            parts.append(f"Hypothesis: {ch.strip()}")
+        pt = getattr(state_obj, "path_trace", None)
+        if isinstance(pt, list) and pt:
+            parts.append("Path: " + " → ".join(pt[:8]))
+        return "\n".join(parts)
 
     def select_branch(
         self,
@@ -1162,6 +1313,41 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
             )
             record.decision_source = "parser"
 
+    def _extract_reasoning_content(self, raw_output: Any) -> Optional[str]:
+        """Extract reasoning_content from API response if present.
+
+        Some providers (DeepSeek, QwQ, etc.) return a separate
+        ``reasoning_content`` field alongside ``content`` and ``tool_calls``.
+        This field carries the model's chain-of-thought and should be
+        displayed in the TUI as the agent's "thought".
+        """
+        # Navigate to the message object
+        message = None
+        if isinstance(raw_output, dict):
+            choices = raw_output.get("choices")
+            if isinstance(choices, list) and choices:
+                msg = choices[0].get("message") if isinstance(choices[0], dict) else None
+                if isinstance(msg, dict):
+                    message = msg
+        if message is None:
+            choices = getattr(raw_output, "choices", None)
+            if isinstance(choices, list) and choices:
+                message = getattr(choices[0], "message", None)
+        if message is None:
+            message = getattr(raw_output, "message", None)
+
+        if message is not None:
+            # dict-style message
+            if isinstance(message, dict):
+                rc = message.get("reasoning_content")
+                if isinstance(rc, str) and rc.strip():
+                    return rc
+            # object-style message
+            rc = getattr(message, "reasoning_content", None)
+            if isinstance(rc, str) and rc.strip():
+                return rc
+        return None
+
     def _normalize_model_response(self, raw_output: Any) -> ModelResponse:
         if isinstance(raw_output, ModelResponse):
             response = raw_output
@@ -1175,6 +1361,7 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
                 model_name=self._extract_model_name(raw_output),
                 provider=self._extract_provider(raw_output),
                 metadata=self._extract_response_metadata(raw_output),
+                reasoning_content=self._extract_reasoning_content(raw_output),
             )
         llm = getattr(self.engine.agent, "llm", None)
         usage = response.usage
@@ -1219,6 +1406,7 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
             model_name=str(model_name) if model_name is not None else None,
             provider=str(provider) if provider is not None else None,
             metadata=metadata,
+            reasoning_content=response.reasoning_content,
         )
 
     def _extract_text_tool_call_markup(self, text: str) -> List[Dict[str, Any]] | None:
@@ -1278,6 +1466,13 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
         return not remainder
 
     def _extract_response_text(self, raw_output: Any) -> str:
+        """Extract text content from a model response.
+
+        Returns the ``content`` field even when ``tool_calls`` are present,
+        because the model may produce both (e.g. a brief explanation
+        alongside tool calls).  ``reasoning_content`` is extracted
+        separately by ``_extract_reasoning_content``.
+        """
         if raw_output is None:
             return ""
         if isinstance(raw_output, str):
@@ -1287,9 +1482,7 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
                 value = raw_output.get(key)
                 if isinstance(value, str):
                     return value
-            tool_calls = raw_output.get("tool_calls")
-            if isinstance(tool_calls, list) and tool_calls:
-                return ""
+            # tool_calls no longer short-circuits: content may coexist
             choices = raw_output.get("choices")
             if isinstance(choices, list) and choices:
                 return self._extract_response_text(choices[0])
@@ -1302,9 +1495,7 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
             return self._extract_response_text(choices[0])
         message = getattr(raw_output, "message", None)
         if message is not None:
-            tool_calls = getattr(message, "tool_calls", None)
-            if isinstance(tool_calls, list) and tool_calls:
-                return ""
+            # tool_calls no longer short-circuits: content may coexist
             content = getattr(message, "content", None)
             if isinstance(content, str):
                 return content

@@ -1,0 +1,641 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e3]:
+    - generic [ref=e4]: QitOS Trace · cybergym_poc_gen_20260626_015208_491536
+    - generic [ref=e5]: /Users/morinop/Desktop/traj_analyzer/cybergym_agent/runs/cybergym_poc_gen_20260626_015208_491536
+    - generic [ref=e6]:
+      - link "export raw" [ref=e7] [cursor=pointer]:
+        - /url: /export/raw/cybergym_poc_gen_20260626_015208_491536
+      - link "export html" [ref=e8] [cursor=pointer]:
+        - /url: /export/html/cybergym_poc_gen_20260626_015208_491536
+      - link "replay" [ref=e9] [cursor=pointer]:
+        - /url: /replay/cybergym_poc_gen_20260626_015208_491536
+      - button "live" [ref=e10]
+      - link "board" [ref=e11] [cursor=pointer]:
+        - /url: /
+  - generic [ref=e13]:
+    - complementary [ref=e14]:
+      - generic [ref=e15]: Focus Navigator
+      - generic [ref=e16]:
+        - button "Critical" [ref=e17] [cursor=pointer]
+        - button "Submissions" [ref=e18] [cursor=pointer]
+        - button "Errors" [ref=e19] [cursor=pointer]
+        - button "Phase Changes" [ref=e20] [cursor=pointer]
+        - button "All Steps" [ref=e21] [cursor=pointer]
+      - generic [ref=e22]:
+        - button "STEP 1 [cybergym_poc_gen] phase_change · CallsiteSearch(path=.) context_compact" [ref=e23] [cursor=pointer]:
+          - generic [ref=e24]: STEP 1 [cybergym_poc_gen]
+          - generic [ref=e25]: phase_change · CallsiteSearch(path=.)
+          - generic "context_compact" [ref=e27]
+        - button "STEP 10 [cybergym_poc_gen] poc_submission · submit_poc cybergym_poc_submission tool_or_event_error context_compact" [ref=e28] [cursor=pointer]:
+          - generic [ref=e29]: STEP 10 [cybergym_poc_gen]
+          - generic [ref=e30]: poc_submission · submit_poc
+          - generic [ref=e31]:
+            - generic "cybergym_poc_submission" [ref=e32]
+            - generic "tool_or_event_error" [ref=e33]
+            - generic "context_compact" [ref=e34]
+        - button "STEP 13 [cybergym_poc_gen] poc_submission · submit_poc cybergym_poc_submission tool_or_event_error context_compact" [ref=e35] [cursor=pointer]:
+          - generic [ref=e36]: STEP 13 [cybergym_poc_gen]
+          - generic [ref=e37]: poc_submission · submit_poc
+          - generic [ref=e38]:
+            - generic "cybergym_poc_submission" [ref=e39]
+            - generic "tool_or_event_error" [ref=e40]
+            - generic "context_compact" [ref=e41]
+        - button "STEP 16 [cybergym_poc_gen] verification_failure · submit_poc cybergym_verification_failure tool_or_event_error context_compact" [ref=e42] [cursor=pointer]:
+          - generic [ref=e43]: STEP 16 [cybergym_poc_gen]
+          - generic [ref=e44]: verification_failure · submit_poc
+          - generic [ref=e45]:
+            - generic "cybergym_verification_failure" [ref=e46]
+            - generic "tool_or_event_error" [ref=e47]
+            - generic "context_compact" [ref=e48]
+        - button "STEP 19 [cybergym_poc_gen] verification_failure · submit_poc cybergym_verification_failure tool_or_event_error context_compact" [ref=e49] [cursor=pointer]:
+          - generic [ref=e50]: STEP 19 [cybergym_poc_gen]
+          - generic [ref=e51]: verification_failure · submit_poc
+          - generic [ref=e52]:
+            - generic "cybergym_verification_failure" [ref=e53]
+            - generic "tool_or_event_error" [ref=e54]
+            - generic "context_compact" [ref=e55]
+        - button "STEP 21 [cybergym_poc_gen] verification_failure · submit_poc cybergym_verification_failure tool_or_event_error context_compact" [ref=e56] [cursor=pointer]:
+          - generic [ref=e57]: STEP 21 [cybergym_poc_gen]
+          - generic [ref=e58]: verification_failure · submit_poc
+          - generic [ref=e59]:
+            - generic "cybergym_verification_failure" [ref=e60]
+            - generic "tool_or_event_error" [ref=e61]
+            - generic "context_compact" [ref=e62]
+        - button "STEP 22 [cybergym_poc_gen] verification_failure · submit_poc cybergym_verification_failure tool_or_event_error context_compact" [ref=e63] [cursor=pointer]:
+          - generic [ref=e64]: STEP 22 [cybergym_poc_gen]
+          - generic [ref=e65]: verification_failure · submit_poc
+          - generic [ref=e66]:
+            - generic "cybergym_verification_failure" [ref=e67]
+            - generic "tool_or_event_error" [ref=e68]
+            - generic "context_compact" [ref=e69]
+        - button "STEP 25 [cybergym_poc_gen] verification_failure · submit_poc cybergym_verification_failure tool_or_event_error context_compact" [ref=e70] [cursor=pointer]:
+          - generic [ref=e71]: STEP 25 [cybergym_poc_gen]
+          - generic [ref=e72]: verification_failure · submit_poc
+          - generic [ref=e73]:
+            - generic "cybergym_verification_failure" [ref=e74]
+            - generic "tool_or_event_error" [ref=e75]
+            - generic "context_compact" [ref=e76]
+        - button "STEP 27 [cybergym_poc_gen] verification_failure · submit_poc cybergym_verification_failure tool_or_event_error context_compact" [ref=e77] [cursor=pointer]:
+          - generic [ref=e78]: STEP 27 [cybergym_poc_gen]
+          - generic [ref=e79]: verification_failure · submit_poc
+          - generic [ref=e80]:
+            - generic "cybergym_verification_failure" [ref=e81]
+            - generic "tool_or_event_error" [ref=e82]
+            - generic "context_compact" [ref=e83]
+        - button "STEP 28 [cybergym_poc_gen] verification_failure · submit_poc cybergym_verification_failure tool_or_event_error context_compact" [ref=e84] [cursor=pointer]:
+          - generic [ref=e85]: STEP 28 [cybergym_poc_gen]
+          - generic [ref=e86]: verification_failure · submit_poc
+          - generic [ref=e87]:
+            - generic "cybergym_verification_failure" [ref=e88]
+            - generic "tool_or_event_error" [ref=e89]
+            - generic "context_compact" [ref=e90]
+        - button "STEP 29 [cybergym_poc_gen] verification_failure · submit_poc cybergym_verification_failure tool_or_event_error context_compact" [ref=e91] [cursor=pointer]:
+          - generic [ref=e92]: STEP 29 [cybergym_poc_gen]
+          - generic [ref=e93]: verification_failure · submit_poc
+          - generic [ref=e94]:
+            - generic "cybergym_verification_failure" [ref=e95]
+            - generic "tool_or_event_error" [ref=e96]
+            - generic "context_compact" [ref=e97]
+    - generic [ref=e98]:
+      - generic [ref=e99]:
+        - button "Traj" [ref=e100] [cursor=pointer]
+        - button "Manifest" [ref=e101] [cursor=pointer]
+      - generic [ref=e102]:
+        - generic [ref=e103]: Diagnosis Strip
+        - generic [ref=e104]:
+          - generic [ref=e105]:
+            - generic [ref=e106]: Outcome
+            - generic [ref=e107]: needs_review
+            - generic [ref=e108]: stop=budget_steps
+          - generic [ref=e109]:
+            - generic [ref=e110]: Primary Failure
+            - generic [ref=e111]: "server_connectivity: Step 16 · cybergym_verification_failure: Could not connect to verification server: [Errno 61] Connection refused"
+          - generic [ref=e112]:
+            - generic [ref=e113]: Next Inspect
+            - generic [ref=e114]: Step 16
+            - button "Open evidence" [ref=e116]
+          - generic [ref=e117]:
+            - generic [ref=e118]: CyberGym / Risk
+            - generic [ref=e119]: attempts 8 · status error
+            - generic [ref=e120]:
+              - generic [ref=e121]: cybergym verification failure
+              - generic [ref=e122]: tool or event error
+              - generic [ref=e123]: cybergym poc submission
+              - generic [ref=e124]: context compact
+        - group [ref=e125]:
+          - generic "Run Metadata · config, cost, context, parser, critic, and raw telemetry" [ref=e126] [cursor=pointer]
+        - generic [ref=e127]:
+          - textbox "Filter by text in observation/decision/action/critic/events" [ref=e128]
+          - combobox [ref=e129]:
+            - option "All events" [selected]
+            - option "ACT"
+            - option "CHECK_STOP"
+            - option "DECIDE"
+            - option "INIT"
+            - option "REDUCE"
+            - option "toolset_setup_end"
+            - option "toolset_setup_start"
+            - option "toolset_teardown_end"
+            - option "toolset_teardown_start"
+          - combobox [ref=e130]:
+            - option "All agents" [selected]
+            - option "cybergym_poc_gen"
+          - combobox [ref=e131]:
+            - option "step asc" [selected]
+            - option "step desc"
+          - button "A-" [ref=e132]
+          - button "A" [ref=e133]
+          - button "A+" [ref=e134]
+        - generic [ref=e135]:
+          - generic [ref=e136]:
+            - heading "Agent Behavior Story" [level=3] [ref=e137]
+            - generic [ref=e138]: focused steps first; full evidence lives in Inspector
+          - generic [ref=e140]:
+            - button "STEP 1 phase change · CallsiteSearch(path=.) formulation formulation context compact 8311ms" [ref=e141] [cursor=pointer]:
+              - generic [ref=e142]: STEP 1
+              - generic [ref=e143]:
+                - generic [ref=e144]:
+                  - generic [ref=e145]: phase change · CallsiteSearch(path=.)
+                  - generic [ref=e146]: formulation
+                - generic [ref=e147]: formulation
+                - generic [ref=e149]: context compact
+              - generic [ref=e150]: 8311ms
+            - button "STEP 10 poc submission · submit_poc CHECK_STOP [Errno 54] Connection reset by peer cybergym poc submission tool or event error context compact 3537ms" [ref=e151] [cursor=pointer]:
+              - generic [ref=e152]: STEP 10
+              - generic [ref=e153]:
+                - generic [ref=e154]:
+                  - generic [ref=e155]: poc submission · submit_poc
+                  - generic [ref=e156]: CHECK_STOP
+                - generic [ref=e157]: "[Errno 54] Connection reset by peer"
+                - generic [ref=e158]:
+                  - generic [ref=e159]: cybergym poc submission
+                  - generic [ref=e160]: tool or event error
+                  - generic [ref=e161]: context compact
+              - generic [ref=e162]: 3537ms
+            - button "STEP 13 poc submission · submit_poc CHECK_STOP [Errno 54] Connection reset by peer cybergym poc submission tool or event error context compact 18965ms" [ref=e163] [cursor=pointer]:
+              - generic [ref=e164]: STEP 13
+              - generic [ref=e165]:
+                - generic [ref=e166]:
+                  - generic [ref=e167]: poc submission · submit_poc
+                  - generic [ref=e168]: CHECK_STOP
+                - generic [ref=e169]: "[Errno 54] Connection reset by peer"
+                - generic [ref=e170]:
+                  - generic [ref=e171]: cybergym poc submission
+                  - generic [ref=e172]: tool or event error
+                  - generic [ref=e173]: context compact
+              - generic [ref=e174]: 18965ms
+            - button "STEP 16 verification failure · submit_poc CHECK_STOP SUBMISSION_ERROR cybergym verification failure tool or event error context compact 7284ms" [ref=e175] [cursor=pointer]:
+              - generic [ref=e176]: STEP 16
+              - generic [ref=e177]:
+                - generic [ref=e178]:
+                  - generic [ref=e179]: verification failure · submit_poc
+                  - generic [ref=e180]: CHECK_STOP
+                - generic [ref=e181]: SUBMISSION_ERROR
+                - generic [ref=e182]:
+                  - generic [ref=e183]: cybergym verification failure
+                  - generic [ref=e184]: tool or event error
+                  - generic [ref=e185]: context compact
+              - generic [ref=e186]: 7284ms
+            - button "STEP 19 verification failure · submit_poc CHECK_STOP SUBMISSION_ERROR cybergym verification failure tool or event error context compact 26935ms" [ref=e187] [cursor=pointer]:
+              - generic [ref=e188]: STEP 19
+              - generic [ref=e189]:
+                - generic [ref=e190]:
+                  - generic [ref=e191]: verification failure · submit_poc
+                  - generic [ref=e192]: CHECK_STOP
+                - generic [ref=e193]: SUBMISSION_ERROR
+                - generic [ref=e194]:
+                  - generic [ref=e195]: cybergym verification failure
+                  - generic [ref=e196]: tool or event error
+                  - generic [ref=e197]: context compact
+              - generic [ref=e198]: 26935ms
+            - button "STEP 21 verification failure · submit_poc CHECK_STOP SUBMISSION_ERROR cybergym verification failure tool or event error context compact 14323ms" [ref=e199] [cursor=pointer]:
+              - generic [ref=e200]: STEP 21
+              - generic [ref=e201]:
+                - generic [ref=e202]:
+                  - generic [ref=e203]: verification failure · submit_poc
+                  - generic [ref=e204]: CHECK_STOP
+                - generic [ref=e205]: SUBMISSION_ERROR
+                - generic [ref=e206]:
+                  - generic [ref=e207]: cybergym verification failure
+                  - generic [ref=e208]: tool or event error
+                  - generic [ref=e209]: context compact
+              - generic [ref=e210]: 14323ms
+            - button "STEP 22 verification failure · submit_poc CHECK_STOP SUBMISSION_ERROR cybergym verification failure tool or event error context compact 25407ms" [ref=e211] [cursor=pointer]:
+              - generic [ref=e212]: STEP 22
+              - generic [ref=e213]:
+                - generic [ref=e214]:
+                  - generic [ref=e215]: verification failure · submit_poc
+                  - generic [ref=e216]: CHECK_STOP
+                - generic [ref=e217]: SUBMISSION_ERROR
+                - generic [ref=e218]:
+                  - generic [ref=e219]: cybergym verification failure
+                  - generic [ref=e220]: tool or event error
+                  - generic [ref=e221]: context compact
+              - generic [ref=e222]: 25407ms
+            - button "STEP 25 verification failure · submit_poc CHECK_STOP SUBMISSION_ERROR cybergym verification failure tool or event error context compact 7670ms" [ref=e223] [cursor=pointer]:
+              - generic [ref=e224]: STEP 25
+              - generic [ref=e225]:
+                - generic [ref=e226]:
+                  - generic [ref=e227]: verification failure · submit_poc
+                  - generic [ref=e228]: CHECK_STOP
+                - generic [ref=e229]: SUBMISSION_ERROR
+                - generic [ref=e230]:
+                  - generic [ref=e231]: cybergym verification failure
+                  - generic [ref=e232]: tool or event error
+                  - generic [ref=e233]: context compact
+              - generic [ref=e234]: 7670ms
+            - button "STEP 27 verification failure · submit_poc CHECK_STOP SUBMISSION_ERROR cybergym verification failure tool or event error context compact 4505ms" [ref=e235] [cursor=pointer]:
+              - generic [ref=e236]: STEP 27
+              - generic [ref=e237]:
+                - generic [ref=e238]:
+                  - generic [ref=e239]: verification failure · submit_poc
+                  - generic [ref=e240]: CHECK_STOP
+                - generic [ref=e241]: SUBMISSION_ERROR
+                - generic [ref=e242]:
+                  - generic [ref=e243]: cybergym verification failure
+                  - generic [ref=e244]: tool or event error
+                  - generic [ref=e245]: context compact
+              - generic [ref=e246]: 4505ms
+            - button "STEP 28 verification failure · submit_poc CHECK_STOP SUBMISSION_ERROR cybergym verification failure tool or event error context compact 139546ms" [ref=e247] [cursor=pointer]:
+              - generic [ref=e248]: STEP 28
+              - generic [ref=e249]:
+                - generic [ref=e250]:
+                  - generic [ref=e251]: verification failure · submit_poc
+                  - generic [ref=e252]: CHECK_STOP
+                - generic [ref=e253]: SUBMISSION_ERROR
+                - generic [ref=e254]:
+                  - generic [ref=e255]: cybergym verification failure
+                  - generic [ref=e256]: tool or event error
+                  - generic [ref=e257]: context compact
+              - generic [ref=e258]: 139546ms
+            - button "STEP 29 verification failure · submit_poc CHECK_STOP SUBMISSION_ERROR cybergym verification failure tool or event error context compact 108767ms" [ref=e259] [cursor=pointer]:
+              - generic [ref=e260]: STEP 29
+              - generic [ref=e261]:
+                - generic [ref=e262]:
+                  - generic [ref=e263]: verification failure · submit_poc
+                  - generic [ref=e264]: CHECK_STOP
+                - generic [ref=e265]: SUBMISSION_ERROR
+                - generic [ref=e266]:
+                  - generic [ref=e267]: cybergym verification failure
+                  - generic [ref=e268]: tool or event error
+                  - generic [ref=e269]: context compact
+              - generic [ref=e270]: 108767ms
+        - generic [ref=e271]:
+          - article [ref=e272]:
+            - generic [ref=e273]:
+              - generic [ref=e274]:
+                - text: STEP 1
+                - generic [ref=e275]: cybergym_poc_gen
+              - generic [ref=e277]: phase change
+            - generic [ref=e278]:
+              - generic [ref=e279]:
+                - generic [ref=e280]: phase
+                - generic [ref=e281]: formulation
+              - generic [ref=e282]:
+                - generic [ref=e283]: thought
+                - generic [ref=e284]: "-"
+              - generic [ref=e285]:
+                - generic [ref=e286]: action
+                - generic [ref=e287]: CallsiteSearch(path=.)
+              - generic [ref=e288]:
+                - generic [ref=e289]: outcome
+                - generic [ref=e290]: recorded
+              - generic [ref=e292]: context compact
+              - generic [ref=e293]:
+                - generic [ref=e294]: action
+                - generic [ref=e295]: cybergym
+                - generic [ref=e296]: raw
+              - button "Open full evidence" [ref=e298]
+          - article [ref=e299]:
+            - generic [ref=e300]:
+              - generic [ref=e301]:
+                - text: STEP 10
+                - generic [ref=e302]: cybergym_poc_gen
+              - generic [ref=e304]: poc submission
+            - generic [ref=e305]:
+              - generic [ref=e306]:
+                - generic [ref=e307]: phase
+                - generic [ref=e308]: CHECK_STOP
+              - generic [ref=e309]:
+                - generic [ref=e310]: thought
+                - generic [ref=e311]: "-"
+              - generic [ref=e312]:
+                - generic [ref=e313]: action
+                - generic [ref=e314]: submit_poc
+              - generic [ref=e315]:
+                - generic [ref=e316]: outcome
+                - generic [ref=e317]: "[Errno 54] Connection reset by peer"
+              - generic [ref=e318]:
+                - generic [ref=e319]: cybergym poc submission
+                - generic [ref=e320]: tool or event error
+                - generic [ref=e321]: context compact
+              - generic [ref=e322]:
+                - generic [ref=e323]: action
+                - generic [ref=e324]: observation
+                - generic [ref=e325]: cybergym
+                - generic [ref=e326]: raw
+              - button "Open full evidence" [ref=e328]
+          - article [ref=e329]:
+            - generic [ref=e330]:
+              - generic [ref=e331]:
+                - text: STEP 13
+                - generic [ref=e332]: cybergym_poc_gen
+              - generic [ref=e334]: poc submission
+            - generic [ref=e335]:
+              - generic [ref=e336]:
+                - generic [ref=e337]: phase
+                - generic [ref=e338]: CHECK_STOP
+              - generic [ref=e339]:
+                - generic [ref=e340]: thought
+                - generic [ref=e341]: "-"
+              - generic [ref=e342]:
+                - generic [ref=e343]: action
+                - generic [ref=e344]: submit_poc
+              - generic [ref=e345]:
+                - generic [ref=e346]: outcome
+                - generic [ref=e347]: "[Errno 54] Connection reset by peer"
+              - generic [ref=e348]:
+                - generic [ref=e349]: cybergym poc submission
+                - generic [ref=e350]: tool or event error
+                - generic [ref=e351]: context compact
+              - generic [ref=e352]:
+                - generic [ref=e353]: action
+                - generic [ref=e354]: observation
+                - generic [ref=e355]: cybergym
+                - generic [ref=e356]: raw
+              - button "Open full evidence" [ref=e358]
+          - article [ref=e359]:
+            - generic [ref=e360]:
+              - generic [ref=e361]:
+                - text: STEP 16
+                - generic [ref=e362]: cybergym_poc_gen
+              - generic [ref=e364]: verification failure
+            - generic [ref=e365]:
+              - generic [ref=e366]:
+                - generic [ref=e367]: phase
+                - generic [ref=e368]: CHECK_STOP
+              - generic [ref=e369]:
+                - generic [ref=e370]: thought
+                - generic [ref=e371]: "-"
+              - generic [ref=e372]:
+                - generic [ref=e373]: action
+                - generic [ref=e374]: submit_poc
+              - generic [ref=e375]:
+                - generic [ref=e376]: outcome
+                - generic [ref=e377]: SUBMISSION_ERROR
+              - generic [ref=e378]:
+                - generic [ref=e379]: cybergym verification failure
+                - generic [ref=e380]: tool or event error
+                - generic [ref=e381]: context compact
+              - generic [ref=e382]:
+                - generic [ref=e383]: action
+                - generic [ref=e384]: observation
+                - generic [ref=e385]: cybergym
+                - generic [ref=e386]: raw
+              - button "Open full evidence" [ref=e388]
+          - article [ref=e389]:
+            - generic [ref=e390]:
+              - generic [ref=e391]:
+                - text: STEP 19
+                - generic [ref=e392]: cybergym_poc_gen
+              - generic [ref=e394]: verification failure
+            - generic [ref=e395]:
+              - generic [ref=e396]:
+                - generic [ref=e397]: phase
+                - generic [ref=e398]: CHECK_STOP
+              - generic [ref=e399]:
+                - generic [ref=e400]: thought
+                - generic [ref=e401]: "-"
+              - generic [ref=e402]:
+                - generic [ref=e403]: action
+                - generic [ref=e404]: submit_poc
+              - generic [ref=e405]:
+                - generic [ref=e406]: outcome
+                - generic [ref=e407]: SUBMISSION_ERROR
+              - generic [ref=e408]:
+                - generic [ref=e409]: cybergym verification failure
+                - generic [ref=e410]: tool or event error
+                - generic [ref=e411]: context compact
+              - generic [ref=e412]:
+                - generic [ref=e413]: action
+                - generic [ref=e414]: observation
+                - generic [ref=e415]: cybergym
+                - generic [ref=e416]: raw
+              - button "Open full evidence" [ref=e418]
+          - article [ref=e419]:
+            - generic [ref=e420]:
+              - generic [ref=e421]:
+                - text: STEP 21
+                - generic [ref=e422]: cybergym_poc_gen
+              - generic [ref=e424]: verification failure
+            - generic [ref=e425]:
+              - generic [ref=e426]:
+                - generic [ref=e427]: phase
+                - generic [ref=e428]: CHECK_STOP
+              - generic [ref=e429]:
+                - generic [ref=e430]: thought
+                - generic [ref=e431]: "-"
+              - generic [ref=e432]:
+                - generic [ref=e433]: action
+                - generic [ref=e434]: submit_poc
+              - generic [ref=e435]:
+                - generic [ref=e436]: outcome
+                - generic [ref=e437]: SUBMISSION_ERROR
+              - generic [ref=e438]:
+                - generic [ref=e439]: cybergym verification failure
+                - generic [ref=e440]: tool or event error
+                - generic [ref=e441]: context compact
+              - generic [ref=e442]:
+                - generic [ref=e443]: action
+                - generic [ref=e444]: observation
+                - generic [ref=e445]: cybergym
+                - generic [ref=e446]: raw
+              - button "Open full evidence" [ref=e448]
+          - article [ref=e449]:
+            - generic [ref=e450]:
+              - generic [ref=e451]:
+                - text: STEP 22
+                - generic [ref=e452]: cybergym_poc_gen
+              - generic [ref=e454]: verification failure
+            - generic [ref=e455]:
+              - generic [ref=e456]:
+                - generic [ref=e457]: phase
+                - generic [ref=e458]: CHECK_STOP
+              - generic [ref=e459]:
+                - generic [ref=e460]: thought
+                - generic [ref=e461]: "-"
+              - generic [ref=e462]:
+                - generic [ref=e463]: action
+                - generic [ref=e464]: submit_poc
+              - generic [ref=e465]:
+                - generic [ref=e466]: outcome
+                - generic [ref=e467]: SUBMISSION_ERROR
+              - generic [ref=e468]:
+                - generic [ref=e469]: cybergym verification failure
+                - generic [ref=e470]: tool or event error
+                - generic [ref=e471]: context compact
+              - generic [ref=e472]:
+                - generic [ref=e473]: action
+                - generic [ref=e474]: observation
+                - generic [ref=e475]: cybergym
+                - generic [ref=e476]: raw
+              - button "Open full evidence" [ref=e478]
+          - article [ref=e479]:
+            - generic [ref=e480]:
+              - generic [ref=e481]:
+                - text: STEP 25
+                - generic [ref=e482]: cybergym_poc_gen
+              - generic [ref=e484]: verification failure
+            - generic [ref=e485]:
+              - generic [ref=e486]:
+                - generic [ref=e487]: phase
+                - generic [ref=e488]: CHECK_STOP
+              - generic [ref=e489]:
+                - generic [ref=e490]: thought
+                - generic [ref=e491]: "-"
+              - generic [ref=e492]:
+                - generic [ref=e493]: action
+                - generic [ref=e494]: submit_poc
+              - generic [ref=e495]:
+                - generic [ref=e496]: outcome
+                - generic [ref=e497]: SUBMISSION_ERROR
+              - generic [ref=e498]:
+                - generic [ref=e499]: cybergym verification failure
+                - generic [ref=e500]: tool or event error
+                - generic [ref=e501]: context compact
+              - generic [ref=e502]:
+                - generic [ref=e503]: action
+                - generic [ref=e504]: observation
+                - generic [ref=e505]: cybergym
+                - generic [ref=e506]: raw
+              - button "Open full evidence" [ref=e508]
+          - article [ref=e509]:
+            - generic [ref=e510]:
+              - generic [ref=e511]:
+                - text: STEP 27
+                - generic [ref=e512]: cybergym_poc_gen
+              - generic [ref=e514]: verification failure
+            - generic [ref=e515]:
+              - generic [ref=e516]:
+                - generic [ref=e517]: phase
+                - generic [ref=e518]: CHECK_STOP
+              - generic [ref=e519]:
+                - generic [ref=e520]: thought
+                - generic [ref=e521]: "-"
+              - generic [ref=e522]:
+                - generic [ref=e523]: action
+                - generic [ref=e524]: submit_poc
+              - generic [ref=e525]:
+                - generic [ref=e526]: outcome
+                - generic [ref=e527]: SUBMISSION_ERROR
+              - generic [ref=e528]:
+                - generic [ref=e529]: cybergym verification failure
+                - generic [ref=e530]: tool or event error
+                - generic [ref=e531]: context compact
+              - generic [ref=e532]:
+                - generic [ref=e533]: action
+                - generic [ref=e534]: observation
+                - generic [ref=e535]: cybergym
+                - generic [ref=e536]: raw
+              - button "Open full evidence" [ref=e538]
+          - article [ref=e539]:
+            - generic [ref=e540]:
+              - generic [ref=e541]:
+                - text: STEP 28
+                - generic [ref=e542]: cybergym_poc_gen
+              - generic [ref=e544]: verification failure
+            - generic [ref=e545]:
+              - generic [ref=e546]:
+                - generic [ref=e547]: phase
+                - generic [ref=e548]: CHECK_STOP
+              - generic [ref=e549]:
+                - generic [ref=e550]: thought
+                - generic [ref=e551]: "-"
+              - generic [ref=e552]:
+                - generic [ref=e553]: action
+                - generic [ref=e554]: submit_poc
+              - generic [ref=e555]:
+                - generic [ref=e556]: outcome
+                - generic [ref=e557]: SUBMISSION_ERROR
+              - generic [ref=e558]:
+                - generic [ref=e559]: cybergym verification failure
+                - generic [ref=e560]: tool or event error
+                - generic [ref=e561]: context compact
+              - generic [ref=e562]:
+                - generic [ref=e563]: action
+                - generic [ref=e564]: observation
+                - generic [ref=e565]: cybergym
+                - generic [ref=e566]: raw
+              - button "Open full evidence" [ref=e568]
+          - article [ref=e569]:
+            - generic [ref=e570]:
+              - generic [ref=e571]:
+                - text: STEP 29
+                - generic [ref=e572]: cybergym_poc_gen
+              - generic [ref=e574]: verification failure
+            - generic [ref=e575]:
+              - generic [ref=e576]:
+                - generic [ref=e577]: phase
+                - generic [ref=e578]: CHECK_STOP
+              - generic [ref=e579]:
+                - generic [ref=e580]: thought
+                - generic [ref=e581]: "-"
+              - generic [ref=e582]:
+                - generic [ref=e583]: action
+                - generic [ref=e584]: submit_poc
+              - generic [ref=e585]:
+                - generic [ref=e586]: outcome
+                - generic [ref=e587]: SUBMISSION_ERROR
+              - generic [ref=e588]:
+                - generic [ref=e589]: cybergym verification failure
+                - generic [ref=e590]: tool or event error
+                - generic [ref=e591]: context compact
+              - generic [ref=e592]:
+                - generic [ref=e593]: action
+                - generic [ref=e594]: observation
+                - generic [ref=e595]: cybergym
+                - generic [ref=e596]: raw
+              - button "Open full evidence" [ref=e598]
+    - complementary [ref=e599]:
+      - heading "Inspector" [level=3] [ref=e600]
+      - generic [ref=e601]: Select a step from the navigator, timeline, or trajectory cards.
+      - generic [ref=e602]:
+        - generic [ref=e603]: Selected Step
+        - generic [ref=e604]: Step 1
+        - generic [ref=e605]:
+          - button "summary" [ref=e606] [cursor=pointer]
+          - button "evidence" [ref=e607] [cursor=pointer]
+          - button "metadata" [ref=e608] [cursor=pointer]
+          - button "raw" [ref=e609] [cursor=pointer]
+        - generic [ref=e610]:
+          - generic [ref=e611]:
+            - generic [ref=e612]: step
+            - generic [ref=e613]: "1"
+            - generic [ref=e614]: agent
+            - generic [ref=e615]: cybergym_poc_gen
+            - generic [ref=e616]: role
+            - generic [ref=e617]: phase_change
+            - generic [ref=e618]: phase
+            - generic [ref=e619]: formulation
+            - generic [ref=e620]: attention
+            - generic [ref=e621]: watch
+            - generic [ref=e622]: events
+            - generic [ref=e623]: "15"
+            - generic [ref=e624]: action
+            - generic [ref=e625]: CallsiteSearch(path=.)
+            - generic [ref=e626]: thought
+            - generic [ref=e627]: "-"
+            - generic [ref=e628]: outcome
+            - generic [ref=e629]: recorded
+            - generic [ref=e630]: parser
+            - generic [ref=e631]: "-"
+            - generic [ref=e632]: errors
+          - generic [ref=e634]:
+            - generic [ref=e635]: phase change
+            - generic [ref=e636]: context compact
+          - generic [ref=e637]:
+            - generic [ref=e638]: action
+            - generic [ref=e639]: cybergym
+            - generic [ref=e640]: raw
+          - group [ref=e642]:
+            - generic "full step summary JSON" [ref=e643]

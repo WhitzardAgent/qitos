@@ -1,0 +1,15 @@
+{
+  "os": "macOS-15.7.3-arm64-arm-64bit",
+  "python": "CPython 3.12.7",
+  "startedAt": "2026-07-08T12:19:24.264130Z",
+  "program": "<python with no main file>",
+  "git": {
+    "remote": "https://github.com/WhitzardAgent/qitos.git",
+    "commit": "e37540f15efb2f3c12d61c7ac5cb95fc7cf9b5ed"
+  },
+  "email": "xdpan.fudan@gmail.com",
+  "root": "/Users/morinop/Desktop/traj_analyzer/qitos",
+  "host": "morinopdeMacBook-Pro.local",
+  "executable": "/opt/anaconda3/bin/python3",
+  "writerId": "pn1t7bhvuo7gpfnxmyx2og1bqam75fie"
+}

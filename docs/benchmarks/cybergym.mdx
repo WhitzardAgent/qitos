@@ -37,7 +37,25 @@ OpenAI-compatible harness presets now default to:
 
 This is handled in the shared OpenAI-compatible model layer rather than only in the benchmark wrapper.
 
-### 3. Tool-result budget
+### 3. Run-level inference sticky routing
+
+CyberGym agent runs generate a run-unique inference `task_id` such as:
+
+```text
+cybergym-arvo-3938-<run-uuid>
+```
+
+QitOS sends this value on every OpenAI-compatible model request as:
+
+```text
+x-inspire-inference-key: <inference task_id>
+```
+
+This keeps all LLM requests for one agent run routed to the same upstream backend node while allowing repeated runs of the same CyberGym benchmark task to spread across nodes. The CyberGym benchmark `task_id` used for `submit_poc` and checksum validation is not changed. The generated inference `task_id` is printed near the start of the TUI and `tui.log` agent-composition block.
+
+For non-CyberGym callers, `QITOS_INFERENCE_KEY` remains a compatibility fallback when no model-level `inference_key` is provided.
+
+### 4. Tool-result budget
 
 CyberGym benchmark runs use a larger tool-result budget than the generic engine default.
 

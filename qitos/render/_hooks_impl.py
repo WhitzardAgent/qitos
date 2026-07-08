@@ -112,6 +112,14 @@ _CLAUDE_THEME_PRESETS: Dict[str, Dict[str, Any]] = {
     },
 }
 
+_PHASE_COLORS: Dict[str, str] = {
+    "ingestion": "bright_blue",
+    "exploration": "bright_cyan",
+    "investigation": "bright_yellow",
+    "formulation": "bright_magenta",
+    "verification": "bright_green",
+}
+
 
 class RenderStreamHook(RenderHook):
     """Emit normalized render events for terminal and frontend consumers."""
@@ -133,11 +141,12 @@ class RenderStreamHook(RenderHook):
 
     def on_before_step(self, ctx: HookContext, engine: "Engine") -> None:
         agent_id = getattr(ctx.record, "agent_id", None) if ctx.record else None
+        agent_phase = getattr(ctx.state, "current_phase", None) or None
         self._emit(
             "lifecycle",
             "step_start",
             step_id=ctx.step_id,
-            payload={"phase": ctx.phase.value, "agent_id": agent_id},
+            payload={"phase": ctx.phase.value, "agent_id": agent_id, "agent_phase": agent_phase},
         )
 
     def on_after_decide(self, ctx: HookContext, engine: "Engine") -> None:
@@ -275,6 +284,7 @@ class RenderStreamHook(RenderHook):
                     step_id=event.step_id,
                     payload={
                         "raw_output": event.payload.get("raw_output"),
+                        "reasoning_content": event.payload.get("reasoning_content"),
                         "model_response": event.payload.get("model_response"),
                         "context": event.payload.get("context"),
                     },
@@ -329,18 +339,58 @@ class RenderStreamHook(RenderHook):
         return None
 
 
+class _TeeConsole:
+    """Proxy that forwards every print/rule/log call to two Rich Consoles."""
+
+    def __init__(self, primary: Console, secondary: Console):
+        object.__setattr__(self, "_primary", primary)
+        object.__setattr__(self, "_secondary", secondary)
+
+    def __getattr__(self, name: str) -> Any:
+        attr = getattr(self._primary, name)
+        if callable(attr):
+            def wrapper(*args: Any, **kwargs: Any) -> Any:
+                try:
+                    self._secondary.__getattribute__(name)(*args, **kwargs)
+                except Exception:
+                    pass
+                return attr(*args, **kwargs)
+            return wrapper
+        return attr
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        setattr(self._primary, name, value)
+
+    @property
+    def is_terminal(self) -> bool:
+        return self._primary.is_terminal
+
+
 class ClaudeStyleHook(RenderStreamHook):
     """Content-first terminal output focused on task, thought, action, observation, memory."""
 
     def __init__(
         self,
         output_jsonl: Optional[str] = None,
-        max_preview_chars: int = 800,
+        max_preview_chars: int = 50000,
         theme: str = "research",
+        log_file: Optional[str] = None,
     ):
         super().__init__(output_jsonl=output_jsonl)
-        self.console = Console()
         self.max_preview_chars = max_preview_chars
+        # Per-task TUI log file: Rich Console writes the same rendered output
+        # to both the terminal and a plain-text log file, preserving the
+        # STEP / finish / tool_calls / ctx_used format for offline analysis.
+        self._log_file = None
+        self._log_console = None
+        if log_file:
+            log_path = Path(log_file)
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            self._log_file = open(log_path, "w", encoding="utf-8")
+            self._log_console = Console(file=self._log_file, width=200, no_color=True, legacy_windows=False)
+            self.console = _TeeConsole(Console(), self._log_console)
+        else:
+            self.console = Console()
         self._last_step: Optional[int] = None
         self._last_agent_id: Optional[str] = None
         self._status: Any = None
@@ -355,6 +405,13 @@ class ClaudeStyleHook(RenderStreamHook):
         self._memory_steps: set[int] = set()
         self._parser_steps: set[tuple[int, str]] = set()
         self._pending_state_stats: Dict[int, Dict[str, Any]] = {}
+        self._rendered_action_indices: set[tuple[int, int]] = set()
+        self._rendered_observation_indices: set[tuple[int, int]] = set()
+
+    @staticmethod
+    def _phase_badge(phase: str) -> str:
+        color = _PHASE_COLORS.get(phase, "gray")
+        return f"[bold white on {color}] {phase.upper()} [/bold white on {color}]"
 
     def _should_render_parser_diagnostic(self, diag: Dict[str, Any]) -> bool:
         severity = str(diag.get("severity") or "error").lower()
@@ -390,16 +447,28 @@ class ClaudeStyleHook(RenderStreamHook):
     def on_run_end(self, result: "EngineResult", engine: "Engine") -> None:
         self._stop_status()
         super().on_run_end(result, engine)
+        if self._log_file is not None:
+            try:
+                self._log_file.close()
+            except Exception:
+                pass
+            self._log_file = None
+            self._log_console = None
 
     def on_render_event(self, event: RenderEvent) -> None:
         if event.node == "run_start":
             self._print_banner()
             self.console.print(Rule("[dim]RUN[/dim]", style="gray23"))
+            task = (event.payload or {}).get("task", "")
+            if task:
+                preview = (task[:500] + "...") if len(task) > 500 else task
+                self._rail("cyan", f"[bold cyan]TASK[/bold cyan] {preview}")
             return
 
         if event.node == "step_start":
             self._last_step = event.step_id
             agent_id = (event.payload or {}).get("agent_id")
+            agent_phase = (event.payload or {}).get("agent_phase")
             label = f"STEP {event.step_id + 1}"
             if agent_id:
                 label += f" ── agent: {agent_id}"
@@ -410,6 +479,12 @@ class ClaudeStyleHook(RenderStreamHook):
                     )
                 self._last_agent_id = agent_id
             self.console.print(Rule(label, style="gray23"))
+            # Phase badge — colored pill below the STEP separator
+            if agent_phase:
+                self._rail(
+                    _PHASE_COLORS.get(agent_phase, "blue"),
+                    self._phase_badge(agent_phase),
+                )
             return
 
         if event.channel == "thinking":
@@ -421,6 +496,161 @@ class ClaudeStyleHook(RenderStreamHook):
                     if stats:
                         fixed = self._render_state_row(stats)
                         self._rail("gray40", f"[dim]State[/dim] [dim]{fixed}[/dim]")
+                    # Render Constraint Board — same text the LLM sees
+                    constraint_board = stats.get("constraint_board")
+                    if isinstance(constraint_board, str) and constraint_board.strip():
+                        self._rail("cyan", "[bold cyan]── Constraint Board ──[/bold cyan]")
+                        for line in constraint_board.strip().splitlines():
+                            stripped = line.strip()
+                            if not stripped:
+                                self.console.print("")
+                                continue
+                            # Color-code by semantics (matching LLM-facing format)
+                            if stripped.startswith("- FIRST BLOCKER"):
+                                self._rail("bold yellow", f"[bold yellow]{stripped}[/bold yellow]")
+                            elif "[refuted]" in stripped or "Refuted Gates" in stripped:
+                                self._rail("red", f"[red]{stripped}[/red]")
+                            elif "repair:" in stripped:
+                                self._rail("bright_red", f"[bright_red]{stripped}[/bright_red]")
+                            elif "[confirmed]" in stripped or "Confirmed Gates" in stripped:
+                                self._rail("green", f"[green]{stripped}[/green]")
+                            elif "[inferred" in stripped or "[unknown" in stripped or "Open Gates" in stripped:
+                                self._rail("yellow", f"[yellow]{stripped}[/yellow]")
+                            elif stripped.startswith("- [") and "] entry" in stripped:
+                                self._rail("bright_cyan", f"[bright_cyan]{stripped}[/bright_cyan]")
+                            elif stripped.startswith("- [") and "] sink" in stripped:
+                                self._rail("bright_magenta", f"[bright_magenta]{stripped}[/bright_magenta]")
+                            elif stripped.startswith("- [") and "] parser" in stripped:
+                                self._rail("cyan", f"[cyan]{stripped}[/cyan]")
+                            elif stripped.startswith("- [") and "] guard" in stripped:
+                                self._rail("bright_yellow", f"[bright_yellow]{stripped}[/bright_yellow]")
+                            elif stripped.startswith("- [") and "] dispatch" in stripped:
+                                self._rail("blue", f"[blue]{stripped}[/blue]")
+                            elif "Chain Gates:" in stripped:
+                                self._rail("bold cyan", f"[bold cyan]{stripped}[/bold cyan]")
+                            else:
+                                self._rail("gray70", f"[dim]{stripped}[/dim]")
+                    # Render Task Memory — same text the LLM sees
+                    task_memory = stats.get("task_memory")
+                    if isinstance(task_memory, str) and task_memory.strip():
+                        self._rail("magenta", "[bold magenta]── Task Memory ──[/bold magenta]")
+                        for line in task_memory.strip().splitlines():
+                            stripped = line.strip()
+                            if not stripped:
+                                continue
+                            if stripped.startswith("- Analysis:"):
+                                self._rail("blue", f"[blue]{stripped}[/blue]")
+                            elif stripped.startswith("- Hypothesis:"):
+                                self._rail("magenta", f"[bold magenta]{stripped}[/bold magenta]")
+                            elif stripped.startswith("- Path:"):
+                                self._rail("cyan", f"[cyan]{stripped}[/cyan]")
+                            elif stripped.startswith("- Attempt:"):
+                                self._rail("gray70", f"[dim]{stripped}[/dim]")
+                            else:
+                                self._rail("gray70", stripped)
+                    # Render Sink Candidates — same text the LLM sees
+                    sink_candidates = stats.get("sink_candidates")
+                    if isinstance(sink_candidates, str) and sink_candidates.strip():
+                        self._rail("magenta", "[bold magenta]── Sink Candidates ──[/bold magenta]")
+                        for line in sink_candidates.strip().splitlines():
+                            stripped = line.strip()
+                            if not stripped:
+                                continue
+                            if "CHECKPOINT BLOCKED" in stripped:
+                                self._rail("bold red", f"[bold red]{stripped}[/bold red]")
+                            elif stripped.startswith("No sink candidates") or "REQUIRED" in stripped:
+                                self._rail("bright_yellow", f"[bright_yellow]{stripped}[/bright_yellow]")
+                            elif stripped.startswith("- `") and "high conf" in stripped:
+                                self._rail("bright_magenta", f"[bright_magenta]{stripped}[/bright_magenta]")
+                            elif stripped.startswith("- `") and "medium conf" in stripped:
+                                self._rail("magenta", f"[magenta]{stripped}[/magenta]")
+                            elif stripped.startswith("- `"):
+                                self._rail("gray70", f"[dim]{stripped}[/dim]")
+                            elif stripped.startswith("Sink Candidates"):
+                                self._rail("bold magenta", f"[bold magenta]{stripped}[/bold magenta]")
+                            else:
+                                self._rail("gray70", stripped)
+                    # Render Objective — same text the LLM sees
+                    objective = stats.get("objective")
+                    if isinstance(objective, str) and objective.strip():
+                        self._rail("green", f"[green]── Objective ──[/green] {objective.strip()}")
+                    # Render Task Context — vulnerability, bug type, input format
+                    task_ctx = stats.get("task_context")
+                    if isinstance(task_ctx, str) and task_ctx.strip():
+                        self._rail("cyan", "[bold cyan]── Task Context ──[/bold cyan]")
+                        for line in task_ctx.strip().splitlines():
+                            stripped = line.strip()
+                            if not stripped:
+                                continue
+                            if stripped.startswith("Vulnerability:"):
+                                self._rail("bright_cyan", f"[bright_cyan]{stripped}[/bright_cyan]")
+                            elif stripped.startswith("Bug Type:"):
+                                self._rail("yellow", f"[yellow]{stripped}[/yellow]")
+                            elif stripped.startswith("Strategy:"):
+                                self._rail("green", f"[green]{stripped}[/green]")
+                            elif stripped.startswith("Input Format:"):
+                                self._rail("blue", f"[blue]{stripped}[/blue]")
+                            elif "CHECKPOINT" in stripped:
+                                self._rail("bold red", f"[bold red]{stripped}[/bold red]")
+                            else:
+                                self._rail("gray70", stripped)
+                    # Render Allowed Tools — checkpoint state
+                    allowed_tools = stats.get("allowed_tools")
+                    if isinstance(allowed_tools, str) and allowed_tools.strip():
+                        self._rail("gray50", "[dim]── Allowed Tools ──[/dim]")
+                        for line in allowed_tools.strip().splitlines():
+                            stripped = line.strip()
+                            if not stripped:
+                                continue
+                            if "CHECKPOINT" in stripped or "BLOCKED" in stripped:
+                                self._rail("bold red", f"[bold red]{stripped}[/bold red]")
+                            elif stripped.startswith("- `record_sink"):
+                                self._rail("bright_magenta", f"[bright_magenta]{stripped}[/bright_magenta]")
+                            else:
+                                self._rail("gray50", f"[dim]{stripped}[/dim]")
+                    # Render Suggested Sinks — auto-discovered, unconfirmed
+                    suggested_sinks = stats.get("suggested_sinks")
+                    if isinstance(suggested_sinks, str) and suggested_sinks.strip():
+                        self._rail("bright_blue", "[bold bright_blue]── Suggested Sinks ──[/bold bright_blue]")
+                        for line in suggested_sinks.strip().splitlines():
+                            stripped = line.strip()
+                            if not stripped:
+                                continue
+                            self._rail("bright_blue", f"[bright_blue]{stripped}[/bright_blue]")
+                    # Render Current Assessment — Confirmed/Likely/Dynamic Evidence/Unknown
+                    current_assessment = stats.get("current_assessment")
+                    if isinstance(current_assessment, str) and current_assessment.strip():
+                        for line in current_assessment.strip().splitlines():
+                            stripped = line.strip()
+                            if not stripped:
+                                self.console.print("")
+                                continue
+                            if stripped.startswith("### Runtime Contract"):
+                                self._rail("bright_cyan", f"[bold bright_cyan]{stripped}[/bold bright_cyan]")
+                            elif stripped.startswith("### Confirmed"):
+                                self._rail("green", f"[bold green]{stripped}[/bold green]")
+                            elif stripped.startswith("### Likely"):
+                                self._rail("yellow", f"[bold yellow]{stripped}[/bold yellow]")
+                            elif stripped.startswith("### Dynamic Evidence"):
+                                self._rail("bright_magenta", f"[bold bright_magenta]{stripped}[/bold bright_magenta]")
+                            elif stripped.startswith("### Unknown"):
+                                self._rail("gray50", f"[dim]{stripped}[/dim]")
+                            elif stripped.startswith("- ") and "confirmed" in stripped.lower():
+                                self._rail("green", f"[green]{stripped}[/green]")
+                            elif stripped.startswith("  "):
+                                # Indented content (e.g. GDB output lines)
+                                self._rail("gray70", f"[dim]{stripped}[/dim]")
+                            else:
+                                self._rail("gray70", stripped)
+                    # Render Experiments — dynamic evidence details
+                    experiments = stats.get("experiments")
+                    if isinstance(experiments, str) and experiments.strip():
+                        self._rail("bright_magenta", "[bold bright_magenta]── Experiments ──[/bold bright_magenta]")
+                        for line in experiments.strip().splitlines():
+                            stripped = line.strip()
+                            if not stripped:
+                                continue
+                            self._rail("bright_magenta", f"[bright_magenta]{stripped}[/bright_magenta]")
                     self._state_steps.add(event.step_id)
                 return
             if event.step_id in self._thought_steps:
@@ -520,19 +750,43 @@ class ClaudeStyleHook(RenderStreamHook):
                 return
 
         if event.channel == "action":
-            if event.step_id in self._action_steps:
+            event_key = (event.step_id, id(event))
+            if event_key in self._rendered_action_indices:
                 return
             action = self._renderer.action_summary(event)
             if action:
+                action_count = action.get("action_count", 1)
+                sub_actions = action.get("actions")
                 status = action.get("status", "neutral")
                 bg = "blue" if status != "error" else "red"
-                badge = action.get("label", "ACTION")
-                detail = action.get("detail", "")
-                line = f"🚀 [bold white on {bg}] {badge} [/bold white on {bg}]"
-                if detail:
-                    line += f" [cyan]{detail}[/cyan]"
-                self._rail("blue", line)
+
+                # Multi-action: show parallel summary banner then individual actions
+                if action_count > 1 and sub_actions:
+                    self._rail(
+                        "bright_blue",
+                        f"🚀 [bold white on bright_blue] {action_count} ACTIONS IN PARALLEL [/bold white on bright_blue]",
+                    )
+                    for i, sub in enumerate(sub_actions):
+                        sub_label = sub.get("label", "?")
+                        sub_detail = sub.get("detail", "")
+                        idx_key = (event.step_id, i)
+                        if idx_key in self._rendered_action_indices:
+                            continue
+                        line = f"  ┌ [bold white on {bg}] {sub_label} [/bold white on {bg}]"
+                        if sub_detail:
+                            line += f" [cyan]{sub_detail}[/cyan]"
+                        self._rail("blue", line)
+                        self._rendered_action_indices.add(idx_key)
+                else:
+                    badge = action.get("label", "ACTION")
+                    detail = action.get("detail", "")
+                    line = f"🚀 [bold white on {bg}] {badge} [/bold white on {bg}]"
+                    if detail:
+                        line += f" [cyan]{detail}[/cyan]"
+                    self._rail("blue", line)
+
                 self._action_steps.add(event.step_id)
+                self._rendered_action_indices.add(event_key)
             return
 
         if event.channel == "observation":
@@ -541,66 +795,31 @@ class ClaudeStyleHook(RenderStreamHook):
                 if stats:
                     self._pending_state_stats[event.step_id] = dict(stats)
                 return
-            if event.step_id in self._observation_steps:
+            event_key = (event.step_id, id(event))
+            if event_key in self._rendered_observation_indices:
                 return
             obs = self._renderer.observation_summary(event)
             if obs:
-                status = str(obs.get("status", "neutral"))
-                color = (
-                    "green"
-                    if status == "success"
-                    else ("red" if status == "error" else "blue")
-                )
-                title = str(obs.get("title", "Observation"))
-                if status == "error":
-                    self._rail("red", f"[red][✘] Error: {title}[/red]")
-                    self._observation_steps.add(event.step_id)
-                    return
-                self._rail(
-                    color,
-                    f"🔎 [bold {color}]Observation[/bold {color}] [bold italic]Title:[/bold italic] {title}",
-                )
-                url = str(obs.get("url", "")).strip()
-                if url:
-                    self._rail(color, f"[dim]URL: {url}[/dim]")
-                body = str(obs.get("body", "")).strip()
-                if body:
+                obs_count = obs.get("observation_count", 0)
+                all_obs = obs.get("all_observations")
+
+                # Multi-observation: show all results with index labels
+                if obs_count > 1 and all_obs:
                     self._rail(
-                        color, body if status != "error" else f"[red]{body}[/red]"
+                        "bright_green",
+                        f"🔎 [bold white on bright_green] {obs_count} RESULTS [/bold white on bright_green]",
                     )
-                table = obs.get("table")
-                syntax = obs.get("syntax")
-                if table is not None:
-                    self.console.print(Text("┃", style=color), end=" ")
-                    self.console.print(table)
-                if isinstance(syntax, Syntax):
-                    self.console.print(Text("┃", style=color), end=" ")
-                    self.console.print(syntax)
-                secondary = obs.get("secondary")
-                if isinstance(secondary, dict):
-                    secondary_title = str(
-                        secondary.get("title", "Tool Observation")
-                    ).strip() or "Tool Observation"
-                    secondary_body = str(secondary.get("body", "")).strip()
-                    secondary_url = str(secondary.get("url", "")).strip()
-                    secondary_table = secondary.get("table")
-                    secondary_syntax = secondary.get("syntax")
-                    self._rail(
-                        "blue",
-                        "📎 [bold blue]Tool Observation[/bold blue] "
-                        f"[bold italic]Title:[/bold italic] {secondary_title}",
-                    )
-                    if secondary_url:
-                        self._rail("blue", f"[dim]URL: {secondary_url}[/dim]")
-                    if secondary_body:
-                        self._rail("blue", secondary_body)
-                    if secondary_table is not None:
-                        self.console.print(Text("┃", style="blue"), end=" ")
-                        self.console.print(secondary_table)
-                    if isinstance(secondary_syntax, Syntax):
-                        self.console.print(Text("┃", style="blue"), end=" ")
-                        self.console.print(secondary_syntax)
+                    for i, sub_obs in enumerate(all_obs):
+                        idx_key = (event.step_id, i)
+                        if idx_key in self._rendered_observation_indices:
+                            continue
+                        self._render_single_observation(sub_obs, index=i + 1)
+                        self._rendered_observation_indices.add(idx_key)
+                else:
+                    self._render_single_observation(obs)
+
                 self._observation_steps.add(event.step_id)
+                self._rendered_observation_indices.add(event_key)
             return
 
         if event.channel == "memory":
@@ -704,6 +923,66 @@ class ClaudeStyleHook(RenderStreamHook):
         )
         self.console.print(grp)
 
+    def _render_single_observation(self, obs: Dict[str, Any], index: int | None = None) -> None:
+        """Render one observation block. *index* is 1-based for multi-observation display."""
+        status = str(obs.get("status", "neutral"))
+        color = (
+            "green"
+            if status == "success"
+            else ("red" if status == "error" else "blue")
+        )
+        title = str(obs.get("title", "Observation"))
+        prefix = f"  └[{index}]" if index is not None else "🔎"
+
+        if status == "error":
+            self._rail("red", f"{prefix} [red][✘] Error: {title}[/red]")
+            return
+
+        self._rail(
+            color,
+            f"{prefix} [bold {color}]Observation[/bold {color}] [bold italic]Title:[/bold italic] {title}",
+        )
+        url = str(obs.get("url", "")).strip()
+        if url:
+            self._rail(color, f"[dim]URL: {url}[/dim]")
+        body = str(obs.get("body", "")).strip()
+        if body:
+            self._rail(
+                color, body if status != "error" else f"[red]{body}[/red]"
+            )
+        table = obs.get("table")
+        syntax = obs.get("syntax")
+        if table is not None:
+            self.console.print(Text("┃", style=color), end=" ")
+            self.console.print(table)
+        if isinstance(syntax, Syntax):
+            self.console.print(Text("┃", style=color), end=" ")
+            self.console.print(syntax)
+        secondary = obs.get("secondary")
+        if isinstance(secondary, dict):
+            secondary_title = str(
+                secondary.get("title", "Tool Observation")
+            ).strip() or "Tool Observation"
+            secondary_body = str(secondary.get("body", "")).strip()
+            secondary_url = str(secondary.get("url", "")).strip()
+            secondary_table = secondary.get("table")
+            secondary_syntax = secondary.get("syntax")
+            self._rail(
+                "blue",
+                "📎 [bold blue]Tool Observation[/bold blue] "
+                f"[bold italic]Title:[/bold italic] {secondary_title}",
+            )
+            if secondary_url:
+                self._rail("blue", f"[dim]URL: {secondary_url}[/dim]")
+            if secondary_body:
+                self._rail("blue", secondary_body)
+            if secondary_table is not None:
+                self.console.print(Text("┃", style="blue"), end=" ")
+                self.console.print(secondary_table)
+            if isinstance(secondary_syntax, Syntax):
+                self.console.print(Text("┃", style="blue"), end=" ")
+                self.console.print(secondary_syntax)
+
     def _render_state_row(self, stats: Dict[str, Any]) -> str:
         order = [
             ("input_tokens_total", "ctx_used"),
@@ -742,12 +1021,17 @@ class ClaudeStyleHook(RenderStreamHook):
             ("memory", memory_name),
             ("history", history_name),
             ("base_model", model_name),
+        ]
+        inference_task_id = self._inference_task_id(engine)
+        if inference_task_id:
+            rows.append(("task_id", inference_task_id))
+        rows.extend([
             ("protocol", protocol_name),
             ("prompt", prompt_name),
             ("context", self._context_row(engine)),
             ("planning", planning_name),
             ("tools", f"{tools_desc} ({len(tools)})"),
-        ]
+        ])
         # Multi-agent info
         agent_registry = getattr(engine, "agent_registry", None)
         if agent_registry is not None and hasattr(agent_registry, "list_available"):
@@ -797,6 +1081,20 @@ class ClaudeStyleHook(RenderStreamHook):
             if isinstance(value, str) and value.strip():
                 return value.strip()
         return llm.__class__.__name__
+
+    def _inference_task_id(self, engine: "Engine") -> str:
+        llm = getattr(getattr(engine, "agent", None), "llm", None)
+        if llm is None:
+            return ""
+        value = getattr(llm, "inference_key", None)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        metadata = dict(getattr(llm, "qitos_harness_metadata", {}) or {})
+        for key in ("inference_task_id", "inference_key"):
+            value = metadata.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return ""
 
     def _planning_name(self, engine: "Engine") -> str:
         search = getattr(engine, "search", None)

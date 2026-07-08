@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib.parse import urlparse
 
 from rich import box
@@ -12,6 +12,18 @@ from rich.syntax import Syntax
 from rich.table import Table
 
 from .events import RenderEvent
+
+
+def _is_env_result(result: Any) -> bool:
+    """Return True if this result is an environment step result (not a tool result)."""
+    if not isinstance(result, dict):
+        return False
+    metadata = result.get("metadata")
+    if isinstance(metadata, dict) and str(metadata.get("source") or "").lower() == "env":
+        return True
+    output = result.get("output")
+    return isinstance(output, dict) and set(output) == {"env"}
+
 
 _THOUGHT_RE = re.compile(
     r"Thought\s*:\s*(.*?)(?:\n[A-Za-z_ ]+\s*:|\Z)", re.IGNORECASE | re.DOTALL
@@ -26,11 +38,25 @@ _NOISE_KEYS = {
     "hook",
 }
 
+_TEXT_BODY_KEYS = (
+    "output",
+    "stdout",
+    "stderr",
+    "raw_output",
+    "content",
+    "message",
+    "observation",
+    "text",
+    "result",
+    "summary",
+)
+_METADATA_BODY_KEYS = {"metadata"}
+
 
 class ContentFirstRenderer:
     """Extract concise thought/action/observation/memory blocks from events."""
 
-    def __init__(self, max_preview_chars: int = 500):
+    def __init__(self, max_preview_chars: int = 50000):
         self.max_preview_chars = max(120, int(max_preview_chars))
 
     def task_text(self, task: str, max_steps: Optional[int] = None) -> str:
@@ -39,6 +65,13 @@ class ContentFirstRenderer:
         return f"{task} [max_steps={max_steps}]"
 
     def thought_text(self, event: RenderEvent) -> Optional[str]:
+        """Return the model's reasoning / non-tool-call text for display.
+
+        For ``model_output`` events this combines ``reasoning_content``
+        (API-level, e.g. DeepSeek/QwQ) and ``raw_output`` (content text
+        that is not a tool call).  Both are shown when present so the
+        operator sees everything the model "thought" before acting.
+        """
         payload = event.payload or {}
         if event.node == "decision":
             rationale = payload.get("rationale")
@@ -46,13 +79,24 @@ class ContentFirstRenderer:
                 return self._truncate(rationale.strip(), self.max_preview_chars)
             return None
         if event.node == "model_output":
+            segments: List[str] = []
+            # API-level reasoning_content (DeepSeek, QwQ, etc.)
+            reasoning = payload.get("reasoning_content")
+            if isinstance(reasoning, str) and reasoning.strip():
+                segments.append(reasoning.strip())
+            # Content text (non-tool-call output the model produced)
             raw = payload.get("raw_output")
-            if not isinstance(raw, str):
+            if isinstance(raw, str) and raw.strip():
+                # Try ReAct-style "Thought: ..." extraction first
+                m = _THOUGHT_RE.search(raw)
+                extracted = m.group(1).strip() if m else raw.strip()
+                # Deduplicate: skip raw_output if it duplicates reasoning_content
+                if not any(s == extracted for s in segments):
+                    segments.append(extracted)
+            if not segments:
                 return None
-            m = _THOUGHT_RE.search(raw)
-            if m:
-                return self._truncate(m.group(1).strip(), self.max_preview_chars)
-            return self._truncate(raw.strip(), self.max_preview_chars)
+            combined = "\n---\n".join(segments)
+            return self._truncate(combined, self.max_preview_chars)
         return None
 
     def model_response_summary(self, event: RenderEvent) -> Optional[str]:
@@ -83,24 +127,52 @@ class ContentFirstRenderer:
             return None
         return self._truncate(" · ".join(parts), self.max_preview_chars)
 
-    def action_summary(self, event: RenderEvent) -> Optional[Dict[str, str]]:
+    def action_summary(self, event: RenderEvent) -> Optional[Dict[str, Any]]:
         payload = event.payload or {}
         if event.node == "planned_actions":
             actions = payload.get("actions")
             if isinstance(actions, list) and actions:
-                return self._action_from_dict(actions[0])
+                if len(actions) == 1:
+                    return self._action_from_dict(actions[0])
+                summaries = [self._action_from_dict(a) for a in actions]
+                labels = [s["label"] for s in summaries]
+                details = [s["detail"] for s in summaries if s.get("detail")]
+                has_error = any(s.get("status") == "error" for s in summaries)
+                return {
+                    "label": f"{len(actions)} ACTIONS",
+                    "detail": " | ".join(labels) if labels else "",
+                    "status": "error" if has_error else "neutral",
+                    "action_count": len(actions),
+                    "actions": summaries,
+                }
             return None
 
         if event.node == "tool_invocations":
             items = payload.get("tool_invocations")
             if isinstance(items, list) and items:
-                first = items[0] if isinstance(items[0], dict) else {}
-                name = str(first.get("tool_name") or first.get("name") or "tool")
-                status = str(first.get("status") or "").lower()
+                if len(items) == 1:
+                    first = items[0] if isinstance(items[0], dict) else {}
+                    name = str(first.get("tool_name") or first.get("name") or "tool")
+                    status = str(first.get("status") or "").lower()
+                    return {
+                        "label": name.upper().replace("_", " "),
+                        "detail": "",
+                        "status": "error" if status == "error" else "success",
+                    }
+                names = []
+                has_error = False
+                for item in items:
+                    d = item if isinstance(item, dict) else {}
+                    name = str(d.get("tool_name") or d.get("name") or "tool")
+                    names.append(name.upper().replace("_", " "))
+                    if str(d.get("status") or "").lower() == "error":
+                        has_error = True
                 return {
-                    "label": name.upper().replace("_", " "),
-                    "detail": "",
-                    "status": "error" if status == "error" else "success",
+                    "label": f"{len(items)} INVOCATIONS",
+                    "detail": " | ".join(names),
+                    "status": "error" if has_error else "success",
+                    "action_count": len(items),
+                    "actions": [{"label": n, "detail": "", "status": "neutral"} for n in names],
                 }
             return None
         return None
@@ -116,6 +188,9 @@ class ContentFirstRenderer:
             return None
 
         items = data if isinstance(data, list) else [data]
+        # Filter out environment results so the count matches actual tool
+        # actions (N actions should produce N results, not N+1).
+        items = [it for it in items if not _is_env_result(it)]
         primary = self._select_primary_observation(items)
         if primary is None:
             return None
@@ -125,6 +200,18 @@ class ContentFirstRenderer:
         )
         if secondary:
             primary["secondary"] = secondary
+
+        # Attach multi-observation metadata when there are multiple results
+        if len(items) > 1:
+            all_summaries = []
+            for item in items:
+                summary = self._summarize_tool_observation(item) if isinstance(item, dict) else None
+                if summary:
+                    all_summaries.append(summary)
+            if all_summaries:
+                primary["all_observations"] = all_summaries
+                primary["observation_count"] = len(items)
+
         return primary
 
     def state_summary(self, event: RenderEvent) -> Optional[Dict[str, Any]]:
@@ -281,28 +368,33 @@ class ContentFirstRenderer:
         return f"stop={stop_reason} · result={self._truncate(self._to_text(final_result), 180)}"
 
     def _action_from_dict(self, action: Any) -> Dict[str, str]:
-        if not isinstance(action, dict):
+        # Normalize: if it's an Action object, extract name/args directly
+        if hasattr(action, "name") and hasattr(action, "args"):
+            name = str(getattr(action, "name", "") or "action")
+            args = getattr(action, "args", None)
+            if not isinstance(args, dict):
+                args = {}
+        elif isinstance(action, dict):
+            name = str(
+                action.get("name") or action.get("tool") or action.get("action") or "action"
+            )
+            args = action.get("args") if isinstance(action.get("args"), dict) else {}
+        else:
             return {
                 "label": "ACTION",
-                "detail": self._truncate(self._to_text(action), 120),
+                "detail": self._to_text(action),
                 "status": "neutral",
             }
-        name = str(
-            action.get("name") or action.get("tool") or action.get("action") or "action"
-        )
-        args = action.get("args") if isinstance(action.get("args"), dict) else {}
-        detail = ""
         if args:
-            for key in ("query", "url", "path", "command", "prompt", "file"):
-                if key in args:
-                    detail = self._truncate(self._to_text(args[key]), 120)
-                    break
-            if not detail:
-                k = next(iter(args.keys()))
-                detail = self._truncate(f"{k}={self._to_text(args[k])}", 120)
+            # Format as Python call: tool_name(key1=val1, key2=val2, ...)
+            # NO truncation — full args are critical for debugging
+            parts = [f"{k}={self._to_text(v)}" for k, v in args.items()]
+            detail = f"{name}({', '.join(parts)})"
+        else:
+            detail = name
         return {
             "label": name.upper().replace("_", " "),
-            "detail": self._compress_detail(detail),
+            "detail": detail,
             "status": "neutral",
         }
 
@@ -412,7 +504,7 @@ class ContentFirstRenderer:
         return {
             "status": "success",
             "title": title,
-            "body": self._truncate(body, 2000) if body else "",
+            "body": self._truncate(body, 50000) if body else "",
             "primary_kind": "terminal_output" if output else "terminal_screen",
             "secondary_only": secondary,
         }
@@ -424,7 +516,7 @@ class ContentFirstRenderer:
             return {
                 "status": "neutral",
                 "title": "Observation",
-                "body": self._truncate(self._to_text(item), 220),
+                "body": self._truncate(self._to_text(item), 50000),
                 "primary_kind": "tool_result",
                 "secondary_only": secondary,
             }
@@ -457,12 +549,7 @@ class ContentFirstRenderer:
                 "secondary_only": secondary,
             }
 
-        title = str(
-            cleaned.get("title")
-            or cleaned.get("name")
-            or ("Tool Observation" if secondary else cleaned.get("status"))
-            or ("Tool Observation" if secondary else "Observation")
-        )
+        title = self._tool_title(cleaned, secondary=secondary)
         url = str(
             cleaned.get("url")
             or cleaned.get("source_url")
@@ -475,7 +562,7 @@ class ContentFirstRenderer:
                 "status": "error",
                 "title": self._truncate(str(err), 120),
                 "url": self._short_url(url) if url else "",
-                "body": self._truncate(self._to_text(cleaned.get("content", "")), 180),
+                "body": self._truncate(self._best_body(cleaned), 50000),
                 "primary_kind": "error",
                 "secondary_only": secondary,
             }
@@ -485,7 +572,7 @@ class ContentFirstRenderer:
             "status": "success",
             "title": self._truncate(title, 120),
             "url": self._short_url(url) if url else "",
-            "body": self._truncate(body, 220) if body else "",
+            "body": self._truncate(body, 50000) if body else "",
             "primary_kind": "tool_result",
             "secondary_only": secondary,
         }
@@ -498,7 +585,7 @@ class ContentFirstRenderer:
             if "\n" not in value or len(value) < 40:
                 continue
             return Syntax(
-                self._truncate(value, 2000), self._guess_language(data), word_wrap=True
+                self._truncate(value, 50000), self._guess_language(data), word_wrap=True
             )
         return None
 
@@ -516,10 +603,9 @@ class ContentFirstRenderer:
         return text
 
     def _best_body(self, data: Dict[str, Any]) -> str:
-        for key in ("content", "summary", "message", "observation", "text"):
-            val = data.get(key)
-            if isinstance(val, str) and val.strip():
-                return val
+        readable = self._readable_tool_body(data)
+        if readable:
+            return readable
         lite: Dict[str, Any] = {}
         for k, v in data.items():
             if k in _NOISE_KEYS:
@@ -528,6 +614,124 @@ class ContentFirstRenderer:
                 continue
             lite[k] = v
         return self._to_text(lite)
+
+    def _tool_title(self, data: Dict[str, Any], secondary: bool = False) -> str:
+        metadata = data.get("metadata")
+        tool_name = ""
+        if isinstance(metadata, dict):
+            tool_name = str(metadata.get("tool_name") or metadata.get("name") or "").strip()
+        title = str(
+            data.get("title")
+            or data.get("name")
+            or tool_name
+            or ("Tool Observation" if secondary else data.get("status"))
+            or ("Tool Observation" if secondary else "Observation")
+        )
+        return self._truncate(title, 120)
+
+    def _readable_tool_body(self, data: Dict[str, Any]) -> str:
+        """Render tool-result payloads as operator-readable text, not raw JSON.
+
+        Engine tool results are usually wrapped as:
+
+            {"status": ..., "output": <tool payload>, "error": ..., "metadata": ...}
+
+        For nested payloads such as gdb_debug, the useful text lives under
+        ``output.output``.  The model can see it through the tool-result
+        message, so the TUI should show that same signal as readable sections
+        instead of collapsing the wrapper into a JSON preview.
+        """
+        source, wrapper = self._tool_payload_source(data)
+        if not isinstance(source, dict):
+            return ""
+
+        lines: List[str] = []
+        metadata_line = self._format_metadata_line(wrapper, source)
+        if metadata_line:
+            lines.append(metadata_line)
+
+        for key in ("commands", "command"):
+            if key not in source:
+                continue
+            command_block = self._format_sequence_block("Commands", source.get(key))
+            if command_block:
+                if lines:
+                    lines.append("")
+                lines.append(command_block)
+                break
+
+        seen_texts: Set[str] = set()
+        for key, label in (
+            ("output", "Output"),
+            ("stdout", "STDOUT"),
+            ("stderr", "STDERR"),
+            ("raw_output", "Raw output"),
+            ("content", "Content"),
+            ("observation", "Observation"),
+            ("text", "Text"),
+            ("result", "Result"),
+            ("message", "Message"),
+            ("summary", "Summary"),
+        ):
+            value = source.get(key)
+            if not isinstance(value, str) or not value.strip():
+                continue
+            normalized = value.strip()
+            if normalized in seen_texts:
+                continue
+            seen_texts.add(normalized)
+            if lines:
+                lines.append("")
+            lines.append(f"{label}:")
+            lines.append(value.rstrip())
+
+        return "\n".join(lines).strip()
+
+    def _tool_payload_source(self, data: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        output = data.get("output")
+        if isinstance(output, dict):
+            return output, data
+        return data, data
+
+    def _format_metadata_line(self, wrapper: Dict[str, Any], source: Dict[str, Any]) -> str:
+        fields: Dict[str, Any] = {}
+        metadata = wrapper.get("metadata")
+        if isinstance(metadata, dict):
+            for key in ("tool_name", "attempts", "model_visible"):
+                value = metadata.get(key)
+                if value not in (None, ""):
+                    fields[key] = value
+
+        for container in (wrapper, source):
+            for key, value in container.items():
+                if key in _NOISE_KEYS or key in _METADATA_BODY_KEYS or key in _TEXT_BODY_KEYS:
+                    continue
+                if key in fields:
+                    continue
+                if value in (None, ""):
+                    continue
+                if isinstance(value, (dict, list, tuple, set)):
+                    continue
+                fields[key] = value
+
+        if not fields:
+            return ""
+        return " · ".join(f"{key}={self._format_scalar(value)}" for key, value in fields.items())
+
+    def _format_sequence_block(self, title: str, value: Any) -> str:
+        if isinstance(value, str) and value.strip():
+            return f"{title}:\n  - {value.strip()}"
+        if not isinstance(value, (list, tuple)):
+            return ""
+        items = [str(item).strip() for item in value if str(item).strip()]
+        if not items:
+            return ""
+        return f"{title}:\n" + "\n".join(f"  - {item}" for item in items)
+
+    def _format_scalar(self, value: Any) -> str:
+        if isinstance(value, float):
+            return f"{value:.3f}".rstrip("0").rstrip(".")
+        return str(value)
 
     def _strip_noise(self, data: Dict[str, Any]) -> Dict[str, Any]:
         out: Dict[str, Any] = {}
@@ -565,7 +769,7 @@ class ContentFirstRenderer:
     def _truncate(self, text: str, limit: int) -> str:
         if len(text) <= limit:
             return text
-        return f"{text[:limit]}... (truncated)"
+        return f"{text[:limit]}... (truncated, {len(text)} total chars)"
 
     def _to_text(self, value: Any) -> str:
         if isinstance(value, str):

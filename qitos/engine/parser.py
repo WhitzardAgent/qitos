@@ -73,7 +73,7 @@ def parser_contract(parser: Any) -> str:
     return str(getattr(parser, "contract_id", parser.__class__.__name__.lower()))
 
 
-def parser_raw_preview(raw_output: Any, limit: int = 280) -> str:
+def parser_raw_preview(raw_output: Any, limit: int = 50000) -> str:
     text = str(raw_output or "").strip()
     if len(text) <= limit:
         return text

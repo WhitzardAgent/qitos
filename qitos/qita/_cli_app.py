@@ -20,15 +20,46 @@ from urllib.parse import parse_qs, urlparse
 _DESIGN_HEAD = """\
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">"""
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">
+<script>
+(function(){
+  var key = 'qita_theme';
+  function systemTheme(){
+    try { return window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'; }
+    catch(e) { return 'dark'; }
+  }
+  function apply(theme){
+    var next = theme === 'light' ? 'light' : 'dark';
+    document.documentElement.setAttribute('data-theme', next);
+    var label = document.getElementById('qitaThemeLabel');
+    if(label) label.textContent = next === 'light' ? 'Dark' : 'Light';
+  }
+  window.qitaSetTheme = function(theme){
+    try { localStorage.setItem(key, theme === 'light' ? 'light' : 'dark'); } catch(e) {}
+    apply(theme);
+  };
+  window.qitaToggleTheme = function(){
+    var current = document.documentElement.getAttribute('data-theme') || systemTheme();
+    window.qitaSetTheme(current === 'light' ? 'dark' : 'light');
+  };
+  try { apply(localStorage.getItem(key) || systemTheme()); } catch(e) { apply(systemTheme()); }
+  document.addEventListener('DOMContentLoaded', function(){ apply(document.documentElement.getAttribute('data-theme') || systemTheme()); });
+})();
+</script>"""
 
 _DESIGN_TOKENS = """\
-:root{
+:root,:root[data-theme="dark"]{
+  color-scheme:dark;
   --bg:#010102;--surface-1:#0f1011;--surface-2:#141516;--surface-3:#18191a;--surface-4:#191a1b;
   --accent:#5e6ad2;--accent-hover:#828fff;--accent-focus:#5e69d1;
   --txt:#f7f8f8;--muted:#d0d6e0;--subtle:#8a8f98;--tertiary:#62666d;
   --line:#23252a;--line-strong:#34343a;--line-tertiary:#3e3e44;
   --ok:#27a644;--err:#e5484d;--warn:#e5c100;
+  --ok-soft:rgba(39,166,68,.12);--ok-border:rgba(39,166,68,.45);
+  --err-soft:rgba(229,72,77,.10);--err-border:rgba(229,72,77,.45);
+  --warn-soft:rgba(229,193,0,.12);--warn-border:rgba(229,193,0,.45);
+  --accent-soft:rgba(94,106,210,.14);--accent-border:rgba(94,106,210,.50);
+  --top-bg:rgba(1,1,2,.90);--shadow-soft:0 18px 42px rgba(0,0,0,.26);
   --kind-thinking:#8b8fe0;--kind-action:#2da46a;--kind-observation:#5a8fbf;
   --kind-critic:#bfa04e;--kind-handoff:#bfa04e;--kind-delegation:#6b8fc4;
   --kind-fanout:#9b7fd4;--kind-parser:#bfa04e;--kind-memory:#3da89c;
@@ -36,7 +67,33 @@ _DESIGN_TOKENS = """\
   --radius-xs:4px;--radius-sm:6px;--radius-md:8px;--radius-lg:12px;--radius-xl:16px;--radius-pill:9999px;
   --font-body:'Inter','SF Pro Display',-apple-system,system-ui,'Segoe UI',Roboto,sans-serif;
   --font-mono:'JetBrains Mono','Geist Mono',ui-monospace,'SF Mono',Menlo,monospace;
-}"""
+}
+:root[data-theme="light"]{
+  color-scheme:light;
+  --bg:#f7f8fb;--surface-1:#ffffff;--surface-2:#f2f4f8;--surface-3:#e9edf5;--surface-4:#e3e8f2;
+  --accent:#4f46e5;--accent-hover:#4338ca;--accent-focus:#6366f1;
+  --txt:#111827;--muted:#4b5563;--subtle:#6b7280;--tertiary:#9ca3af;
+  --line:#d9dee8;--line-strong:#c4ccda;--line-tertiary:#aeb8ca;
+  --ok:#15803d;--err:#dc2626;--warn:#b7791f;
+  --ok-soft:rgba(21,128,61,.10);--ok-border:rgba(21,128,61,.34);
+  --err-soft:rgba(220,38,38,.09);--err-border:rgba(220,38,38,.32);
+  --warn-soft:rgba(183,121,31,.12);--warn-border:rgba(183,121,31,.36);
+  --accent-soft:rgba(79,70,229,.10);--accent-border:rgba(79,70,229,.34);
+  --top-bg:rgba(247,248,251,.88);--shadow-soft:0 18px 42px rgba(15,23,42,.10);
+  --kind-thinking:#5b5bd6;--kind-action:#16834f;--kind-observation:#2563a8;
+  --kind-critic:#946200;--kind-handoff:#946200;--kind-delegation:#3f6aa3;
+  --kind-fanout:#7c4db2;--kind-parser:#946200;--kind-memory:#0f766e;
+  --kind-done:#b45309;--kind-error:#dc2626;--kind-other:#64748b;--kind-plan:#4f46e5;
+}
+.theme-toggle{min-width:64px;justify-content:center}
+.theme-toggle span{font-weight:600}
+*{transition:background-color .12s ease,border-color .12s ease,color .12s ease}
+"""
+
+_THEME_TOGGLE_HTML = (
+    '<button class="btn theme-toggle" type="button" onclick="qitaToggleTheme()" '
+    'title="Toggle light/dark theme"><span id="qitaThemeLabel">Light</span></button>'
+)
 
 _DESIGN_FONT_BODY = "var(--font-body)"
 _DESIGN_FONT_MONO = "var(--font-mono)"
@@ -133,6 +190,9 @@ def _build_handler(root: Path):
             qs = parse_qs(parsed.query)
             if route == "/":
                 self._send_html(_render_board_html())
+                return
+            if route == "/favicon.ico":
+                self._send_bytes(b"", content_type="image/x-icon", status=204)
                 return
             if route == "/compare":
                 left_id = _slug_run_id((qs.get("left") or [""])[0])
@@ -627,6 +687,21 @@ def _discover_runs(logdir: Path) -> List[Dict[str, Any]]:
         if not manifest_path.exists():
             continue
         manifest = _load_json(manifest_path)
+        events = _load_jsonl(p / "events.jsonl")
+        steps = _load_jsonl(p / "steps.jsonl")
+        grouped_events = _group_events_by_step(events)
+        step_summaries = _build_step_summaries(steps, grouped_events)
+        tool_stats = _build_tool_stats(steps)
+        phase_stats = _build_phase_stats(events)
+        insights = _build_insights(manifest, step_summaries, tool_stats)
+        step_focus = _build_step_focus(steps, step_summaries, grouped_events)
+        cybergym_focus = _build_cybergym_focus(manifest, step_focus)
+        run_focus = _build_run_focus(
+            manifest=manifest,
+            insights=insights,
+            step_focus=step_focus,
+            cybergym_focus=cybergym_focus,
+        )
         summary = manifest.get("summary") or {}
         agent_topology = manifest.get("agent_topology")
         agent_names = []
@@ -648,6 +723,12 @@ def _discover_runs(logdir: Path) -> List[Dict[str, Any]]:
                 "agent_topology": agent_topology,
                 "handoff_count": manifest.get("handoff_count"),
                 "agent_count": len(agent_names) if agent_names else 0,
+                "insights": insights,
+                "run_focus": run_focus,
+                "risk_flags": insights.get("risk_flags", []),
+                "next_inspect_step": insights.get("next_inspect_step"),
+                "tool_stats": tool_stats,
+                "phase_stats": phase_stats,
                 "manifest_meta": {
                     "schema_version": manifest.get("schema_version"),
                     "model_id": manifest.get("model_id"),
@@ -669,7 +750,7 @@ def _discover_runs(logdir: Path) -> List[Dict[str, Any]]:
                     "replay_mode": manifest.get("replay_mode"),
                     "replay_note": manifest.get("replay_note"),
                     "summary_steps": summary.get("steps"),
-                    "token_usage": summary.get("token_usage"),
+                    "token_usage": _summary_metric(manifest, "token_usage", 0),
                     "latency_seconds": manifest.get("latency_seconds"),
                     "cost": manifest.get("cost"),
                     "context": summary.get("context"),
@@ -687,6 +768,19 @@ def _load_run_payload(run_dir: Path) -> Dict[str, Any]:
     events = _load_jsonl(run_dir / "events.jsonl")
     steps = _load_jsonl(run_dir / "steps.jsonl")
     grouped_events = _group_events_by_step(events)
+    step_interactions = _build_step_interactions(steps, grouped_events)
+    step_summaries = _build_step_summaries(steps, grouped_events)
+    tool_stats = _build_tool_stats(steps)
+    phase_stats = _build_phase_stats(events)
+    insights = _build_insights(manifest, step_summaries, tool_stats)
+    step_focus = _build_step_focus(steps, step_summaries, grouped_events)
+    cybergym_focus = _build_cybergym_focus(manifest, step_focus)
+    run_focus = _build_run_focus(
+        manifest=manifest,
+        insights=insights,
+        step_focus=step_focus,
+        cybergym_focus=cybergym_focus,
+    )
     return {
         "run": str(run_dir),
         "run_id": run_dir.name,
@@ -694,6 +788,14 @@ def _load_run_payload(run_dir: Path) -> Dict[str, Any]:
         "events": events,
         "steps": steps,
         "events_by_step": grouped_events,
+        "step_interactions": step_interactions,
+        "insights": insights,
+        "step_summaries": step_summaries,
+        "tool_stats": tool_stats,
+        "phase_stats": phase_stats,
+        "run_focus": run_focus,
+        "step_focus": step_focus,
+        "cybergym_focus": cybergym_focus,
         "visual_timeline": _build_visual_timeline(steps),
     }
 
@@ -706,6 +808,252 @@ def _group_events_by_step(
         sid = str(ev.get("step_id", "none"))
         grouped.setdefault(sid, []).append(ev)
     return grouped
+
+
+def _result_action_id(result: Any) -> str:
+    if not isinstance(result, dict):
+        return ""
+    metadata = result.get("metadata")
+    if not isinstance(metadata, dict):
+        metadata = {}
+    return str(
+        result.get("action_id")
+        or result.get("tool_call_id")
+        or metadata.get("action_id")
+        or metadata.get("tool_call_id")
+        or ""
+    )
+
+
+def _is_environment_result(result: Any) -> bool:
+    if not isinstance(result, dict):
+        return False
+    metadata = result.get("metadata")
+    if isinstance(metadata, dict) and str(metadata.get("source") or "").lower() == "env":
+        return True
+    output = result.get("output")
+    return isinstance(output, dict) and set(output) == {"env"}
+
+
+def _model_visible_action_results(events: List[Dict[str, Any]]) -> List[Any]:
+    for event in reversed(events):
+        payload = event.get("payload")
+        if not isinstance(payload, dict) or str(payload.get("stage") or "") != "observation_ready":
+            continue
+        observation = payload.get("observation")
+        if not isinstance(observation, dict):
+            continue
+        results = observation.get("action_results")
+        if isinstance(results, list):
+            return results
+    for event in reversed(events):
+        payload = event.get("payload")
+        if not isinstance(payload, dict) or str(payload.get("stage") or "") != "action_results":
+            continue
+        results = payload.get("action_results")
+        if isinstance(results, list):
+            return results
+    return []
+
+
+def _interaction_status(tool_name: str, result: Any, raw_result: Any) -> str:
+    probes = [raw_result, result]
+    for probe in probes:
+        if not isinstance(probe, dict):
+            continue
+        explicit_status = str(probe.get("status") or "").lower()
+        if explicit_status in {
+            "blocked",
+            "submission_error",
+            "no_trigger",
+            "verified",
+        }:
+            return explicit_status
+        if _result_error(probe):
+            return "error"
+        output = probe.get("output")
+        if not isinstance(output, dict):
+            continue
+        verification = str(
+            output.get("verification_status")
+            or output.get("failure_type")
+            or ""
+        ).strip()
+        if verification:
+            return verification.lower()
+        if str(tool_name).rsplit(".", 1)[-1] == "submit_poc":
+            if output.get("accepted") is True or output.get("verified") is True:
+                return "verified"
+            if output.get("accepted") is False:
+                return "no_trigger"
+    for probe in probes:
+        if isinstance(probe, dict) and probe.get("status"):
+            return str(probe.get("status")).lower()
+    return "not_recorded"
+
+
+def _build_step_interactions(
+    steps: List[Dict[str, Any]], events_by_step: Dict[str, List[Dict[str, Any]]]
+) -> List[Dict[str, Any]]:
+    interactions: List[Dict[str, Any]] = []
+    for step in steps:
+        sid = step.get("step_id")
+        actions = step.get("actions") if isinstance(step.get("actions"), list) else []
+        invocations = (
+            step.get("tool_invocations")
+            if isinstance(step.get("tool_invocations"), list)
+            else []
+        )
+        raw_results = (
+            step.get("action_results")
+            if isinstance(step.get("action_results"), list)
+            else []
+        )
+        recorded_visible_results = _model_visible_action_results(
+            events_by_step.get(str(sid), [])
+        )
+        has_model_visible_results = bool(recorded_visible_results)
+        visible_results = recorded_visible_results or list(raw_results)
+
+        raw_tool_results = [
+            (index, result)
+            for index, result in enumerate(raw_results)
+            if not _is_environment_result(result)
+        ]
+        visible_tool_results = [
+            (index, result)
+            for index, result in enumerate(visible_results)
+            if not _is_environment_result(result)
+        ]
+        raw_by_action_id = {
+            _result_action_id(result): (index, result)
+            for index, result in raw_tool_results
+            if _result_action_id(result)
+        }
+        visible_by_action_id = {
+            _result_action_id(result): (index, result)
+            for index, result in visible_tool_results
+            if _result_action_id(result)
+        }
+        used_raw: set[int] = set()
+        used_visible: set[int] = set()
+        calls: List[Dict[str, Any]] = []
+        unmatched_actions: List[Dict[str, Any]] = []
+
+        for action_index, action in enumerate(actions):
+            action = action if isinstance(action, dict) else {"value": action}
+            action_id = str(action.get("action_id") or action.get("id") or "")
+            raw_match = raw_by_action_id.get(action_id) if action_id else None
+            visible_match = visible_by_action_id.get(action_id) if action_id else None
+            pairing_method = "action_id" if raw_match or visible_match else "ordered"
+            if raw_match is None and action_index < len(raw_tool_results):
+                raw_match = raw_tool_results[action_index]
+            if visible_match is None and action_index < len(visible_tool_results):
+                visible_match = visible_tool_results[action_index]
+            raw_result = raw_match[1] if raw_match else None
+            visible_result = visible_match[1] if visible_match else None
+            if raw_match:
+                used_raw.add(raw_match[0])
+            if visible_match:
+                used_visible.add(visible_match[0])
+            if raw_result is None and visible_result is None:
+                pairing_method = "unmatched"
+                unmatched_actions.append(
+                    {"index": action_index, "action": action}
+                )
+            invocation = (
+                invocations[action_index]
+                if action_index < len(invocations)
+                and isinstance(invocations[action_index], dict)
+                else {}
+            )
+            tool_name = str(
+                action.get("name")
+                or action.get("tool")
+                or action.get("action")
+                or action.get("type")
+                or invocation.get("tool_name")
+                or "action"
+            )
+            args = action.get("args")
+            if not isinstance(args, dict):
+                args = action.get("kwargs") if isinstance(action.get("kwargs"), dict) else {}
+            status = _interaction_status(tool_name, visible_result, raw_result)
+            if status == "not_recorded" and invocation.get("status"):
+                status = str(invocation.get("status")).lower()
+            result_for_summary = visible_result if visible_result is not None else raw_result
+            result_summary = _result_error(result_for_summary) or _result_success_summary(
+                result_for_summary
+            )
+            if status in {"blocked", "no_trigger", "submission_error", "verified"}:
+                result_summary = " · ".join(
+                    part for part in (status, result_summary) if part
+                )
+            calls.append(
+                {
+                    "index": action_index,
+                    "action_id": action_id,
+                    "tool_name": tool_name,
+                    "args": args,
+                    "action": action,
+                    "invocation": invocation,
+                    "result": visible_result,
+                    "raw_result": raw_result,
+                    "result_source": (
+                        "model_visible"
+                        if has_model_visible_results and visible_result is not None
+                        else "raw_fallback"
+                        if visible_result is not None
+                        else "not_recorded"
+                    ),
+                    "status": status,
+                    "result_summary": result_summary or "not recorded",
+                    "latency_ms": invocation.get("latency_ms"),
+                    "attempts": invocation.get("attempts"),
+                    "pairing_method": pairing_method,
+                }
+            )
+
+        environment_results: List[Dict[str, Any]] = []
+        visible_env = [result for result in visible_results if _is_environment_result(result)]
+        raw_env = [result for result in raw_results if _is_environment_result(result)]
+        for index in range(max(len(visible_env), len(raw_env))):
+            environment_results.append(
+                {
+                    "index": index,
+                    "result": visible_env[index] if index < len(visible_env) else None,
+                    "raw_result": raw_env[index] if index < len(raw_env) else None,
+                }
+            )
+
+        unmatched_results = (
+            [
+                {"index": index, "result": result, "visibility": "model_visible"}
+                for index, result in visible_tool_results
+                if index not in used_visible
+            ]
+            if has_model_visible_results
+            else []
+        )
+        unmatched_results.extend(
+            {
+                "index": index,
+                "result": result,
+                "visibility": "raw",
+            }
+            for index, result in raw_tool_results
+            if index not in used_raw
+        )
+        interactions.append(
+            {
+                "step_id": sid,
+                "calls": calls,
+                "environment_results": environment_results,
+                "unmatched_actions": unmatched_actions,
+                "unmatched_results": unmatched_results,
+            }
+        )
+    return interactions
 
 
 def _load_json(path: Path) -> Dict[str, Any]:
@@ -726,6 +1074,790 @@ def _load_jsonl(path: Path) -> List[Dict[str, Any]]:
             except json.JSONDecodeError:
                 out.append({"raw": line, "error": "invalid_json"})
     return out
+
+
+def _shorten_for_summary(value: Any, limit: int = 140) -> str:
+    text = str(value or "").replace("\n", " ").strip()
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 3)].rstrip() + "..."
+
+
+def _event_model_output(events: List[Dict[str, Any]]) -> Dict[str, Any]:
+    for event in reversed(events):
+        payload = event.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        if str(payload.get("stage") or "") == "model_output":
+            return payload
+    return {}
+
+
+def _extract_summary_thought(step: Dict[str, Any], events: List[Dict[str, Any]]) -> str:
+    decision = step.get("decision")
+    if isinstance(decision, dict):
+        for key in ("rationale", "thought", "analysis"):
+            value = decision.get(key)
+            if isinstance(value, str) and value.strip():
+                return _shorten_for_summary(value)
+    payload = _event_model_output(events)
+    raw = str(payload.get("raw_output") or "")
+    if not raw:
+        response = payload.get("model_response")
+        if isinstance(response, dict):
+            raw = str(response.get("text") or "")
+    if not raw:
+        response = step.get("model_response")
+        if isinstance(response, dict):
+            raw = str(response.get("text") or "")
+    if not raw:
+        return ""
+    marker = "Thought:"
+    idx = raw.lower().find(marker.lower())
+    if idx >= 0:
+        raw = raw[idx + len(marker) :]
+    for stop in ("\nAction:", "\nFinal:", "\nObservation:", "\nCritic:", "\nPlan:"):
+        pos = raw.lower().find(stop.lower())
+        if pos >= 0:
+            raw = raw[:pos]
+    return _shorten_for_summary(raw)
+
+
+def _action_name(action: Dict[str, Any]) -> str:
+    return str(
+        action.get("tool")
+        or action.get("name")
+        or action.get("action")
+        or action.get("type")
+        or "action"
+    )
+
+
+def _step_action_summary(step: Dict[str, Any]) -> str:
+    actions = step.get("actions")
+    if not isinstance(actions, list) or not actions:
+        return ""
+    action = actions[0]
+    if not isinstance(action, dict):
+        return _shorten_for_summary(action)
+    name = _action_name(action)
+    args = action.get("args") if isinstance(action.get("args"), dict) else {}
+    for key in ("query", "url", "path", "command", "prompt", "file", "text", "reason"):
+        if key in args:
+            return f"{name}({key}={_shorten_for_summary(args.get(key), 80)})"
+    return name
+
+
+def _result_error(result: Any) -> str:
+    if isinstance(result, dict):
+        status = str(result.get("status") or "").lower()
+        if status == "error" or result.get("error"):
+            return _shorten_for_summary(
+                result.get("error") or result.get("message") or result
+            )
+        for key in ("result", "data", "payload"):
+            nested = result.get(key)
+            if isinstance(nested, dict):
+                err = _result_error(nested)
+                if err:
+                    return err
+    return ""
+
+
+def _summary_value(value: Any, *, limit: int = 120) -> str:
+    if isinstance(value, str):
+        return _shorten_for_summary(value, limit)
+    if isinstance(value, (int, float, bool)):
+        return str(value)
+    if value is None:
+        return ""
+    try:
+        return _shorten_for_summary(json.dumps(value, ensure_ascii=False), limit)
+    except TypeError:
+        return _shorten_for_summary(value, limit)
+
+
+def _result_success_summary(result: Any) -> str:
+    if not isinstance(result, dict):
+        return _summary_value(result)
+    if _result_error(result):
+        return ""
+    status = str(result.get("status") or "").strip()
+    output = result.get("output")
+    if output is None:
+        output = result.get("result")
+    if output is None:
+        output = result.get("data")
+
+    parts: List[str] = []
+    if status:
+        parts.append(status)
+    if isinstance(output, dict):
+        nested_status = str(output.get("status") or "").strip()
+        if nested_status and nested_status not in parts:
+            parts.append(nested_status)
+        for key in ("path", "file", "url", "command", "poc_path"):
+            if output.get(key):
+                parts.append(f"{key}={_summary_value(output.get(key), limit=80)}")
+                break
+        if output.get("total_lines") is not None:
+            parts.append(f"total_lines={output.get('total_lines')}")
+        if output.get("offset") is not None:
+            parts.append(f"offset={output.get('offset')}")
+        for key in ("content", "stdout", "stderr", "text", "message", "summary"):
+            if output.get(key):
+                parts.append(_summary_value(output.get(key), limit=160))
+                break
+        if not parts:
+            parts.append(_summary_value(output, limit=180))
+    elif output not in (None, ""):
+        parts.append(_summary_value(output, limit=180))
+
+    if not parts:
+        metadata = result.get("metadata")
+        if isinstance(metadata, dict):
+            tool_name = metadata.get("tool_name")
+            latency = metadata.get("latency_ms")
+            if tool_name:
+                parts.append(f"{tool_name} completed")
+            if latency is not None:
+                try:
+                    parts.append(f"{float(latency):.1f}ms")
+                except (TypeError, ValueError):
+                    pass
+    return _shorten_for_summary(" · ".join(part for part in parts if part), 220)
+
+
+def _step_observation_summary(step: Dict[str, Any]) -> str:
+    action_results = step.get("action_results")
+    if isinstance(action_results, list):
+        for result in action_results:
+            summary = _result_success_summary(result)
+            if summary:
+                return summary
+    observation = step.get("observation")
+    if isinstance(observation, dict):
+        env = observation.get("env")
+        if isinstance(env, dict):
+            env_observation = env.get("observation")
+            if isinstance(env_observation, dict):
+                data = env_observation.get("data")
+                if data not in (None, {}, ""):
+                    return _shorten_for_summary(
+                        f"observation data: {_summary_value(data, limit=180)}",
+                        220,
+                    )
+        if observation:
+            return _shorten_for_summary(
+                f"observation: {_summary_value(observation, limit=180)}",
+                220,
+            )
+    return ""
+
+
+def _after_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        after = value.get("after")
+        if after is not None:
+            return after
+        return value
+    return value
+
+
+def _cybergym_signals(step: Dict[str, Any]) -> Dict[str, Any]:
+    state_diff = step.get("state_diff")
+    if not isinstance(state_diff, dict):
+        state_diff = {}
+    actions = step.get("actions")
+    if not isinstance(actions, list):
+        actions = []
+    action_names = [
+        _action_name(action)
+        for action in actions
+        if isinstance(action, dict)
+    ]
+    submit_action = any(name == "submit_poc" for name in action_names)
+
+    phase = ""
+    phase_change = state_diff.get("current_phase")
+    if isinstance(phase_change, dict):
+        phase = str(phase_change.get("after") or "")
+    elif isinstance(phase_change, str):
+        phase = phase_change
+
+    attempts = None
+    attempts_change = state_diff.get("poc_attempts")
+    if isinstance(attempts_change, dict):
+        attempts = attempts_change.get("after")
+    elif attempts_change is not None:
+        attempts = attempts_change
+
+    verification = _after_value(state_diff.get("last_verification_result"))
+    verification_history = _after_value(state_diff.get("verification_history"))
+    failures = _after_value(state_diff.get("failure_history"))
+    latest_failure: Dict[str, Any] = {}
+    if isinstance(failures, list) and failures:
+        last = failures[-1]
+        if isinstance(last, dict):
+            latest_failure = last
+    latest_verification: Dict[str, Any] = {}
+    if isinstance(verification, dict) and verification:
+        latest_verification = verification
+    elif isinstance(verification_history, list) and verification_history:
+        last = verification_history[-1]
+        if isinstance(last, dict):
+            latest_verification = last
+
+    status = str(
+        latest_verification.get("verification_status")
+        or latest_verification.get("status")
+        or ""
+    )
+    failure_type = str(latest_failure.get("failure_type") or latest_failure.get("summary") or "")
+    failure_detail = _shorten_for_summary(
+        latest_failure.get("evidence_excerpt")
+        or latest_failure.get("summary")
+        or latest_failure.get("failure_type")
+        or ""
+    )
+    return {
+        "phase": phase,
+        "poc_attempts": attempts,
+        "submit_action": submit_action,
+        "verification_status": status,
+        "vul_exit_code": latest_verification.get("vul_exit_code"),
+        "fix_exit_code": latest_verification.get("fix_exit_code"),
+        "poc_path": latest_verification.get("poc_path") or latest_failure.get("related_poc_id") or "",
+        "failure_type": failure_type,
+        "failure_detail": failure_detail,
+        "has_signal": bool(
+            submit_action
+            or phase
+            or attempts is not None
+            or status
+            or failure_type
+            or failure_detail
+        ),
+    }
+
+
+def _parser_flag(step: Dict[str, Any]) -> Dict[str, Any]:
+    diagnostics = step.get("parser_diagnostics")
+    if not isinstance(diagnostics, dict) or not diagnostics:
+        return {}
+    severity = str(diagnostics.get("severity") or "").lower()
+    return {
+        "severity": severity or "info",
+        "code": diagnostics.get("code"),
+        "summary": _shorten_for_summary(
+            diagnostics.get("summary")
+            or diagnostics.get("details")
+            or diagnostics.get("code")
+            or "parser diagnostic"
+        ),
+        "is_error": severity == "error",
+    }
+
+
+def _context_flag(step: Dict[str, Any]) -> Dict[str, Any]:
+    context = step.get("context")
+    if not isinstance(context, dict):
+        return {}
+    ratio = context.get("occupancy_ratio")
+    try:
+        occupancy = float(ratio)
+    except (TypeError, ValueError):
+        occupancy = 0.0
+    compact_events = context.get("compact_events")
+    compact_count = len(compact_events) if isinstance(compact_events, list) else 0
+    if occupancy >= 0.85 or compact_count:
+        return {
+            "occupancy_ratio": occupancy,
+            "compact_count": compact_count,
+            "is_pressure": occupancy >= 0.85,
+        }
+    return {}
+
+
+def _build_step_summaries(
+    steps: List[Dict[str, Any]], events_by_step: Dict[str, List[Dict[str, Any]]]
+) -> List[Dict[str, Any]]:
+    summaries: List[Dict[str, Any]] = []
+    for step in steps:
+        sid = step.get("step_id")
+        events = events_by_step.get(str(sid), [])
+        parser = _parser_flag(step)
+        context = _context_flag(step)
+        action_results = step.get("action_results")
+        errors: List[str] = []
+        if isinstance(action_results, list):
+            for result in action_results:
+                err = _result_error(result)
+                if err:
+                    errors.append(err)
+        for event in events:
+            if not bool(event.get("ok", True)) or event.get("error"):
+                errors.append(
+                    _shorten_for_summary(
+                        event.get("error")
+                        or (event.get("payload") or {}).get("stage")
+                        or event.get("phase")
+                        or "event error"
+                    )
+                )
+        critic_outputs = step.get("critic_outputs")
+        critic_retry_count = 0
+        critic_stop_count = 0
+        critic_reasons: List[str] = []
+        if isinstance(critic_outputs, list):
+            for item in critic_outputs:
+                if not isinstance(item, dict):
+                    continue
+                action = str(item.get("action") or "").lower()
+                if action == "retry":
+                    critic_retry_count += 1
+                if action == "stop":
+                    critic_stop_count += 1
+                if item.get("reason"):
+                    critic_reasons.append(_shorten_for_summary(item.get("reason")))
+        visual_assets = step.get("visual_assets")
+        has_visual = bool(visual_assets) or bool(step.get("has_screenshot"))
+        cybergym = _cybergym_signals(step)
+        risk_flags: List[str] = []
+        if parser.get("is_error"):
+            risk_flags.append("parser_error")
+        elif parser:
+            risk_flags.append("parser_warning")
+        if cybergym.get("failure_type") or cybergym.get("failure_detail"):
+            risk_flags.append("cybergym_verification_failure")
+        elif cybergym.get("submit_action"):
+            risk_flags.append("cybergym_poc_submission")
+        if errors:
+            risk_flags.append("tool_or_event_error")
+        if critic_retry_count:
+            risk_flags.append("critic_retry")
+        if critic_stop_count:
+            risk_flags.append("critic_stop")
+        if context.get("is_pressure"):
+            risk_flags.append("context_pressure")
+        elif context.get("compact_count"):
+            risk_flags.append("context_compact")
+        if has_visual:
+            risk_flags.append("visual_evidence")
+        observation_summary = _step_observation_summary(step)
+        summaries.append(
+            {
+                "step_id": sid,
+                "agent_id": step.get("agent_id"),
+                "thought": _extract_summary_thought(step, events),
+                "action": _step_action_summary(step),
+                "observation": observation_summary,
+                "event_count": len(events),
+                "parser": parser,
+                "context": context,
+                "errors": errors,
+                "critic_retry_count": critic_retry_count,
+                "critic_stop_count": critic_stop_count,
+                "critic_reasons": critic_reasons,
+                "visual_asset_count": step.get("visual_asset_count", 0),
+                "has_visual": has_visual,
+                "cybergym": cybergym if cybergym.get("has_signal") else {},
+                "risk_flags": risk_flags,
+            }
+        )
+    return summaries
+
+
+def _build_tool_stats(steps: List[Dict[str, Any]]) -> Dict[str, Any]:
+    by_tool: Dict[str, Dict[str, Any]] = {}
+    total = 0
+    errors = 0
+    for step in steps:
+        actions = step.get("actions")
+        if not isinstance(actions, list):
+            actions = []
+        step_error = False
+        action_results = step.get("action_results")
+        if isinstance(action_results, list):
+            step_error = any(bool(_result_error(result)) for result in action_results)
+        for action in actions:
+            if not isinstance(action, dict):
+                continue
+            name = _action_name(action)
+            item = by_tool.setdefault(name, {"count": 0, "errors": 0})
+            item["count"] += 1
+            total += 1
+            if step_error:
+                item["errors"] += 1
+                errors += 1
+    return {"total": total, "errors": errors, "by_tool": by_tool}
+
+
+def _build_phase_stats(events: List[Dict[str, Any]]) -> Dict[str, Any]:
+    by_phase: Dict[str, Dict[str, Any]] = {}
+    for event in events:
+        phase = str(event.get("phase") or "unknown")
+        item = by_phase.setdefault(phase, {"count": 0, "errors": 0})
+        item["count"] += 1
+        if not bool(event.get("ok", True)) or event.get("error"):
+            item["errors"] += 1
+    return {"total": len(events), "by_phase": by_phase}
+
+
+def _build_insights(
+    manifest: Dict[str, Any],
+    step_summaries: List[Dict[str, Any]],
+    tool_stats: Dict[str, Any],
+) -> Dict[str, Any]:
+    summary = manifest.get("summary") if isinstance(manifest.get("summary"), dict) else {}
+    status = str(manifest.get("status") or "unknown")
+    stop_reason = str(summary.get("stop_reason") or manifest.get("stop_reason") or "")
+    final_result = summary.get("final_result")
+    critical_steps: List[Dict[str, Any]] = []
+    risk_flags: List[str] = []
+    priority = {
+        "cybergym_verification_failure": 0,
+        "parser_error": 0,
+        "tool_or_event_error": 1,
+        "critic_stop": 2,
+        "cybergym_poc_submission": 3,
+        "critic_retry": 4,
+        "context_pressure": 5,
+        "context_compact": 6,
+        "visual_evidence": 7,
+    }
+    for item in step_summaries:
+        flags = list(item.get("risk_flags") or [])
+        if not flags:
+            continue
+        risk_flags.extend(flags)
+        reason = sorted(flags, key=lambda f: priority.get(str(f), 99))[0]
+        detail = ""
+        if reason == "parser_error":
+            detail = ((item.get("parser") or {}).get("summary")) or ""
+        elif reason == "cybergym_verification_failure":
+            cybergym = item.get("cybergym") or {}
+            detail = (
+                cybergym.get("failure_detail")
+                or cybergym.get("failure_type")
+                or cybergym.get("verification_status")
+                or "CyberGym verification did not accept the candidate"
+            )
+        elif reason == "cybergym_poc_submission":
+            cybergym = item.get("cybergym") or {}
+            detail = (
+                f"submit_poc attempt {cybergym.get('poc_attempts')}"
+                if cybergym.get("poc_attempts") is not None
+                else "submit_poc candidate submitted"
+            )
+        elif reason == "tool_or_event_error":
+            detail = (item.get("errors") or [""])[0]
+        elif reason in ("critic_stop", "critic_retry"):
+            detail = (item.get("critic_reasons") or [""])[0]
+        elif reason.startswith("context"):
+            context = item.get("context") or {}
+            ratio = context.get("occupancy_ratio")
+            detail = f"context occupancy {float(ratio or 0) * 100:.1f}%"
+        elif reason == "visual_evidence":
+            detail = "visual evidence recorded"
+        critical_steps.append(
+            {
+                "step_id": item.get("step_id"),
+                "reason": reason,
+                "detail": detail,
+                "agent_id": item.get("agent_id"),
+            }
+        )
+    critical_steps.sort(
+        key=lambda item: (
+            priority.get(str(item.get("reason")), 99),
+            int(item.get("step_id") or 0),
+        )
+    )
+    unique_flags = sorted(set(risk_flags), key=lambda f: priority.get(str(f), 99))
+    likely_failure = ""
+    if critical_steps:
+        first = critical_steps[0]
+        likely_failure = f"Step {first.get('step_id')} · {first.get('reason')}"
+        if first.get("detail"):
+            likely_failure += f": {first.get('detail')}"
+    elif stop_reason:
+        likely_failure = stop_reason
+    else:
+        likely_failure = "No explicit failure signal recorded."
+    outcome = _derive_outcome(status=status, stop_reason=stop_reason, summary=summary)
+    return {
+        "outcome": outcome,
+        "status": status,
+        "stop_reason": stop_reason or None,
+        "final_result": final_result,
+        "likely_failure": likely_failure,
+        "critical_steps": critical_steps[:8],
+        "next_inspect_step": (
+            critical_steps[0].get("step_id") if critical_steps else None
+        ),
+        "risk_flags": unique_flags,
+        "tool_error_count": tool_stats.get("errors", 0),
+    }
+
+
+def _phase_from_events(events: List[Dict[str, Any]]) -> str:
+    for event in reversed(events):
+        phase = str(event.get("phase") or "").strip()
+        if phase:
+            return phase
+    return ""
+
+
+def _first_action_name(step: Dict[str, Any]) -> str:
+    actions = step.get("actions")
+    if isinstance(actions, list) and actions:
+        first = actions[0]
+        if isinstance(first, dict):
+            return _action_name(first)
+    return ""
+
+
+def _step_role(step: Dict[str, Any], summary: Dict[str, Any]) -> str:
+    flags = set(str(flag) for flag in (summary.get("risk_flags") or []))
+    action_name = _first_action_name(step)
+    cybergym = summary.get("cybergym") if isinstance(summary.get("cybergym"), dict) else {}
+    state_diff = step.get("state_diff") if isinstance(step.get("state_diff"), dict) else {}
+    if "cybergym_verification_failure" in flags:
+        return "verification_failure"
+    if cybergym.get("submit_action") or action_name == "submit_poc":
+        return "poc_submission"
+    if "parser_error" in flags:
+        return "parser_error"
+    if "tool_or_event_error" in flags:
+        return "error"
+    if "critic_stop" in flags or "critic_retry" in flags:
+        return "critic"
+    if state_diff.get("current_phase"):
+        return "phase_change"
+    if action_name:
+        return "action"
+    return "observation"
+
+
+def _attention_level(role: str, flags: List[str]) -> str:
+    if role in {"verification_failure", "parser_error"}:
+        return "critical"
+    if role in {"poc_submission", "error"}:
+        return "important"
+    if any(str(flag).startswith("context") for flag in flags):
+        return "watch"
+    return "normal"
+
+
+def _outcome_label(summary: Dict[str, Any]) -> str:
+    cybergym = summary.get("cybergym") if isinstance(summary.get("cybergym"), dict) else {}
+    if cybergym.get("failure_type"):
+        return str(cybergym.get("failure_type"))
+    if cybergym.get("verification_status"):
+        return str(cybergym.get("verification_status"))
+    errors = summary.get("errors")
+    if isinstance(errors, list) and errors:
+        return str(errors[0])
+    if summary.get("observation"):
+        return str(summary.get("observation"))
+    if cybergym.get("phase"):
+        return f"phase {cybergym.get('phase')}"
+    parser = summary.get("parser") if isinstance(summary.get("parser"), dict) else {}
+    if parser.get("summary"):
+        return str(parser.get("summary"))
+    return "no direct result"
+
+
+def _build_step_focus(
+    steps: List[Dict[str, Any]],
+    step_summaries: List[Dict[str, Any]],
+    events_by_step: Dict[str, List[Dict[str, Any]]],
+) -> List[Dict[str, Any]]:
+    summary_by_step = {str(item.get("step_id")): item for item in step_summaries}
+    focus_rows: List[Dict[str, Any]] = []
+    for step in steps:
+        sid = str(step.get("step_id"))
+        summary = summary_by_step.get(sid, {})
+        flags = [str(flag) for flag in (summary.get("risk_flags") or [])]
+        role = _step_role(step, summary)
+        cybergym = summary.get("cybergym") if isinstance(summary.get("cybergym"), dict) else {}
+        phase = str(cybergym.get("phase") or _phase_from_events(events_by_step.get(sid, [])) or "")
+        evidence_refs: List[str] = []
+        if summary.get("thought"):
+            evidence_refs.append("thought")
+        if summary.get("action"):
+            evidence_refs.append("action")
+        if summary.get("errors") or summary.get("observation"):
+            evidence_refs.append("observation")
+        if (summary.get("parser") or {}).get("summary"):
+            evidence_refs.append("parser")
+        if summary.get("critic_reasons"):
+            evidence_refs.append("critic")
+        if cybergym:
+            evidence_refs.append("cybergym")
+        evidence_refs.append("raw")
+        focus_rows.append(
+            {
+                "step_id": step.get("step_id"),
+                "step_role": role,
+                "phase": phase,
+                "action_label": summary.get("action") or _step_action_summary(step),
+                "thought": summary.get("thought") or "",
+                "outcome_label": _outcome_label(summary),
+                "evidence_refs": sorted(set(evidence_refs), key=evidence_refs.index),
+                "attention_level": _attention_level(role, flags),
+                "risk_flags": flags,
+                "cybergym": cybergym,
+            }
+        )
+    return focus_rows
+
+
+def _failure_category(text: str, stop_reason: str = "") -> str:
+    probe = f"{text} {stop_reason}".lower()
+    if "connection refused" in probe or "connection reset" in probe or "could not connect" in probe:
+        return "server_connectivity"
+    if "no_trigger" in probe or "did not trigger" in probe or "vul_exit_code': 0" in probe:
+        return "no_trigger"
+    if "submission_error" in probe or "submit" in probe and "error" in probe:
+        return "submission_error"
+    if "budget" in probe or "max_step" in probe or "timeout" in probe:
+        return "budget_exhausted"
+    if "parser" in probe:
+        return "parser_error"
+    if "error" in probe or "fail" in probe:
+        return "tool_error"
+    return "needs_review"
+
+
+def _build_cybergym_focus(
+    manifest: Dict[str, Any],
+    step_focus: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    attempts: List[Dict[str, Any]] = []
+    latest_status = ""
+    last_poc_path = ""
+    failure_text = ""
+    max_attempt = 0
+    for row in step_focus:
+        cybergym = row.get("cybergym") if isinstance(row.get("cybergym"), dict) else {}
+        if not cybergym:
+            continue
+        attempt_value = cybergym.get("poc_attempts")
+        try:
+            attempt_num = int(attempt_value or 0)
+        except (TypeError, ValueError):
+            attempt_num = 0
+        max_attempt = max(max_attempt, attempt_num)
+        if cybergym.get("verification_status"):
+            latest_status = str(cybergym.get("verification_status"))
+        if cybergym.get("poc_path"):
+            last_poc_path = str(cybergym.get("poc_path"))
+        if cybergym.get("failure_detail"):
+            failure_text = str(cybergym.get("failure_detail"))
+        if cybergym.get("submit_action") or cybergym.get("failure_type") or cybergym.get("verification_status"):
+            category_text = " ".join(
+                str(part or "")
+                for part in (
+                    cybergym.get("verification_status"),
+                    cybergym.get("failure_type"),
+                    cybergym.get("failure_detail"),
+                )
+            )
+            attempts.append(
+                {
+                    "step_id": row.get("step_id"),
+                    "attempt": attempt_num or None,
+                    "status": cybergym.get("verification_status") or cybergym.get("failure_type") or row.get("outcome_label"),
+                    "poc_path": cybergym.get("poc_path") or "",
+                    "failure": cybergym.get("failure_detail") or "",
+                    "category": _failure_category(category_text, ""),
+                }
+            )
+    summary = manifest.get("summary") if isinstance(manifest.get("summary"), dict) else {}
+    stop_reason = str(summary.get("stop_reason") or "")
+    return {
+        "poc_attempts": max_attempt or len(attempts),
+        "last_verification_status": latest_status or "not recorded",
+        "last_poc_path": last_poc_path,
+        "server_connectivity_failure": _failure_category(failure_text, stop_reason) == "server_connectivity",
+        "failure_category": _failure_category(
+            " ".join([latest_status, failure_text]).strip(),
+            stop_reason,
+        ),
+        "attempt_ladder": attempts[-12:],
+    }
+
+
+def _build_run_focus(
+    *,
+    manifest: Dict[str, Any],
+    insights: Dict[str, Any],
+    step_focus: List[Dict[str, Any]],
+    cybergym_focus: Dict[str, Any],
+) -> Dict[str, Any]:
+    critical = [
+        row
+        for row in step_focus
+        if row.get("attention_level") in ("critical", "important")
+        or row.get("step_role") in ("phase_change", "poc_submission")
+    ]
+    primary_failure = insights.get("likely_failure") or "No explicit failure signal recorded."
+    if cybergym_focus.get("failure_category") and cybergym_focus.get("failure_category") != "needs_review":
+        primary_failure = f"{cybergym_focus.get('failure_category')}: {primary_failure}"
+    next_step = insights.get("next_inspect_step")
+    if next_step is None and critical:
+        next_step = critical[0].get("step_id")
+    metadata_sections = [
+        "run metadata",
+        "cost/context",
+        "parser telemetry",
+        "prompt metadata",
+        "trace events",
+        "raw JSON",
+    ]
+    return {
+        "outcome": insights.get("outcome") or _derive_outcome(
+            status=str(manifest.get("status") or ""),
+            stop_reason=str(((manifest.get("summary") or {}).get("stop_reason") or "")),
+            summary=manifest.get("summary") if isinstance(manifest.get("summary"), dict) else {},
+        ),
+        "primary_failure": primary_failure,
+        "next_actionable_step": next_step,
+        "critical_evidence": critical[:8],
+        "hidden_metadata_count": len(metadata_sections),
+    }
+
+
+def _derive_outcome(*, status: str, stop_reason: str, summary: Dict[str, Any]) -> str:
+    status_l = str(status or "").lower()
+    stop_l = str(stop_reason or "").lower()
+    if status_l == "running":
+        return "running"
+    task_result = summary.get("task_result")
+    if isinstance(task_result, dict) and task_result.get("success") is True:
+        return "success"
+    failure_words = (
+        "budget",
+        "max_step",
+        "max_steps",
+        "max_runtime",
+        "timeout",
+        "error",
+        "exception",
+        "fail",
+        "cancel",
+        "abort",
+    )
+    if any(word in stop_l for word in failure_words):
+        return "needs_review"
+    success_reasons = {"success", "succeeded", "solved", "verified", "final", "completed"}
+    if stop_l in success_reasons or status_l in {"success", "succeeded"}:
+        return "success"
+    if summary.get("final_result") not in (None, "", False):
+        return "success"
+    return "needs_review"
 
 
 def _summary_metric(manifest: Dict[str, Any], key: str, default: Any = None) -> Any:
@@ -958,7 +2090,10 @@ def _render_board_html() -> str:
       <div class="title">QitOS · qita board</div>
       <div class="sub">Runs, trace inspection, replay, and export</div>
     </div>
-    <div class="chip" id="summary">Loading...</div>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <div class="chip" id="summary">Loading...</div>
+      """ + _THEME_TOGGLE_HTML + """
+    </div>
   </div>
   <div class="toolbar">
     <input id="q" placeholder="Search run id / stop reason / final result"/>
@@ -1042,6 +2177,11 @@ function metaTree(k, v, depth){
   }
   return metaLeaf(k, v);
 }
+function riskChip(flag){
+  const f = String(flag || '');
+  const cls = (f.includes('error') || f.includes('stop') || f.includes('failure')) ? 'color:var(--err);border-color:var(--err-border);background:var(--err-soft)' : (f.includes('retry') || f.includes('context') || f.includes('submission')) ? 'color:var(--warn);border-color:var(--warn-border);background:var(--warn-soft)' : 'color:var(--muted)';
+  return '<span class="state" style="margin-right:4px;'+cls+'">'+esc(f.replaceAll('_',' '))+'</span>';
+}
 function paint(){
   const q = (document.getElementById('q').value || '').toLowerCase();
   const status = document.getElementById('status').value;
@@ -1083,10 +2223,21 @@ function paint(){
     const handoffBadge = r.handoff_count ? `<span class="state" style="background:var(--surface-2);color:var(--kind-handoff);border-color:var(--line-strong)">handoffs=${r.handoff_count}</span>` : '';
     const topoInfo = (r.agent_topology && typeof r.agent_topology === 'object') ? (r.agent_topology.type || '') : '';
     const topoBadge = topoInfo ? `<div class="meta">topology=${esc(topoInfo)}${r.agent_topology.agents ? ' agents=' + esc(r.agent_topology.agents.join(',')) : ''}</div>` : '';
+    const insights = r.insights || {};
+    const flags = Array.isArray(r.risk_flags) ? r.risk_flags : (Array.isArray(insights.risk_flags) ? insights.risk_flags : []);
+    const failureCause = insights.likely_failure || r.stop_reason || '';
+    const nextStep = insights.next_inspect_step !== undefined && insights.next_inspect_step !== null ? insights.next_inspect_step : '';
+    const riskHtml = flags.length ? flags.map(riskChip).join('') : '<span class="state">no risk flags</span>';
     el.innerHTML = `
       <div class="id">${r.id} ${agentBadge} ${handoffBadge}</div>
       <div class="meta">${liveIndicator}<span class="state">${status}</span> steps=${r.step_count||0} events=${r.event_count||0}</div>
       <div class="meta">stop=${r.stop_reason||''}</div>
+      <div class="manifest-mini">
+        <div class="meta">Failure Cause</div>
+        <div class="meta" style="color:var(--txt);line-height:1.45">${esc(failureCause || 'No explicit failure signal recorded.')}</div>
+        <div class="meta">Next Inspect Step=${esc(String(nextStep || '-'))}</div>
+        <div style="margin-top:6px">${riskHtml}</div>
+      </div>
       <div class="meta">updated=${r.updated_at||''}</div>
       ${topoBadge}
       <div class="manifest-mini">
@@ -1181,8 +2332,8 @@ function buildTrendChart(){
   const plotW = w - padL - padR, plotH = h - padT - padB;
   function xAt(i){ return pts.length === 1 ? padL + plotW/2 : padL + (plotW * i / (pts.length - 1)); }
   function yAt(v){ return padT + plotH - (v / maxVal) * plotH; }
-  const colors = {tokens:'#5e6ad2', steps:'#3dc9b0', runtime:'#e5c100', cost:'#e5484d'};
-  const color = colors[metric] || '#5e6ad2';
+  const colors = {tokens:'var(--accent)', steps:'var(--kind-memory)', runtime:'var(--warn)', cost:'var(--err)'};
+  const color = colors[metric] || 'var(--accent)';
   let polyPts = [], dots = [], labels = [];
   for(let i = 0; i < pts.length; i++){
     const x = xAt(i), y = yAt(pts[i].val);
@@ -1287,6 +2438,7 @@ def _render_diff_html(diff: Dict[str, Any], embedded: bool) -> str:
             f'<a class="btn" href="/run/{right_id}">view {right_id}</a>'
             f'<a class="btn" href="/export/diff/{left_id}/{right_id}">export html</a>'
             '<a class="btn ghost" href="/">board</a>'
+            + _THEME_TOGGLE_HTML
         )
     return f"""<!doctype html>
 <html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
@@ -1361,11 +2513,12 @@ def _render_branch_comparison_html(payload: Dict[str, Any], step_id: str) -> str
             if isinstance(co, dict) and co.get("action") == "retry":
                 reason = str(co.get("reason", ""))
                 if "grounding" in reason.lower() or "element not found" in reason.lower() or "coordinates" in reason.lower():
-                    grounding_banner = f'<div style="padding:10px;margin:8px 0;border-radius:var(--radius-md);background:#e5484d11;border:2px solid var(--err);color:var(--err);font-weight:600">Grounding failure: {_html.escape(reason)}</div>'
+                    grounding_banner = f'<div style="padding:10px;margin:8px 0;border-radius:var(--radius-md);background:var(--err-soft);border:2px solid var(--err);color:var(--err);font-weight:600">Grounding failure: {_html.escape(reason)}</div>'
                     break
 
     return f"""<!doctype html>
 <html><head><meta charset="utf-8"/><title>branch compare · {safe_run} · step {safe_step}</title>
+{_DESIGN_HEAD}
 <style>{_DESIGN_TOKENS}</style>
 <style>
 *{{box-sizing:border-box}} body{{margin:0;font-family:var(--font-body);background:var(--bg);color:var(--txt)}}
@@ -1379,7 +2532,7 @@ def _render_branch_comparison_html(payload: Dict[str, Any], step_id: str) -> str
 <body>
 <div class="wrap">
   <div class="id">Branch compare · {safe_run} · step {safe_step}</div>
-  <a class="btn" href="/run/{safe_run}" style="margin:8px 0">back to run</a>
+  <div style="display:flex;gap:8px;flex-wrap:wrap;margin:8px 0"><a class="btn" href="/run/{safe_run}">back to run</a>{_THEME_TOGGLE_HTML}</div>
   {grounding_banner}
   <div class="grid">{cand_rows}</div>
   <div class="card" style="margin-top:12px">
@@ -1398,6 +2551,7 @@ def _render_run_html(payload: Dict[str, Any], embedded: bool) -> str:
     )
     payload_json = _json_for_script(payload)
     buttons = ""
+    buttons = _THEME_TOGGLE_HTML
     if not embedded:
         buttons = (
             f'<a class="btn" href="/export/raw/{run_id}">export raw</a>'
@@ -1405,6 +2559,7 @@ def _render_run_html(payload: Dict[str, Any], embedded: bool) -> str:
             f'<a class="btn" href="/replay/{run_id}">replay</a>'
             f'<button class="btn" id="streamBtn" onclick="startStream()">live</button>'
             '<a class="btn ghost" href="/">board</a>'
+            + _THEME_TOGGLE_HTML
         )
     return f"""<!doctype html>
 <html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
@@ -1413,14 +2568,18 @@ def _render_run_html(payload: Dict[str, Any], embedded: bool) -> str:
 <style>
 {_DESIGN_TOKENS}
 *{{box-sizing:border-box}} body{{margin:0;background:var(--bg);color:var(--txt);font-family:var(--font-body)}}
-.wrap{{max-width:1460px;margin:0 auto;padding:18px}}
-.top{{position:sticky;top:0;background:rgba(1,1,2,.9);backdrop-filter:blur(8px);padding:12px 0 14px;z-index:10;border-bottom:1px solid var(--line)}}
-.title{{font-size:22px;font-weight:700;letter-spacing:-.4px}} .muted{{color:var(--muted);font-size:12px}}
+.wrap{{max-width:1680px;margin:0 auto;padding:18px}}
+.top{{position:sticky;top:0;background:var(--top-bg);backdrop-filter:blur(8px);padding:12px 0 14px;z-index:10;border-bottom:1px solid var(--line)}}
+.title{{font-size:22px;font-weight:700;letter-spacing:-.4px;overflow-wrap:anywhere}} .muted{{color:var(--muted);font-size:12px;overflow-wrap:anywhere}}
 .toolbar{{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}}
 .btn{{display:inline-block;border:1px solid var(--line);padding:7px 11px;border-radius:var(--radius-md);text-decoration:none;color:var(--txt);background:var(--surface-1);font-size:12px}}
 .btn:hover{{border-color:var(--accent)}} .btn.ghost{{background:transparent}}
-.layout{{display:grid;grid-template-columns:260px 1fr;gap:12px;margin-top:12px}}
+.layout{{display:grid;grid-template-columns:260px minmax(0,1fr) 360px;gap:12px;margin-top:12px;align-items:start}}
 .side{{position:sticky;top:84px;height:calc(100vh - 120px);overflow:auto;background:var(--surface-1);border:1px solid var(--line);border-radius:var(--radius-lg);padding:10px}}
+.inspector{{position:sticky;top:84px;height:calc(100vh - 120px);overflow:auto;background:var(--surface-1);border:1px solid var(--line);border-radius:var(--radius-lg);padding:12px}}
+.inspector h3{{margin:0 0 8px;font-size:13px;color:var(--txt)}} .inspector-tabs{{display:flex;gap:6px;margin:8px 0}}
+.inspector-tab{{border:1px solid var(--line);background:var(--surface-2);color:var(--muted);border-radius:var(--radius-md);font-size:11px;padding:4px 7px;cursor:pointer}}
+.inspector-tab.active{{color:var(--txt);border-color:var(--accent)}}
 .main{{min-width:0}}
 .manifest{{background:var(--surface-1);border:1px solid var(--line);border-radius:var(--radius-lg);padding:12px;margin-top:0}}
 .tabs{{display:flex;gap:8px;margin-bottom:10px}}
@@ -1428,8 +2587,86 @@ def _render_run_html(payload: Dict[str, Any], embedded: bool) -> str:
 .tab.active{{background:var(--surface-2);border-color:var(--accent)}}
 .panel{{display:none}}
 .panel.active{{display:block}}
-.controls{{display:grid;grid-template-columns:1.2fr .8fr .8fr .8fr .8fr auto auto auto;gap:8px;margin:12px 0}}
+.controls{{display:grid;grid-template-columns:1.2fr .8fr .8fr .8fr auto auto auto;gap:8px;margin:12px 0}}
+.controls input,.controls select,.controls button{{min-width:0}}
 .controls input,.controls select{{border:1px solid var(--line);background:var(--surface-1);color:var(--txt);border-radius:var(--radius-md);padding:8px 10px;font-size:12px}}
+.diagnosis-label{{font-size:12px;color:var(--subtle);text-transform:uppercase;letter-spacing:.35px;margin:2px 0 8px}}
+.run-summary{{display:grid;grid-template-columns:1.1fr 1.4fr .9fr .9fr;gap:10px;margin:10px 0 12px}}
+.summary-panel{{background:var(--surface-1);border:1px solid var(--line);border-radius:var(--radius-lg);padding:12px;min-width:0}}
+.summary-panel.primary{{border-color:var(--err-border);background:linear-gradient(180deg,var(--err-soft),var(--surface-1))}}
+.summary-title{{font-size:11px;color:var(--subtle);text-transform:uppercase;letter-spacing:.3px;margin-bottom:6px}}
+.summary-value{{font-size:14px;line-height:1.45;color:var(--txt);word-break:break-word}}
+.summary-actions{{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}}
+.focus-tabs{{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:10px}}
+.focus-tab{{border:1px solid var(--line);background:var(--surface-2);color:var(--muted);border-radius:var(--radius-md);font-size:11px;padding:6px 7px;cursor:pointer;text-align:center}}
+.focus-tab.active{{color:var(--txt);border-color:var(--accent);background:var(--surface-3)}}
+.story-title{{display:flex;justify-content:space-between;align-items:center;margin:4px 0 10px}}
+.story-title h3{{font-size:14px;margin:0;color:var(--txt)}}
+.story-rail{{display:grid;gap:8px}}
+.story-step{{display:grid;grid-template-columns:76px minmax(0,1fr) 74px;gap:10px;align-items:center;border:1px solid var(--line);border-radius:var(--radius-md);background:var(--surface-2);padding:8px 10px;cursor:pointer}}
+.story-step:hover{{border-color:var(--accent)}}
+.story-step.critical{{border-color:var(--err-border);background:linear-gradient(180deg,var(--err-soft),var(--surface-2))}}
+.story-step.important{{border-color:var(--warn-border)}}
+.story-step.watch{{border-color:var(--accent-border)}}
+.story-step-id{{font-size:12px;font-weight:700;color:var(--txt)}}
+.story-step-main{{min-width:0;display:grid;gap:4px}}
+.story-step-title{{display:flex;align-items:center;gap:7px;flex-wrap:wrap;font-size:12px;color:var(--txt)}}
+.story-step-summary{{font-size:12px;color:var(--muted);line-height:1.35;word-break:break-word}}
+.story-step-meta{{display:flex;flex-wrap:wrap;gap:4px}}
+.story-step-time{{font-size:11px;color:var(--muted);text-align:right}}
+.story-card{{display:grid;gap:8px}}
+.story-line{{display:grid;grid-template-columns:90px 1fr;gap:10px;align-items:start}}
+.story-line .k{{padding-top:1px}}
+.causal-stack{{display:grid;gap:10px}}
+.causal-stage{{display:grid;grid-template-columns:90px minmax(0,1fr);gap:10px;align-items:start}}
+.causal-stage>.k{{padding-top:9px}}
+.call-section{{border-top:1px solid var(--line);padding-top:10px;min-width:0}}
+.call-section-head{{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px}}
+.call-section-title{{font-size:12px;font-weight:700;color:var(--txt)}}
+.call-count{{font-size:10px;color:var(--muted);font-family:var(--font-mono)}}
+.call-badges{{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px}}
+.call-badge{{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line-strong);background:var(--surface-2);color:var(--txt);border-radius:var(--radius-md);padding:5px 8px;font-size:11px;font-weight:600;cursor:pointer;max-width:100%}}
+.call-badge:hover,.call-badge.active{{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent-soft)}}
+.call-badge-index{{display:inline-grid;place-items:center;width:17px;height:17px;border-radius:50%;background:var(--surface-3);font-family:var(--font-mono);font-size:9px}}
+.call-badge-status{{font-size:9px;text-transform:uppercase;color:var(--muted)}}
+.call-badge.error,.call-badge.no_trigger,.call-badge.submission_error{{border-color:var(--err-border);background:var(--err-soft)}}
+.call-badge.verified,.call-badge.success{{border-color:var(--ok-border);background:var(--ok-soft)}}
+.call-list{{display:grid;gap:8px}}
+.call-unit{{border:1px solid var(--line);border-left:3px solid var(--line-strong);border-radius:var(--radius-md);background:var(--surface-1);min-width:0;overflow:hidden}}
+.call-unit.active{{border-color:var(--accent);border-left-color:var(--accent)}}
+.call-unit.error,.call-unit.no_trigger,.call-unit.submission_error,.call-unit.blocked{{border-left-color:var(--err);background:var(--err-soft)}}
+.call-unit.success,.call-unit.verified{{border-left-color:var(--ok)}}
+.call-unit summary{{cursor:pointer;list-style:none}}
+.call-unit summary::-webkit-details-marker{{display:none}}
+.call-head{{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 10px}}
+.call-identity{{display:flex;align-items:center;gap:7px;min-width:0}}
+.call-tool{{font-size:12px;font-weight:700;color:var(--txt);overflow-wrap:anywhere}}
+.call-meta{{display:flex;align-items:center;justify-content:flex-end;gap:7px;flex-wrap:wrap;color:var(--muted);font-size:10px;font-family:var(--font-mono)}}
+.call-status{{font-family:var(--font-body);font-weight:700;text-transform:uppercase}}
+.call-status.error,.call-status.no_trigger,.call-status.submission_error,.call-status.blocked{{color:var(--err)}}
+.call-status.success,.call-status.verified{{color:var(--ok)}}
+.call-body{{border-top:1px solid var(--line);padding:9px 10px;display:grid;gap:8px;min-width:0;background:var(--surface-1)}}
+.param-strip{{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:6px}}
+.param-pair{{display:grid;grid-template-columns:auto minmax(0,1fr);gap:6px;align-items:start;border:1px solid var(--line);background:var(--surface-2);padding:6px 7px;border-radius:var(--radius-sm);min-width:0}}
+.param-key{{font-size:10px;color:var(--subtle);font-family:var(--font-mono)}}
+.param-value{{font-size:11px;color:var(--txt);font-family:var(--font-mono);white-space:pre-wrap;overflow-wrap:anywhere;min-width:0}}
+.paired-result{{border:1px solid var(--line);border-radius:var(--radius-sm);background:var(--surface-2);min-width:0}}
+.paired-result[open]{{background:var(--surface-1)}}
+.paired-result>summary{{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:7px 8px;font-size:11px;color:var(--txt)}}
+.result-summary{{overflow-wrap:anywhere;min-width:0}}
+.pairing-note{{font-size:10px;color:var(--muted)}}
+.env-lane{{border:1px dashed var(--line-strong);border-radius:var(--radius-md);background:var(--surface-2);min-width:0}}
+.env-lane>summary{{cursor:pointer;display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 10px;color:var(--muted);font-size:11px}}
+.unmatched-lane{{border-color:var(--warn-border);background:var(--warn-soft)}}
+.inspector-call-list{{display:grid;gap:6px;margin:8px 0}}
+.inspector-call{{width:100%;display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:7px;align-items:center;text-align:left;border:1px solid var(--line);background:var(--surface-2);color:var(--txt);border-radius:var(--radius-md);padding:7px 8px;cursor:pointer}}
+.inspector-call:hover,.inspector-call.active{{border-color:var(--accent)}}
+.role-chip{{display:inline-flex;align-items:center;border:1px solid var(--line-strong);border-radius:var(--radius-pill);padding:2px 8px;font-size:10px;color:var(--txt);background:var(--surface-2)}}
+.role-chip.critical{{color:var(--err);border-color:var(--err-border);background:var(--err-soft)}} .role-chip.important{{color:var(--warn);border-color:var(--warn-border);background:var(--warn-soft)}} .role-chip.watch{{color:var(--kind-observation);border-color:var(--accent-border);background:var(--accent-soft)}}
+.metadata-drawer{{margin:0 0 12px;background:var(--surface-1);border:1px solid var(--line);border-radius:var(--radius-lg);padding:10px 12px}}
+.metadata-drawer summary{{cursor:pointer;color:var(--muted);font-size:12px;font-weight:600}}
+.risk-chip{{display:inline-flex;align-items:center;gap:4px;border:1px solid var(--line-strong);border-radius:var(--radius-pill);padding:2px 7px;font-size:10px;color:var(--muted);background:var(--surface-2)}}
+.risk-chip.error{{color:var(--err);border-color:var(--err-border);background:var(--err-soft)}} .risk-chip.warn{{color:var(--warn);border-color:var(--warn-border);background:var(--warn-soft)}} .risk-chip.ok{{color:var(--ok);border-color:var(--ok-border);background:var(--ok-soft)}}
 .overview{{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:8px;margin:10px 0 12px}}
 .ov{{background:var(--surface-1);border:1px solid var(--line);border-radius:var(--radius-md);padding:8px 10px}}
 .ov .k{{font-size:11px;color:var(--subtle);text-transform:uppercase;letter-spacing:.3px}}
@@ -1440,8 +2677,8 @@ def _render_run_html(payload: Dict[str, Any], embedded: bool) -> str:
 .vthumb{{position:relative;border:1px solid var(--line-strong);border-radius:var(--radius-md);overflow:hidden;background:var(--bg);min-height:110px;display:flex;align-items:center;justify-content:center}}
 .vthumb img{{max-width:100%;display:block}}
 .voverlay{{position:absolute;inset:0;pointer-events:none}}
-.vdot{{position:absolute;width:12px;height:12px;border-radius:var(--radius-pill);background:rgba(229,72,77,.85);border:2px solid var(--txt);transform:translate(-50%,-50%)}}
-.vbox{{position:absolute;border:2px solid rgba(94,106,210,.9);background:rgba(94,106,210,.08);border-radius:var(--radius-xs)}}
+.vdot{{position:absolute;width:12px;height:12px;border-radius:var(--radius-pill);background:var(--err);border:2px solid var(--txt);transform:translate(-50%,-50%)}}
+.vbox{{position:absolute;border:2px solid var(--accent);background:var(--accent-soft);border-radius:var(--radius-xs)}}
 .trow{{display:grid;grid-template-columns:82px 1fr 64px;gap:8px;align-items:center;margin:6px 0}}
 .tlabel{{font-size:12px;color:var(--muted)}}
 .track{{height:16px;background:var(--surface-1);border:1px solid var(--line);border-radius:var(--radius-pill);overflow:hidden;position:relative}}
@@ -1460,7 +2697,7 @@ def _render_run_html(payload: Dict[str, Any], embedded: bool) -> str:
 .context-axis{{stroke:var(--line-strong);stroke-width:1}}
 .context-grid{{stroke:var(--line);stroke-width:1;stroke-dasharray:4 6}}
 .context-line{{fill:none;stroke:var(--accent);stroke-width:3;stroke-linecap:round;stroke-linejoin:round}}
-.context-fill{{fill:rgba(94,106,210,.12)}}
+.context-fill{{fill:var(--accent-soft)}}
 .context-point{{fill:var(--surface-1);stroke:var(--accent);stroke-width:2}}
 .context-label{{fill:var(--subtle);font-size:11px}}
 .compact-dot{{stroke:var(--surface-1);stroke-width:1.5}}
@@ -1469,8 +2706,9 @@ def _render_run_html(payload: Dict[str, Any], embedded: bool) -> str:
 .compact-step{{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.3px}}
 .compact-desc{{font-size:12px;color:var(--txt);word-break:break-word}}
 .flow{{display:grid;grid-template-columns:1fr;gap:12px}}
-@media (max-width:1180px){{.layout{{grid-template-columns:1fr}} .side{{position:relative;top:0;height:auto}} .controls{{grid-template-columns:1fr 1fr}}}}
-.card{{break-inside:avoid;background:var(--surface-1);border:1px solid var(--line);border-radius:var(--radius-lg);padding:12px;margin:0 0 12px}}
+@media (max-width:1180px){{.layout{{grid-template-columns:minmax(0,1fr)}} .main{{order:1}} .side{{order:2}} .inspector{{order:3}} .side,.inspector{{position:relative;top:0;height:auto;min-width:0}} .controls{{grid-template-columns:1fr 1fr}} .run-summary{{grid-template-columns:1fr}}}}
+@media (max-width:560px){{.wrap{{padding:14px}} .toolbar{{gap:6px}} .btn{{white-space:normal;text-align:center}} .controls{{grid-template-columns:1fr}} .focus-tabs{{grid-template-columns:1fr}} .story-step{{grid-template-columns:58px minmax(0,1fr);gap:8px}} .story-step-time{{grid-column:2;text-align:left}} .story-line,.causal-stage{{grid-template-columns:1fr}} .causal-stage>.k{{padding-top:0}} .call-head{{align-items:flex-start;flex-direction:column}} .call-meta{{justify-content:flex-start}} .param-strip{{grid-template-columns:1fr}} .kv{{grid-template-columns:92px minmax(0,1fr)}} .tree-leaf{{grid-template-columns:1fr}}}}
+.card{{break-inside:avoid;background:var(--surface-1);border:1px solid var(--line);border-radius:var(--radius-lg);padding:12px;margin:0 0 12px;min-width:0}}
 .kind-thinking{{border-left:4px solid var(--kind-thinking)}} .kind-action{{border-left:4px solid var(--kind-action)}}
 .kind-observation{{border-left:4px solid var(--kind-observation)}} .kind-critic{{border-left:4px solid var(--kind-critic)}}
 .kind-handoff{{border-left:4px solid var(--kind-handoff)}} .kind-delegation{{border-left:4px solid var(--kind-delegation)}}
@@ -1498,6 +2736,24 @@ pre{{margin:0;background:var(--surface-2);border:1px solid var(--line);padding:1
 .tree-val{{font-size:12px;color:var(--txt);word-break:break-word}}
 .toc-item{{display:block;width:100%;text-align:left;border:1px solid var(--line);background:var(--surface-1);color:var(--txt);padding:7px 8px;border-radius:var(--radius-md);font-size:12px;cursor:pointer;margin-bottom:6px}}
 .toc-item:hover{{border-color:var(--accent)}} .toc-item.active{{border-color:var(--accent);background:var(--surface-2)}}
+.toc-flags{{display:flex;flex-wrap:wrap;gap:3px;margin-top:5px}} .toc-flag{{width:7px;height:7px;border-radius:999px;background:var(--line-strong)}} .toc-flag.parser_error,.toc-flag.tool_or_event_error,.toc-flag.critic_stop,.toc-flag.cybergym_verification_failure{{background:var(--err)}} .toc-flag.critic_retry,.toc-flag.context_pressure,.toc-flag.context_compact,.toc-flag.cybergym_poc_submission{{background:var(--warn)}} .toc-flag.visual_evidence{{background:var(--kind-observation)}}
+.full-text{{margin:0;background:var(--surface-2);border:1px solid var(--line);padding:10px;border-radius:var(--radius-md);max-height:420px;overflow:auto;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere;color:var(--txt);font-size:12px;line-height:1.55}}
+.summary-line{{color:var(--muted);font-size:12px;line-height:1.45;margin:0 0 8px;word-break:break-word}}
+.evidence-details{{border:1px solid var(--line);border-radius:var(--radius-md);background:var(--surface-2);min-width:0}}
+.evidence-details[open]{{background:var(--surface-1)}}
+.evidence-details.input-evidence[open]{{border-color:var(--kind-thinking)}}
+.evidence-details.outcome-evidence[open]{{border-color:var(--kind-observation)}}
+.evidence-details>summary{{cursor:pointer;list-style:none;padding:8px 10px;color:var(--txt);font-size:12px;font-weight:600;display:flex;align-items:center;justify-content:space-between;gap:8px}}
+.evidence-details>summary::-webkit-details-marker{{display:none}}
+.evidence-details>summary::after{{content:'+';color:var(--muted);font-family:var(--font-mono);font-size:14px}}
+.evidence-details[open]>summary::after{{content:'-'}}
+.input-evidence .evidence-label{{color:var(--kind-thinking)}}
+.outcome-evidence .evidence-label{{color:var(--kind-observation)}}
+.evidence-meta{{color:var(--muted);font-size:10px;font-weight:400}}
+.evidence-shell{{border-top:1px solid var(--line);min-width:0}}
+.evidence-toolbar{{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:7px 9px;color:var(--muted);font-size:10px}}
+.evidence-code{{margin:0;border:0;border-top:1px solid var(--line);border-radius:0;max-height:min(62vh,620px);overflow:auto;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere;tab-size:2;font-family:var(--font-mono);font-size:11px;line-height:1.55}}
+.evidence-code code{{font:inherit;color:inherit}}
 @keyframes fadeIn{{from{{opacity:0;transform:translateY(-4px)}}to{{opacity:1;transform:translateY(0)}}}}
 @keyframes pulse{{0%,100%{{opacity:1}}50%{{opacity:0.4}}}}
 .live-dot{{display:inline-block;width:8px;height:8px;border-radius:9999px;background:var(--ok);animation:pulse 1.5s ease infinite;margin-right:6px}}
@@ -1510,7 +2766,14 @@ pre{{margin:0;background:var(--surface-2);border:1px solid var(--line);padding:1
 <div class="wrap">
   <div class="layout">
     <aside class="side">
-      <div style="font-size:12px;color:var(--muted);margin-bottom:8px">Step Navigator</div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:8px">Focus Navigator</div>
+      <div class="focus-tabs" id="focusTabs">
+        <button class="focus-tab active" type="button" data-focus-mode="focus">Critical</button>
+        <button class="focus-tab" type="button" data-focus-mode="submissions">Submissions</button>
+        <button class="focus-tab" type="button" data-focus-mode="errors">Errors</button>
+        <button class="focus-tab" type="button" data-focus-mode="phase">Phase Changes</button>
+        <button class="focus-tab" type="button" data-focus-mode="all">All Steps</button>
+      </div>
       <div id="toc"></div>
     </aside>
     <section class="main">
@@ -1519,50 +2782,52 @@ pre{{margin:0;background:var(--surface-2);border:1px solid var(--line);padding:1
         <button class="tab" id="tabManifest" type="button">Manifest</button>
       </div>
       <section class="panel active" id="panelTraj">
-        <section class="overview" id="overview"></section>
-        <section class="timeline" id="costPanelSection">
-          <h4>cost summary</h4>
-          <div id="costPanel"></div>
-        </section>
+        <div class="diagnosis-label">Diagnosis Strip</div>
+        <section class="run-summary" id="runSummary"></section>
+        <details class="metadata-drawer">
+          <summary>Run Metadata · config, cost, context, parser, critic, and raw telemetry</summary>
+          <section class="overview" id="overview"></section>
+          <section class="timeline" id="costPanelSection">
+            <h4>cost summary</h4>
+            <div id="costPanel"></div>
+          </section>
+          <section class="timeline" id="contextTimelineSection">
+            <h4>context timeline</h4>
+            <div id="contextTimeline"></div>
+          </section>
+          <section class="timeline" id="parserTimelineSection">
+            <h4>parser timeline</h4>
+            <div id="parserTimeline"></div>
+          </section>
+          <section class="timeline" id="criticTimelineSection">
+            <h4>critic timeline</h4>
+            <div id="criticTimeline"></div>
+          </section>
+        </details>
         <div class="controls">
           <input id="q" placeholder="Filter by text in observation/decision/action/critic/events"/>
           <select id="eventFilter"><option value="">All events</option></select>
           <select id="agentFilter"><option value="">All agents</option></select>
           <select id="sort"><option value="asc">step asc</option><option value="desc">step desc</option></select>
-          <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)"><input type="checkbox" id="showObs" checked/>obs</label>
-          <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)"><input type="checkbox" id="showCritic" checked/>critic</label>
-          <button class="btn" id="foldAll" type="button">Fold all</button>
           <button class="btn" id="fontDown" type="button">A-</button>
           <button class="btn" id="fontReset" type="button">A</button>
           <button class="btn" id="fontUp" type="button">A+</button>
         </div>
+        <section class="timeline" id="agentBehaviorTimeline">
+          <div class="story-title"><h3>Agent Behavior Story</h3><div class="muted">focused steps first; full evidence lives in Inspector</div></div>
+          <div id="timeline"></div>
+        </section>
         <section class="timeline" id="screenshotStripSection" style="display:none">
           <h4>screenshot strip</h4>
           <div id="screenshotStrip" style="display:flex;gap:6px;overflow-x:auto;padding:8px 0"></div>
         </section>
-        <section class="timeline">
+        <section class="timeline" id="visualTimelineSection">
           <h4>visual timeline</h4>
           <div id="visualTimeline"></div>
-        </section>
-        <section class="timeline">
-          <h4>phase timeline (gantt-like)</h4>
-          <div id="timeline"></div>
         </section>
         <section class="timeline" id="handoffGanttSection">
           <h4>handoff gantt</h4>
           <div id="handoffGantt"></div>
-        </section>
-        <section class="timeline">
-          <h4>context timeline</h4>
-          <div id="contextTimeline"></div>
-        </section>
-        <section class="timeline">
-          <h4>parser timeline</h4>
-          <div id="parserTimeline"></div>
-        </section>
-        <section class="timeline">
-          <h4>critic timeline</h4>
-          <div id="criticTimeline"></div>
         </section>
         <section class="flow" id="flow"></section>
       </section>
@@ -1570,6 +2835,11 @@ pre{{margin:0;background:var(--surface-2);border:1px solid var(--line);padding:1
         <section class="manifest"><h4>manifest</h4><pre>{manifest}</pre></section>
       </section>
     </section>
+    <aside class="inspector">
+      <h3>Inspector</h3>
+      <div class="muted">Select a step from the navigator, timeline, or trajectory cards.</div>
+      <div id="inspector"></div>
+    </aside>
   </div>
 </div>
 <script id="payload" type="application/json">{payload_json}</script>
@@ -1577,6 +2847,7 @@ pre{{margin:0;background:var(--surface-2);border:1px solid var(--line);padding:1
 const embedded = {str(bool(embedded)).lower()};
 const payload = JSON.parse(document.getElementById('payload').textContent || '{{}}');
 const steps = Array.isArray(payload.steps) ? payload.steps : [];
+const stepInteractions = Array.isArray(payload.step_interactions) ? payload.step_interactions : [];
 const eventsByStep = payload.events_by_step || {{}};
 const flow = document.getElementById('flow');
 const toc = document.getElementById('toc');
@@ -1586,6 +2857,8 @@ const contextTimelineRoot = document.getElementById('contextTimeline');
 const parserTimelineRoot = document.getElementById('parserTimeline');
 const criticTimelineRoot = document.getElementById('criticTimeline');
 const overview = document.getElementById('overview');
+const runSummary = document.getElementById('runSummary');
+const inspector = document.getElementById('inspector');
 const fontDownBtn = document.getElementById('fontDown');
 const fontResetBtn = document.getElementById('fontReset');
 const fontUpBtn = document.getElementById('fontUp');
@@ -1596,6 +2869,11 @@ const panelManifest = document.getElementById('panelManifest');
 let collapsedAll = false;
 let fontScale = Number(localStorage.getItem('qita_view_font_scale') || '1.1');
 let activeTab = localStorage.getItem('qita_view_tab') || 'traj';
+let activeStepId = steps.length ? String(steps[0].step_id) : '';
+let activeCallIndex = null;
+let focusMode = localStorage.getItem('qita_focus_mode') || 'focus';
+const runFocus = payload.run_focus || {{}};
+const cybergymFocus = payload.cybergym_focus || {{}};
 function esc(s){{
   return String(s).replace(/[&<>]/g, function(c){{ return {{'&':'&amp;','<':'&lt;','>':'&gt;'}}[c]; }});
 }}
@@ -1622,6 +2900,207 @@ function truncateText(v, n){{
   if(s.length <= lim) return s;
   return s.slice(0, lim) + '...';
 }}
+function firstLine(v, n){{
+  const s = String(v === null || v === undefined ? '' : v).replace(/\\s+/g, ' ').trim();
+  const lim = Number(n || 180);
+  if(s.length <= lim) return s;
+  return s.slice(0, lim) + '...';
+}}
+function fullTextBlock(text, label, open){{
+  const value = String(text === null || text === undefined ? '' : text);
+  if(!value) return '<div class="muted">No content recorded.</div>';
+  const summary = esc(label || ('full content · ' + value.length + ' chars'));
+  const openAttr = open ? ' open' : '';
+  return '<details class="raw"'+openAttr+'><summary class="muted">'+summary+'</summary><pre class="full-text">'+esc(value)+'</pre></details>';
+}}
+function fullJsonBlock(value, label, open){{
+  return fullTextBlock(JSON.stringify(value, null, 2), label || 'full JSON', open);
+}}
+function copyCodeBlock(button){{
+  const shell = button && button.closest ? button.closest('.evidence-shell') : null;
+  const code = shell ? shell.querySelector('code') : null;
+  const value = code ? String(code.textContent || '') : '';
+  if(!value) return;
+  const done = function(){{
+    const previous = button.textContent;
+    button.textContent = 'Copied';
+    window.setTimeout(function(){{ button.textContent = previous; }}, 1200);
+  }};
+  if(navigator.clipboard && navigator.clipboard.writeText){{
+    navigator.clipboard.writeText(value).then(done).catch(function(){{}});
+    return;
+  }}
+  const area = document.createElement('textarea');
+  area.value = value;
+  area.style.position = 'fixed';
+  area.style.opacity = '0';
+  document.body.appendChild(area);
+  area.select();
+  try {{ document.execCommand('copy'); done(); }} catch (_e) {{}}
+  document.body.removeChild(area);
+}}
+function recordedInput(step, events){{
+  const rows = Array.isArray(events) ? events : [];
+  for(const event of rows){{
+    const eventPayload = event && typeof event.payload === 'object' ? event.payload : {{}};
+    if(String(eventPayload.stage || '') !== 'model_input') continue;
+    if(typeof eventPayload.prepared_full === 'string' && eventPayload.prepared_full){{
+      return {{text: eventPayload.prepared_full, source: 'Agent-visible input · prepared_full', format: 'text'}};
+    }}
+    if(typeof eventPayload.prepared === 'string' && eventPayload.prepared){{
+      return {{text: eventPayload.prepared, source: 'Agent-visible input · prepared', format: 'text'}};
+    }}
+  }}
+  const observation = step && step.observation;
+  if(observation && typeof observation === 'object' && Object.keys(observation).length){{
+    return {{text: JSON.stringify(observation, null, 2), source: 'Recorded step observation fallback', format: 'json'}};
+  }}
+  return {{text: '', source: 'No input recorded', format: 'text'}};
+}}
+function renderCodeEvidence(kind, title, status, evidence, meta, open){{
+  const text = String((evidence && evidence.text) || '');
+  const openAttr = open ? ' open' : '';
+  const classes = 'evidence-details '+kind+'-evidence '+kind+'-details';
+  const heading = '<span class="evidence-label">'+esc(title)+'</span>' + (status ? ' · '+esc(status) : '');
+  if(!text){{
+    return '<details class="'+classes+'"'+openAttr+'><summary><span>'+heading+'</span><span class="evidence-meta">not recorded</span></summary><div class="evidence-shell"><div class="muted" style="padding:10px">No '+esc(kind)+' recorded.</div></div></details>';
+  }}
+  return '<details class="'+classes+'"'+openAttr+'>' +
+    '<summary><span>'+heading+'</span><span class="evidence-meta">'+esc(meta)+'</span></summary>' +
+    '<div class="evidence-shell"><div class="evidence-toolbar"><span>'+esc(evidence.source)+'</span><button class="sbtn" type="button" title="Copy complete '+esc(kind)+'" onclick="copyCodeBlock(this)">Copy</button></div>' +
+    '<pre class="evidence-code"><code>'+esc(text)+'</code></pre></div></details>';
+}}
+function renderInputBlock(step, open){{
+  const sid = String((step && step.step_id) === undefined ? '' : step.step_id);
+  const evidence = recordedInput(step || {{}}, eventsByStep[sid] || []);
+  const text = String(evidence.text || '');
+  return renderCodeEvidence('input', 'Input', '', evidence, text.length + ' chars', open);
+}}
+function stepInteractionFor(sid){{
+  const derived = stepInteractions.find(function(item){{ return String(item.step_id) === String(sid); }});
+  if(derived) return derived;
+  const step = steps.find(function(item){{ return String(item.step_id) === String(sid); }}) || {{}};
+  const actions = Array.isArray(step.actions) ? step.actions : [];
+  const results = Array.isArray(step.action_results) ? step.action_results : [];
+  const invocations = Array.isArray(step.tool_invocations) ? step.tool_invocations : [];
+  const environmentResults = results.filter(function(result){{
+    const metadata = result && typeof result === 'object' && result.metadata && typeof result.metadata === 'object' ? result.metadata : {{}};
+    const output = result && typeof result === 'object' && result.output && typeof result.output === 'object' ? result.output : null;
+    return String(metadata.source || '').toLowerCase() === 'env' || (!!output && Object.keys(output).length === 1 && Object.prototype.hasOwnProperty.call(output, 'env'));
+  }});
+  const toolResults = results.filter(function(result){{ return !environmentResults.includes(result); }});
+  const calls = actions.map(function(action, index){{
+    const item = action && typeof action === 'object' ? action : {{}};
+    const result = index < toolResults.length ? toolResults[index] : null;
+    const status = result && typeof result === 'object' ? (result.status || (result.error ? 'error' : 'success')) : 'not recorded';
+    return {{index:index,tool_name:item.tool||item.name||item.action||item.type||'action',args:item.args||item.kwargs||{{}},action:item,invocation:invocations[index]||null,result:result,raw_result:result,result_source:result === null ? 'not_recorded' : 'raw_fallback',status:status,result_summary:result && typeof result === 'object' ? (result.error || result.message || result.status || 'recorded') : 'not recorded',latency_ms:(invocations[index]||{{}}).latency_ms,attempts:(invocations[index]||{{}}).attempts,pairing_method:'ordered_fallback'}};
+  }});
+  return {{step_id:sid,calls:calls,environment_results:environmentResults.map(function(result,index){{return {{index:index,result:result,raw_result:result}};}}),unmatched_actions:[],unmatched_results:toolResults.slice(actions.length)}};
+}}
+function statusClass(value){{
+  const status = String(value || 'not_recorded').toLowerCase();
+  if(status === 'verified' || status === 'success') return status;
+  if(status === 'no_trigger' || status === 'submission_error' || status === 'error' || status === 'blocked') return status;
+  return 'not_recorded';
+}}
+function isAbnormalCall(call){{
+  const status = String((call && call.status) || '').toLowerCase();
+  return status !== 'success' && status !== 'verified';
+}}
+function formatLatency(value){{
+  const ms = Number(value);
+  if(!Number.isFinite(ms)) return 'latency not recorded';
+  if(ms >= 1000) return (ms / 1000).toFixed(ms >= 10000 ? 1 : 2) + 's';
+  return Math.round(ms) + 'ms';
+}}
+function fullEvidenceValue(value){{
+  if(typeof value === 'string') return value;
+  if(value === undefined) return '';
+  return JSON.stringify(value, null, 2);
+}}
+function renderThoughtBlock(step, open){{
+  const sid = String((step && step.step_id) === undefined ? '' : step.step_id);
+  const thought = extractThought((step && step.decision) || {{}}, eventsByStep[sid] || []);
+  const evidence = {{text: thought, source: 'Agent reasoning recorded for this step', format: 'text'}};
+  return renderCodeEvidence('thought', 'Thought', '', evidence, thought.length + ' chars', open);
+}}
+function scalarParamEntries(args){{
+  if(!args || typeof args !== 'object' || Array.isArray(args)) return [];
+  return Object.entries(args).filter(function(entry){{
+    const value = entry[1];
+    return value === null || ['string','number','boolean'].includes(typeof value);
+  }});
+}}
+function renderParamStrip(args){{
+  const entries = scalarParamEntries(args);
+  if(!entries.length) return '';
+  return '<div class="param-strip">' + entries.map(function(entry){{
+    const value = String(entry[1] === null ? 'null' : entry[1]);
+    return '<div class="param-pair"><span class="param-key">'+esc(entry[0])+'</span><span class="param-value">'+esc(firstLine(value, 160))+'</span></div>';
+  }}).join('') + '</div>';
+}}
+function renderCallBadge(call, sid){{
+  const index = Number(call.index || 0);
+  const status = String(call.status || 'not recorded');
+  const klass = statusClass(status);
+  return '<button class="call-badge '+klass+'" type="button" data-call-badge="'+index+'" data-select-call="true" data-call-step="'+esc(String(sid))+'" data-call-scroll="true">' +
+    '<span class="call-badge-index">'+(index+1)+'</span><span>'+esc(call.tool_name || 'action')+'</span><span class="call-badge-status">'+esc(status)+'</span></button>';
+}}
+function renderCallResult(call, open){{
+  const hasResult = call.result !== undefined && call.result !== null;
+  const resultText = hasResult ? fullEvidenceValue(call.result) : '';
+  const summary = String(call.result_summary || (hasResult ? 'Recorded result' : 'Result not recorded'));
+  const source = call.result_source === 'model_visible' ? 'Agent-visible result · observation_ready.action_results' : call.result_source === 'raw_fallback' ? 'Recorded result fallback · step.action_results' : 'Result not recorded';
+  const evidence = {{text: resultText, source: source, format: 'json'}};
+  return '<details class="paired-result"'+(open ? ' open' : '')+'><summary><span class="result-summary"><b>Result</b> · '+esc(summary)+'</span><span class="pairing-note">'+esc(call.pairing_method || 'not recorded')+'</span></summary>' +
+    '<div style="padding:0 8px 8px">'+renderCodeEvidence('result', 'Complete result', call.status || '', evidence, resultText.length+' chars', true)+'</div></details>';
+}}
+function renderActionCall(call, sid){{
+  const index = Number(call.index || 0);
+  const status = String(call.status || 'not recorded');
+  const klass = statusClass(status);
+  const args = (call.args && typeof call.args === 'object') ? call.args : {{}};
+  const argsText = fullEvidenceValue(args);
+  const argsEvidence = {{text: argsText, source: 'Complete action arguments', format: 'json'}};
+  const open = isAbnormalCall(call);
+  const attempts = call.attempts === null || call.attempts === undefined ? 'attempts not recorded' : String(call.attempts)+' attempt'+(Number(call.attempts) === 1 ? '' : 's');
+  return '<details class="call-unit '+klass+'" id="call-'+esc(String(sid))+'-'+index+'" data-call-index="'+index+'" data-select-call="true" data-call-step="'+esc(String(sid))+'" data-call-scroll="false"'+(open ? ' open' : '')+'>' +
+    '<summary class="call-head" data-select-call="true" data-call-step="'+esc(String(sid))+'" data-call-index="'+index+'" data-call-scroll="false">' +
+      '<span class="call-identity"><span class="call-badge-index">'+(index+1)+'</span><span class="call-tool">'+esc(call.tool_name || 'action')+'</span></span>' +
+      '<span class="call-meta"><span class="call-status '+klass+'">'+esc(status)+'</span><span>'+esc(formatLatency(call.latency_ms))+'</span><span>'+esc(attempts)+'</span></span>' +
+    '</summary><div class="call-body">' +
+      renderParamStrip(args) +
+      renderCodeEvidence('params', 'Complete parameters', '', argsEvidence, Object.keys(args).length+' fields · '+argsText.length+' chars', false) +
+      renderCallResult(call, open) +
+    '</div></details>';
+}}
+function renderUnmatchedEvidence(interaction){{
+  const actions = Array.isArray(interaction.unmatched_actions) ? interaction.unmatched_actions : [];
+  const results = Array.isArray(interaction.unmatched_results) ? interaction.unmatched_results : [];
+  if(!actions.length && !results.length) return '';
+  return '<details class="env-lane unmatched-lane"><summary><span>Unmatched evidence · relationship not inferred</span><span>'+(actions.length+results.length)+' items</span></summary>' +
+    '<div style="padding:0 8px 8px">'+fullJsonBlock({{actions:actions, results:results}}, 'Complete unmatched actions/results', true)+'</div></details>';
+}}
+function renderActionCalls(step, interaction){{
+  const sid = String(step.step_id);
+  const calls = Array.isArray(interaction.calls) ? interaction.calls : [];
+  if(!calls.length){{
+    return '<section class="call-section"><div class="call-section-head"><span class="call-section-title">Action Calls</span><span class="call-count">0 calls</span></div><div class="muted">No action call recorded.</div>'+renderUnmatchedEvidence(interaction)+'</section>';
+  }}
+  return '<section class="call-section"><div class="call-section-head"><span class="call-section-title">Action Calls</span><span class="call-count">'+calls.length+' call'+(calls.length === 1 ? '' : 's')+'</span></div>' +
+    '<div class="call-badges">'+calls.map(function(call){{ return renderCallBadge(call, sid); }}).join('')+'</div>' +
+    '<div class="call-list">'+calls.map(function(call){{ return renderActionCall(call, sid); }}).join('')+renderUnmatchedEvidence(interaction)+'</div></section>';
+}}
+function renderEnvironmentObservation(interaction){{
+  const rows = Array.isArray(interaction.environment_results) ? interaction.environment_results : [];
+  if(!rows.length) return '';
+  const values = rows.map(function(row){{ return row.result; }});
+  const value = values.length === 1 ? values[0] : values;
+  const text = fullEvidenceValue(value);
+  const evidence = {{text:text, source:'Environment-only result, not paired with a tool action', format:'json'}};
+  return '<details class="env-lane"><summary><span>Environment Observation</span><span>'+rows.length+' result'+(rows.length === 1 ? '' : 's')+' · '+text.length+' chars</span></summary>' +
+    '<div style="padding:0 8px 8px">'+renderCodeEvidence('environment', 'Complete environment observation', '', evidence, text.length+' chars', true)+'</div></details>';
+}}
 function shortUrl(url){{
   try {{
     const u = new URL(String(url));
@@ -1644,7 +3123,7 @@ function extractThought(decision, events){{
     if(!raw) continue;
     const m = raw.match(/Thought\\s*:\\s*([\\s\\S]*?)(?:\\n(?:Action|Final|Observation|Critic|Plan)\\s*:|$)/i);
     if(m && m[1]) return m[1].trim();
-    return truncateText(raw, 220);
+    return raw;
   }}
   return '';
 }}
@@ -1694,6 +3173,15 @@ function firstActionLabel(actions){{
   }}
   return parts.length ? (tool + '(' + parts.join(', ') + ')') : String(tool);
 }}
+function actionSummaryLabel(actions){{
+  if(!Array.isArray(actions) || !actions.length) return '';
+  if(actions.length === 1) return firstActionLabel(actions);
+  const names = actions.map(function(action){{
+    const item = action && typeof action === 'object' ? action : {{}};
+    return String(item.tool || item.name || item.action || item.type || 'action');
+  }});
+  return actions.length + ' actions · ' + names.join(' + ');
+}}
 function flattenResults(input){{
   const out = [];
   function walk(x, d){{
@@ -1740,7 +3228,7 @@ function extractTerminalObservation(item){{
   return (data.terminal && typeof data.terminal === 'object') ? data.terminal : null;
 }}
 function summarizeToolObservation(item){{
-  if(!item || typeof item !== 'object') return {{kind: 'tool_result', title: 'Observation', body: truncateText(String(item), 220), raw: item}};
+  if(!item || typeof item !== 'object') return {{kind: 'tool_result', title: 'Observation', body: String(item), raw: item}};
   const flat = flattenResults([item]);
   const rows = [];
   for(const it of flat){{
@@ -1750,11 +3238,11 @@ function summarizeToolObservation(item){{
     if(title && url) rows.push({{title:String(title), url:String(url)}});
   }}
   if(rows.length) return {{kind: 'search_results', title: 'Search Results', table: renderSearchTable(rows), raw: item}};
-  if('error' in item && item.error) return {{kind: 'error', title: String(item.error), body: truncateText(String(item.content || ''), 220), raw: item}};
+  if('error' in item && item.error) return {{kind: 'error', title: String(item.error), body: String(item.content || ''), raw: item}};
   return {{
     kind: 'tool_result',
     title: String(item.title || item.name || item.status || 'Tool Observation'),
-    body: truncateText(JSON.stringify(item, null, 2), 1200),
+    body: JSON.stringify(item, null, 2),
     raw: item,
   }};
 }}
@@ -1770,8 +3258,8 @@ function pickObservation(actionResults){{
     if(terminal){{
       const output = cleanTerminalText(terminal.output);
       const screen = cleanTerminalText(terminal.screen);
-      if(output && !terminalOutput) terminalOutput = {{kind: 'terminal_output', title: 'Terminal Output', body: truncateText(output, 2000), raw: terminal}};
-      else if(!output && screen && !terminalScreen) terminalScreen = {{kind: 'terminal_screen', title: 'Terminal Screen', body: truncateText(screen, 2000), raw: terminal}};
+      if(output && !terminalOutput) terminalOutput = {{kind: 'terminal_output', title: 'Terminal Output', body: output, raw: terminal}};
+      else if(!output && screen && !terminalScreen) terminalScreen = {{kind: 'terminal_screen', title: 'Terminal Screen', body: screen, raw: terminal}};
       continue;
     }}
     const summary = summarizeToolObservation(item);
@@ -1797,8 +3285,9 @@ function renderObservationBlock(summary, label){{
   if(!summary || typeof summary !== 'object') return '';
   const title = summary.title ? ('<div style="font-weight:600;margin-bottom:6px">' + esc(String(label || summary.title)) + ' · ' + esc(String(summary.title)) + '</div>') : '';
   if(summary.table) return '<div style="margin-bottom:12px">' + title + summary.table + '</div>';
-  if(summary.kind === 'error') return '<div style="margin-bottom:12px;color:var(--err)">' + title + '<div>' + esc(String(summary.title || summary.body || 'Error')) + '</div></div>';
-  return '<div style="margin-bottom:12px">' + title + '<pre>' + esc(String(summary.body || '')) + '</pre></div>';
+  const body = String(summary.body || summary.title || '');
+  if(summary.kind === 'error') return '<div style="margin-bottom:12px;color:var(--err)">' + title + '<div class="summary-line">' + esc(firstLine(body || 'Error')) + '</div>' + fullTextBlock(body, 'full error / observation', false) + '</div>';
+  return '<div style="margin-bottom:12px">' + title + '<div class="summary-line">' + esc(firstLine(body)) + '</div>' + fullTextBlock(body, 'full observation', false) + '</div>';
 }}
 function renderState(obs){{
   if(!obs || typeof obs !== 'object') return '<div class="muted">No state.</div>';
@@ -1902,10 +3391,15 @@ function buildScreenshotStrip(){{
   const section = document.getElementById('screenshotStripSection');
   if(!strip || !section) return;
   const rows = Array.isArray(payload.visual_timeline) ? payload.visual_timeline : [];
-  if(!rows.length || embedded){{ section.style.display = 'none'; return; }}
+  const meaningful = rows.filter(function(item){{
+    const shot = (item && typeof item === 'object') ? item.screenshot : null;
+    const path = shot && typeof shot === 'object' ? String(shot.path || '') : '';
+    return path || Number((item && item.visual_asset_count) || 0) > 0;
+  }});
+  if(!meaningful.length || embedded){{ section.style.display = 'none'; return; }}
   section.style.display = '';
   strip.innerHTML = '';
-  for(const item of rows){{
+  for(const item of meaningful){{
     const shot = (item && typeof item === 'object') ? item.screenshot : null;
     const path = shot && typeof shot === 'object' ? String(shot.path || '') : '';
     const hasRetry = (item.critic_retry_count || 0) > 0;
@@ -1913,7 +3407,7 @@ function buildScreenshotStrip(){{
     const div = document.createElement('div');
     div.style.cssText = 'flex:0 0 80px;cursor:pointer;text-align:center;border:1px solid var(--line);border-radius:var(--radius-md);overflow:hidden;position:relative;';
     if(path){{
-      div.innerHTML = '<img src="' + esc(assetHref(path)) + '" style="width:80px;height:45px;object-fit:cover;display:block" alt="step '+esc(String(item.step_id))+'"/><div style="font-size:9px;padding:2px 4px;background:var(--surface-2);color:var(--muted)">S'+esc(String(item.step_id))+'</div>' + (hasRetry ? '<div style="position:absolute;top:2px;right:2px;width:8px;height:8px;border-radius:50%;background:var(--err)"></div>' : '') + (groundOk === false ? '<div style="position:absolute;top:2px;left:2px;width:8px;height:8px;border-radius:50%;background:#e5c100"></div>' : '');
+      div.innerHTML = '<img src="' + esc(assetHref(path)) + '" style="width:80px;height:45px;object-fit:cover;display:block" alt="step '+esc(String(item.step_id))+'"/><div style="font-size:9px;padding:2px 4px;background:var(--surface-2);color:var(--muted)">S'+esc(String(item.step_id))+'</div>' + (hasRetry ? '<div style="position:absolute;top:2px;right:2px;width:8px;height:8px;border-radius:50%;background:var(--err)"></div>' : '') + (groundOk === false ? '<div style="position:absolute;top:2px;left:2px;width:8px;height:8px;border-radius:50%;background:var(--warn)"></div>' : '');
     }} else {{
       div.innerHTML = '<div style="width:80px;height:45px;background:var(--surface-2);display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:10px">S'+esc(String(item.step_id))+'</div><div style="font-size:9px;padding:2px 4px;background:var(--surface-2);color:var(--muted)">S'+esc(String(item.step_id))+'</div>';
     }}
@@ -1927,12 +3421,20 @@ function buildScreenshotStrip(){{
 }}
 function buildVisualTimeline(items){{
   const rows = Array.isArray(payload.visual_timeline) ? payload.visual_timeline : [];
-  if(!rows.length){{
+  const meaningful = rows.filter(function(item){{
+    const shot = (item && typeof item === 'object') ? item.screenshot : null;
+    const path = shot && typeof shot === 'object' ? String(shot.path || '') : '';
+    return item && (path || Number(item.visual_asset_count || 0) > 0);
+  }});
+  const section = document.getElementById('visualTimelineSection');
+  if(!meaningful.length){{
+    if(section) section.style.display = 'none';
     visualTimelineRoot.innerHTML = '<div class="muted">No screenshot timeline recorded.</div>';
     return;
   }}
+  if(section) section.style.display = '';
   const cards = [];
-  for(const item of rows){{
+  for(const item of meaningful){{
     const shot = (item && typeof item === 'object') ? item.screenshot : null;
     const path = shot && typeof shot === 'object' ? String(shot.path || '') : '';
     let preview = '<div class="muted">No screenshot</div>';
@@ -1965,7 +3467,7 @@ function renderActionOverlay(step){{
     if(co && typeof co === 'object' && co.action === 'retry'){{
       const reason = String(co.reason || '').toLowerCase();
       if(reason.includes('grounding') || reason.includes('element not found') || reason.includes('coordinates') || reason.includes('out of bounds')){{
-        parts.push('<div style="padding:6px 10px;margin:4px 0;border-radius:var(--radius-md);background:#e5484d11;border:2px solid var(--err);color:var(--err);font-size:11px;font-weight:600">Grounding failure: '+esc(String(co.reason || ''))+'</div>');
+        parts.push('<div style="padding:6px 10px;margin:4px 0;border-radius:var(--radius-md);background:var(--err-soft);border:2px solid var(--err);color:var(--err);font-size:11px;font-weight:600">Grounding failure: '+esc(String(co.reason || ''))+'</div>');
         break;
       }}
     }}
@@ -2005,7 +3507,7 @@ function renderVisualAssets(step){{
   headerRows.push(kvRow('grounding metadata', grounding ? 'present' : 'none'));
   const retryCount = Array.isArray(st.critic_outputs) ? st.critic_outputs.filter(function(x){{ return x && typeof x === 'object' && x.action === 'retry'; }}).length : 0;
   headerRows.push(kvRow('critic retries', retryCount));
-  const label = firstActionLabel(st.actions || []);
+  const label = actionSummaryLabel(st.actions || []);
   if(label) headerRows.push(kvRow('action taken', label));
   let htmlBlocks = headerRows.length ? kvBlock(headerRows) : '';
   // Action overlay markers
@@ -2017,13 +3519,13 @@ function renderVisualAssets(step){{
     const sid = String(st.step_id || 0);
     htmlBlocks += '<button class="btn" style="margin:6px 0;font-size:11px" onclick="var el=document.getElementById(\\'obspack-'+sid+'\\');if(el){{el.style.display=el.style.display===\\'none\\'?\\'block\\':\\'none\\';}}">observation pack</button>';
     htmlBlocks += '<div id="obspack-'+sid+'" style="display:none;margin-top:4px;border:1px dashed var(--line-strong);border-radius:var(--radius-md);padding:8px;background:var(--surface-1)">';
-    if(obsPack.text) htmlBlocks += kvBlock([kvRow('text', truncateText(String(obsPack.text), 200))]);
+    if(obsPack.text) htmlBlocks += fullTextBlock(String(obsPack.text), 'full observation text', false);
     if(obsPack.dom){{
-      const domStr = typeof obsPack.dom === 'string' ? truncateText(obsPack.dom, 500) : JSON.stringify(obsPack.dom).slice(0,500);
+      const domStr = typeof obsPack.dom === 'string' ? obsPack.dom : JSON.stringify(obsPack.dom, null, 2);
       htmlBlocks += '<details style="margin:4px 0"><summary style="cursor:pointer;font-size:12px;color:var(--muted)">DOM</summary><pre style="font-size:10px;max-height:300px;overflow:auto;white-space:pre-wrap">'+esc(domStr)+'</pre></details>';
     }}
     if(obsPack.accessibility_tree){{
-      const a11yStr = typeof obsPack.accessibility_tree === 'string' ? truncateText(obsPack.accessibility_tree, 500) : JSON.stringify(obsPack.accessibility_tree).slice(0,500);
+      const a11yStr = typeof obsPack.accessibility_tree === 'string' ? obsPack.accessibility_tree : JSON.stringify(obsPack.accessibility_tree, null, 2);
       htmlBlocks += '<details style="margin:4px 0"><summary style="cursor:pointer;font-size:12px;color:var(--muted)">a11y tree</summary><pre style="font-size:10px;max-height:300px;overflow:auto;white-space:pre-wrap">'+esc(a11yStr)+'</pre></details>';
     }}
     if(Array.isArray(obsPack.ocr) && obsPack.ocr.length){{
@@ -2048,6 +3550,7 @@ function renderVisualAssets(step){{
       const spans = Array.isArray(gm.ocr_spans) ? gm.ocr_spans : [];
       htmlBlocks += kvBlock([kvRow('grounding boxes', boxes.length), kvRow('OCR spans', spans.length)]);
     }}
+    htmlBlocks += fullJsonBlock(obsPack, 'full observation pack JSON', false);
     htmlBlocks += '</div>';
   }}
   if(!assets.length){{
@@ -2081,45 +3584,14 @@ function renderVisualAssets(step){{
   }}
   return htmlBlocks + '<div class="list" style="margin-top:8px">' + cards.join('') + '</div>';
 }}
-function renderThought(decision, events, step){{
-  const thought = extractThought(decision, events);
-  const summary = renderModelResponseSummary(latestModelResponse(events), step);
-  if(!thought) return (summary || '<div class="muted">No explicit thought.</div>');
-  return '<div style="white-space:pre-wrap;line-height:1.6;background:var(--surface-2);border:1px solid var(--line);border-radius:var(--radius-md);padding:10px;color:var(--txt)">'+esc(thought)+'</div>' + summary;
-}}
-function renderAction(actions){{
-  if(!Array.isArray(actions) || !actions.length) return '<div class="muted">No action.</div>';
-  const first = actions[0] || {{}};
-  const tool = first.tool || first.name || first.action || first.type || 'action';
-  const args = (first.args && typeof first.args === 'object') ? first.args : (first.kwargs && typeof first.kwargs === 'object') ? first.kwargs : {{}};
-  // Special rendering for delegate/fanout
-  if(String(tool).toLowerCase() === 'delegate'){{
-    const agent = args.agent_name || args.agent || '?';
-    const task = args.task || '';
-    return '<div style="font-size:13px;color:var(--kind-delegation)">↗ <b>Delegate:</b> → <b>' + esc(agent) + '</b>' + (task ? '<div style="margin-top:4px;font-size:12px;color:var(--muted)">' + esc(truncateText(task, 300)) + '</div>' : '') + '</div>';
-  }}
-  if(String(tool).toLowerCase() === 'fanout'){{
-    const tasks = Array.isArray(args.tasks) ? args.tasks : [];
-    const count = tasks.length || args.num_tasks || args.task_count || 0;
-    const taskList = tasks.slice(0, 5).map(function(t){{ return '<div style="font-size:11px;color:var(--muted);padding:2px 0">· ' + esc(truncateText(String(t), 120)) + '</div>'; }}).join('');
-    return '<div style="font-size:13px;color:var(--kind-fanout)">⊛ <b>FanOut:</b> ' + esc(String(count)) + ' task(s)' + (taskList ? '<div style="margin-top:4px">' + taskList + '</div>' : '') + '</div>';
-  }}
-  // General action with full params
-  const label = firstActionLabel(actions);
-  const argKeys = Object.keys(args);
-  let paramHtml = '';
-  if(argKeys.length > 1){{
-    paramHtml = '<details style="margin-top:4px"><summary style="cursor:pointer;color:var(--muted);font-size:11px">Show all params (' + argKeys.length + ')</summary><div class="kv" style="margin-top:4px">' + argKeys.map(function(k){{ return kvRow(k, args[k]); }}).join('') + '</div></details>';  }}
-  return '<div style="font-size:13px;color:var(--kind-critic)">🛠️ <b>Action:</b> ' + esc(label) + '</div>' + paramHtml;
-}}
 function renderMemoryUpdate(observeOut){{
   const mem = observeOut && typeof observeOut === 'object' ? observeOut.memory : null;
   if(!mem || typeof mem !== 'object') return '<div class="muted">No memory update.</div>';
   const rows = [];
   if('enabled' in mem) rows.push(kvRow('enabled', mem.enabled));
   if(Array.isArray(mem.records)) rows.push(kvRow('records', mem.records.length));
-  if(typeof mem.summary === 'string' && mem.summary.trim()) rows.push(kvRow('summary', truncateText(mem.summary, 220)));
-  return rows.length ? kvBlock(rows) : '<div class="muted">No memory update.</div>';
+  const body = typeof mem.summary === 'string' && mem.summary.trim() ? fullTextBlock(mem.summary, 'full memory summary', false) : '';
+  return rows.length ? kvBlock(rows) + body : '<div class="muted">No memory update.</div>';
 }}
 function renderParserDiagnostics(diag){{
   if(!diag || typeof diag !== 'object' || !Object.keys(diag).length) return '<div class="muted">No parser diagnostics.</div>';
@@ -2133,12 +3605,12 @@ function renderParserDiagnostics(diag){{
   if(diag.severity) rows.push(kvRow('severity', diag.severity));
   if(diag.extraction_mode) rows.push(kvRow('extraction', diag.extraction_mode));
   if(diag.summary) rows.push(kvRow('summary', diag.summary));
-  if(diag.details) rows.push(kvRow('details', truncateText(diag.details, 260)));
-  if(diag.expected_shape) rows.push(kvRow('expected', truncateText(diag.expected_shape, 220)));
-  if(diag.repair_instruction) rows.push(kvRow('repair', truncateText(diag.repair_instruction, 220)));
-  if(diag.salvage_summary) rows.push(kvRow('salvage', truncateText(diag.salvage_summary, 220)));
-  if(diag.raw_output_preview) rows.push(kvRow('raw_preview', truncateText(diag.raw_output_preview, 240)));
-  return kvBlock(rows);
+  if(diag.details) rows.push(kvRow('details', firstLine(diag.details, 180)));
+  if(diag.expected_shape) rows.push(kvRow('expected', firstLine(diag.expected_shape, 180)));
+  if(diag.repair_instruction) rows.push(kvRow('repair', firstLine(diag.repair_instruction, 180)));
+  if(diag.salvage_summary) rows.push(kvRow('salvage', firstLine(diag.salvage_summary, 180)));
+  if(diag.raw_output_preview) rows.push(kvRow('raw_preview', firstLine(diag.raw_output_preview, 180)));
+  return kvBlock(rows) + fullJsonBlock(diag, 'full parser diagnostics', false);
 }}
 function renderCritic(data){{
   if(!Array.isArray(data) || !data.length) return '<div class="muted">No critic outputs.</div>';
@@ -2146,21 +3618,21 @@ function renderCritic(data){{
   for(let i = 0; i < data.length; i++){{
     const c = data[i];
     if(!c || typeof c !== 'object') continue;
-    const actionColors = {{continue:'#4ade80', stop:'#f87171', retry:'#fbbf24'}};
-    const actionColor = actionColors[c.action] || '#94a3b8';
+    const actionColors = {{continue:'var(--ok)', stop:'var(--err)', retry:'var(--warn)'}};
+    const actionColor = actionColors[c.action] || 'var(--subtle)';
     const rows = [];
-    if('action' in c) rows.push('<div style="display:flex;align-items:center;gap:6px"><span style="background:'+actionColor+';color:#000;border-radius:4px;padding:1px 6px;font-size:11px;font-weight:600">'+esc(c.action)+'</span><span style="color:#94a3b8;font-size:11px">critic #'+(i+1)+'</span></div>');
-    if('reason' in c) rows.push(kvRow('reason', c.reason));
+    if('action' in c) rows.push('<div style="display:flex;align-items:center;gap:6px"><span style="background:'+actionColor+';color:var(--surface-1);border-radius:4px;padding:1px 6px;font-size:11px;font-weight:600">'+esc(c.action)+'</span><span style="color:var(--subtle);font-size:11px">critic #'+(i+1)+'</span></div>');
+    if('reason' in c) rows.push(kvRow('reason', firstLine(c.reason, 180)));
     if(typeof c.score === 'number'){{
       const pct = Math.max(0, Math.min(100, Math.round(c.score * 100)));
-      const barColor = pct >= 70 ? '#4ade80' : pct >= 40 ? '#fbbf24' : '#f87171';
-      rows.push('<div style="display:flex;align-items:center;gap:8px"><span style="color:#8b949e;min-width:44px;font-size:12px">score</span><div style="flex:1;background:#1e293b;border-radius:3px;height:10px;max-width:120px"><div style="width:'+pct+'%;background:'+barColor+';border-radius:3px;height:10px"></div></div><span style="color:#c9d1d9;font-size:12px">'+c.score.toFixed(2)+'</span></div>');
+      const barColor = pct >= 70 ? 'var(--ok)' : pct >= 40 ? 'var(--warn)' : 'var(--err)';
+      rows.push('<div style="display:flex;align-items:center;gap:8px"><span style="color:var(--subtle);min-width:44px;font-size:12px">score</span><div style="flex:1;background:var(--surface-3);border-radius:3px;height:10px;max-width:120px"><div style="width:'+pct+'%;background:'+barColor+';border-radius:3px;height:10px"></div></div><span style="color:var(--muted);font-size:12px">'+c.score.toFixed(2)+'</span></div>');
     }}
-    if(c.modified_prompt) rows.push(kvRow('modified_prompt', '<span style="color:#fbbf24">✎ prompt modified</span>'));
-    if(c.instruction_patch) rows.push(kvRow('instruction_patch', '<span style="color:#7dd3fc">+'+esc(String(c.instruction_patch).substring(0,200))+'</span>'));
-    if(c.state_patch && typeof c.state_patch === 'object') rows.push(kvRow('state_patch', '<span style="color:#c4b5fd">'+esc(JSON.stringify(c.state_patch).substring(0,200))+'</span>'));
-    if(c.details) rows.push(kvRow('details', typeof c.details === 'string' ? c.details : JSON.stringify(c.details).substring(0,300)));
-    cards.push('<div style="border:1px solid #21262d;border-radius:6px;padding:8px;margin-bottom:4px;background:#0d1117">'+(rows.length ? rows.join('') : kvRow('critic', JSON.stringify(c)))+'</div>');
+    if(c.modified_prompt) rows.push(kvRow('modified_prompt', '<span style="color:var(--warn)">✎ prompt modified</span>'));
+    if(c.instruction_patch) rows.push(kvRow('instruction_patch', firstLine(c.instruction_patch, 180)));
+    if(c.state_patch && typeof c.state_patch === 'object') rows.push(kvRow('state_patch', firstLine(JSON.stringify(c.state_patch), 180)));
+    if(c.details) rows.push(kvRow('details', firstLine(typeof c.details === 'string' ? c.details : JSON.stringify(c.details), 180)));
+    cards.push('<div style="border:1px solid var(--line);border-radius:6px;padding:8px;margin-bottom:4px;background:var(--surface-1)">'+(rows.length ? rows.join('') : kvRow('critic', JSON.stringify(c)))+fullJsonBlock(c, 'full critic output', false)+'</div>');
   }}
   return cards.length ? cards.join('') : '<div class="muted">No critic outputs.</div>';
 }}
@@ -2267,6 +3739,13 @@ function phaseColor(phase){{
   if(p.includes('done') || p.includes('stop')) return getComputedStyle(document.documentElement).getPropertyValue('--kind-done').trim();
   return getComputedStyle(document.documentElement).getPropertyValue('--kind-other').trim();
 }}
+function phaseFromEvents(events){{
+  for(let i=(events || []).length - 1; i >= 0; i -= 1){{
+    const phase = String((events[i] && events[i].phase) || '').trim();
+    if(phase) return phase;
+  }}
+  return '';
+}}
 function inferPrimaryKind(events){{
   const es = Array.isArray(events) ? events : [];
   for(let i = es.length - 1; i >= 0; i -= 1){{
@@ -2309,6 +3788,188 @@ function compactEventText(event){{
     bits.push('saved ' + String(event.saved_tokens));
   }}
   return bits.join(' · ');
+}}
+function riskChip(flag){{
+  const f = String(flag || '');
+  const cls = (f.includes('error') || f.includes('stop') || f.includes('failure')) ? 'error' : (f.includes('retry') || f.includes('context') || f.includes('submission')) ? 'warn' : 'ok';
+  return '<span class="risk-chip '+cls+'">' + esc(f.replaceAll('_', ' ')) + '</span>';
+}}
+function paintRunSummary(){{
+  if(!runSummary) return;
+  const insights = payload.insights || {{}};
+  const flags = Array.isArray(insights.risk_flags) ? insights.risk_flags : [];
+  const nextStep = runFocus.next_actionable_step !== undefined && runFocus.next_actionable_step !== null ? runFocus.next_actionable_step : insights.next_inspect_step;
+  const chips = flags.length ? flags.map(riskChip).join('') : '<span class="risk-chip ok">no risk flags</span>';
+  const pocBits = [
+    'attempts ' + esc(String(cybergymFocus.poc_attempts || 0)),
+    'status ' + esc(String(cybergymFocus.last_verification_status || 'not recorded')),
+    cybergymFocus.last_poc_path ? ('poc ' + esc(String(cybergymFocus.last_poc_path))) : '',
+  ].filter(Boolean).join(' · ');
+  runSummary.innerHTML =
+    '<div class="summary-panel"><div class="summary-title">Outcome</div><div class="summary-value">' + esc(String(runFocus.outcome || insights.outcome || 'needs_review')) + '</div><div class="summary-line">stop=' + esc(String(insights.stop_reason || 'not recorded')) + '</div></div>' +
+    '<div class="summary-panel primary"><div class="summary-title">Primary Failure</div><div class="summary-value">' + esc(String(runFocus.primary_failure || insights.likely_failure || 'No explicit failure signal recorded.')) + '</div></div>' +
+    '<div class="summary-panel"><div class="summary-title">Next Inspect</div><div class="summary-value">' + (nextStep !== null && nextStep !== undefined ? 'Step ' + esc(String(nextStep)) : 'not recorded') + '</div><div class="summary-actions">' + (nextStep !== null && nextStep !== undefined ? '<button class="btn" type="button" onclick="selectStep(\\'' + esc(String(nextStep)) + '\\', true)">Open evidence</button>' : '') + '</div></div>' +
+    '<div class="summary-panel"><div class="summary-title">CyberGym / Risk</div><div class="summary-value">' + (pocBits || esc(String(cybergymFocus.failure_category || 'not recorded'))) + '</div><div class="summary-actions">' + chips + '</div></div>';
+}}
+function stepSummaryFor(sid){{
+  const rows = Array.isArray(payload.step_summaries) ? payload.step_summaries : [];
+  return rows.find(function(item){{ return String(item.step_id) === String(sid); }}) || null;
+}}
+function stepFocusFor(sid){{
+  const rows = Array.isArray(payload.step_focus) ? payload.step_focus : [];
+  return rows.find(function(item){{ return String(item.step_id) === String(sid); }}) || null;
+}}
+function focusMatches(item, mode){{
+  const focus = stepFocusFor(item.sid) || {{}};
+  const role = String(focus.step_role || '');
+  const flags = Array.isArray(focus.risk_flags) ? focus.risk_flags.map(String) : [];
+  if(mode === 'all') return true;
+  if(mode === 'submissions') return role === 'poc_submission' || flags.includes('cybergym_poc_submission') || flags.includes('cybergym_verification_failure');
+  if(mode === 'errors') return flags.some(function(f){{ return f.includes('error') || f.includes('failure'); }});
+  if(mode === 'phase') return role === 'phase_change' || !!focus.phase;
+  return focus.attention_level === 'critical' || role === 'phase_change' || role === 'poc_submission' || flags.includes('cybergym_poc_submission');
+}}
+function roleChip(focus){{
+  const level = String((focus && focus.attention_level) || 'normal');
+  const role = String((focus && focus.step_role) || 'step').replaceAll('_', ' ');
+  return '<span class="role-chip '+esc(level)+'">'+esc(role)+'</span>';
+}}
+function renderEvidenceRefs(focus){{
+  const refs = Array.isArray(focus && focus.evidence_refs) ? focus.evidence_refs : [];
+  if(!refs.length) return '';
+  return '<div class="summary-actions">' + refs.map(function(ref){{ return '<span class="chip">'+esc(String(ref))+'</span>'; }}).join('') + '</div>';
+}}
+function renderInspectorTabButton(name, active){{
+  return '<button class="inspector-tab '+(active ? 'active' : '')+'" type="button" data-inspector-tab="'+esc(name)+'">'+esc(name)+'</button>';
+}}
+function renderInspectorCallList(step, interaction){{
+  const calls = Array.isArray(interaction.calls) ? interaction.calls : [];
+  if(!calls.length) return '<div class="muted">No action calls recorded.</div>';
+  return '<div class="inspector-call-list">'+calls.map(function(call){{
+    const index = Number(call.index || 0);
+    const klass = statusClass(call.status);
+    return '<button class="inspector-call '+(activeCallIndex === index ? 'active' : '')+'" type="button" data-select-call="true" data-call-step="'+esc(String(step.step_id))+'" data-call-index="'+index+'" data-call-scroll="true">' +
+      '<span class="call-badge-index">'+(index+1)+'</span><span><b>'+esc(call.tool_name || 'action')+'</b><br><span class="muted">'+esc(call.result_summary || 'result not recorded')+'</span></span><span class="call-status '+klass+'">'+esc(call.status || 'not recorded')+'</span></button>';
+  }}).join('')+'</div>';
+}}
+function renderCallInspector(step, interaction, call, tab){{
+  if(!inspector || !call) return;
+  const currentTab = tab || 'summary';
+  const tabs = ['summary','params','result','raw'];
+  const args = (call.args && typeof call.args === 'object') ? call.args : {{}};
+  const resultText = fullEvidenceValue(call.result);
+  const rawText = fullEvidenceValue(call.raw_result);
+  let body = '';
+  if(currentTab === 'params'){{
+    body = renderCodeEvidence('params', 'Complete parameters', '', {{text:fullEvidenceValue(args),source:'Complete action arguments'}}, Object.keys(args).length+' fields', true);
+  }} else if(currentTab === 'result'){{
+    const resultSource = call.result_source === 'model_visible' ? 'observation_ready.action_results' : call.result_source === 'raw_fallback' ? 'step.action_results fallback' : 'not recorded';
+    body = renderCodeEvidence('result', 'Action result', call.status || '', {{text:resultText,source:resultSource}}, resultText.length+' chars', true) +
+      '<div style="margin-top:8px">'+renderCodeEvidence('raw-result', 'Canonical raw result', '', {{text:rawText,source:'step.action_results'}}, rawText.length+' chars', false)+'</div>';
+  }} else if(currentTab === 'raw'){{
+    body = fullJsonBlock({{action:call.action, invocation:call.invocation, result:call.result, raw_result:call.raw_result}}, 'Complete selected call JSON', true);
+  }} else {{
+    body = '<div class="kv">'+
+      kvRow('call', Number(call.index || 0)+1)+
+      kvRow('tool', call.tool_name || '-')+
+      kvRow('status', call.status || 'not recorded')+
+      kvRow('latency', formatLatency(call.latency_ms))+
+      kvRow('attempts', call.attempts === null || call.attempts === undefined ? 'not recorded' : call.attempts)+
+      kvRow('pairing', call.pairing_method || 'not recorded')+
+      '</div>'+renderParamStrip(args)+'<div class="summary-line" style="margin-top:9px"><b>Result</b> · '+esc(call.result_summary || 'not recorded')+'</div>';
+  }}
+  inspector.innerHTML = '<div class="summary-title">Selected Call</div><div class="summary-value">Step '+esc(String(step.step_id))+' · Call '+(Number(call.index || 0)+1)+' · '+esc(call.tool_name || 'action')+'</div>' +
+    '<div class="inspector-tabs">'+tabs.map(function(name){{ return renderInspectorTabButton(name, name === currentTab); }}).join('')+'</div><div id="inspectorBody">'+body+'</div>';
+  inspector.querySelectorAll('[data-inspector-tab]').forEach(function(btn){{
+    btn.addEventListener('click', function(){{ renderCallInspector(step, interaction, call, btn.getAttribute('data-inspector-tab') || 'summary'); }});
+  }});
+}}
+function renderInspector(step, tab){{
+  if(!inspector) return;
+  if(!step){{ inspector.innerHTML = '<div class="muted">No step selected.</div>'; return; }}
+  const sid = String(step.step_id);
+  const events = eventsByStep[sid] || [];
+  const interaction = stepInteractionFor(sid);
+  const summary = stepSummaryFor(sid) || {{}};
+  const focus = stepFocusFor(sid) || {{}};
+  const currentTab = tab || 'summary';
+  const tabs = ['summary','evidence','metadata','raw'];
+  let body = '';
+  if(currentTab === 'raw'){{
+    body = fullJsonBlock({{step: step, events: events, summary: summary, focus: focus, interaction: interaction}}, 'full selected step JSON', true);
+  }} else if(currentTab === 'evidence'){{
+    body =
+      '<h4>Input</h4>' + renderInputBlock(step, false) +
+      '<h4>Thought</h4>' + renderThoughtBlock(step, false) +
+      '<h4>Action Calls</h4>' + renderInspectorCallList(step, interaction) + renderEnvironmentObservation(interaction) +
+      '<h4>Parser Diagnostics</h4>' + renderParserDiagnostics(step.parser_diagnostics || {{}}) +
+      '<h4>Critic</h4>' + renderCritic(step.critic_outputs || []);
+  }} else if(currentTab === 'metadata'){{
+    const obsInput = {{observe_output: step.observation || {{}}, context: step.context || {{}}}};
+    body =
+      '<h4>Step Metadata</h4>' + fullJsonBlock(focus, 'full focus model', false) +
+      '<h4>State / Context</h4>' + renderState(obsInput) + fullJsonBlock(step.context || {{}}, 'full context', false) +
+      '<h4>Prompt Metadata</h4>' + renderPromptMetadata(step.prompt_metadata || {{}}) + fullJsonBlock(step.prompt_metadata || {{}}, 'full prompt metadata', false) +
+      '<h4>Visual Assets</h4>' + renderVisualAssets(step) +
+      '<h4>Memory Update</h4>' + renderMemoryUpdate(step.observation || {{}}) +
+      '<h4>Trace Events</h4>' + renderEvents(events);
+  }} else {{
+    const flags = Array.isArray(summary.risk_flags) ? summary.risk_flags : [];
+    body =
+      '<div class="kv">' +
+      kvRow('step', sid) +
+      kvRow('agent', step.agent_id || '-') +
+      kvRow('role', focus.step_role || '-') +
+      kvRow('phase', focus.phase || '-') +
+      kvRow('attention', focus.attention_level || '-') +
+      kvRow('events', events.length) +
+      kvRow('calls', Array.isArray(interaction.calls) ? interaction.calls.length : 0) +
+      kvRow('parser', ((summary.parser || {{}}).summary) || '-') +
+      kvRow('errors', Array.isArray(summary.errors) ? summary.errors.join(' | ') : '-') +
+      '</div><div class="summary-actions">' + roleChip(focus) + (flags.length ? flags.map(riskChip).join('') : '<span class="risk-chip ok">no risk flags</span>') + '</div>' +
+      renderEvidenceRefs(focus) +
+      '<h4>Action Calls</h4>' + renderInspectorCallList(step, interaction) +
+      '<div style="margin-top:10px">' + fullJsonBlock(summary, 'full step summary JSON', false) + '</div>';
+  }}
+  inspector.innerHTML =
+    '<div class="summary-title">Selected Step</div><div class="summary-value">Step ' + esc(sid) + '</div>' +
+    '<div class="inspector-tabs">' + tabs.map(function(t){{ return renderInspectorTabButton(t, t === currentTab); }}).join('') + '</div>' +
+    '<div id="inspectorBody">' + body + '</div>';
+  inspector.querySelectorAll('[data-inspector-tab]').forEach(function(btn){{
+    btn.addEventListener('click', function(){{ renderInspector(step, btn.getAttribute('data-inspector-tab') || 'summary'); }});
+  }});
+}}
+function selectStep(sid, scroll){{
+  activeStepId = String(sid);
+  activeCallIndex = null;
+  document.querySelectorAll('.toc-item').forEach(function(x){{ x.classList.toggle('active', x.getAttribute('data-step') === activeStepId); }});
+  document.querySelectorAll('.card[data-step]').forEach(function(x){{ x.style.borderColor = x.getAttribute('data-step') === activeStepId ? 'var(--accent)' : 'var(--line)'; }});
+  document.querySelectorAll('.call-unit,.call-badge').forEach(function(x){{ x.classList.remove('active'); }});
+  const step = steps.find(function(s){{ return String(s.step_id) === activeStepId; }});
+  renderInspector(step || null, 'summary');
+  if(scroll){{
+    const target = document.getElementById('step-' + activeStepId);
+    if(target) target.scrollIntoView({{behavior:'smooth', block:'start'}});
+  }}
+}}
+function selectCall(sid, index, scroll){{
+  activeStepId = String(sid);
+  activeCallIndex = Number(index);
+  document.querySelectorAll('.toc-item').forEach(function(x){{ x.classList.toggle('active', x.getAttribute('data-step') === activeStepId); }});
+  document.querySelectorAll('.card[data-step]').forEach(function(x){{ x.style.borderColor = x.getAttribute('data-step') === activeStepId ? 'var(--accent)' : 'var(--line)'; }});
+  document.querySelectorAll('.call-unit').forEach(function(x){{ x.classList.toggle('active', x.id === 'call-'+activeStepId+'-'+activeCallIndex); }});
+  document.querySelectorAll('.call-badge').forEach(function(x){{
+    const card = x.closest('.card[data-step]');
+    x.classList.toggle('active', !!card && card.getAttribute('data-step') === activeStepId && Number(x.getAttribute('data-call-badge')) === activeCallIndex);
+  }});
+  const step = steps.find(function(item){{ return String(item.step_id) === activeStepId; }});
+  const interaction = stepInteractionFor(activeStepId);
+  const call = (Array.isArray(interaction.calls) ? interaction.calls : []).find(function(item){{ return Number(item.index) === activeCallIndex; }});
+  if(step && call) renderCallInspector(step, interaction, call, 'summary');
+  if(scroll){{
+    const target = document.getElementById('call-'+activeStepId+'-'+activeCallIndex);
+    if(target) target.scrollIntoView({{behavior:'smooth', block:'center'}});
+  }}
 }}
 function paintOverview(items){{
   const m = payload.manifest || {{}};
@@ -2382,31 +4043,36 @@ function buildTimeline(items){{
       if(tb === null) return -1;
       return ta - tb;
     }});
-    if(!evs.length) continue;
     const marks = evs.map(function(e){{ return parseTs(e.ts); }}).filter(function(x){{ return x !== null; }});
     const first = marks.length ? Math.min.apply(null, marks) : null;
     const last = marks.length ? Math.max.apply(null, marks) : null;
     const total = (first !== null && last !== null && last > first) ? (last - first) : null;
-    const segs = [];
-    for(let i=0;i<evs.length;i+=1){{
-      const e = evs[i];
-      const t0 = parseTs(e.ts);
-      const t1 = (i+1<evs.length) ? parseTs(evs[i+1].ts) : t0;
-      let dur = 100;
-      if(t0 !== null && t1 !== null && t1 >= t0) dur = Math.max(20, t1 - t0);
-      if(total && t0 !== null && t1 !== null && t1 >= t0){{
-        dur = Math.max(2, ((t1 - t0) / total) * 100);
-      }}
-      let heat = 'heat0';
-      if(dur > 40) heat = 'heat3';
-      else if(dur > 20) heat = 'heat2';
-      else if(dur > 8) heat = 'heat1';
-      segs.push('<span class="seg '+heat+'" title="'+esc((e.phase||'unknown') + ' · ' + String(e.ts||''))+'" style="width:'+dur+'%;background:'+phaseColor(e.phase)+'"></span>');
-    }}
-    const d = total !== null ? (total + 'ms') : '-';
-    rows.push('<div class="trow"><div class="tlabel">STEP '+it.sid+'</div><div class="track">'+segs.join('')+'</div><div class="tdur">'+d+'</div></div>');
+    const summary = stepSummaryFor(it.sid) || {{}};
+    const focus = stepFocusFor(it.sid) || {{}};
+    const flags = Array.isArray(summary.risk_flags) ? summary.risk_flags : [];
+    const focusFlags = Array.isArray(focus.risk_flags) ? focus.risk_flags : flags;
+    const role = String(focus.step_role || 'step').replaceAll('_', ' ');
+    const phase = String(focus.phase || phaseFromEvents(evs) || '-');
+    const action = String(actionSummaryLabel(it.step.actions || []) || focus.action_label || summary.action || '-');
+    const outcome = String(focus.outcome_label || (Array.isArray(summary.errors) && summary.errors[0]) || '-');
+    const headline = role + ' · ' + action;
+    const detail = outcome && outcome !== 'recorded' ? outcome : (summary.thought || phase);
+    const chips = focusFlags.slice(0, 4).map(riskChip).join('');
+    const level = String(focus.attention_level || 'normal');
+    const d = total !== null ? (total + 'ms') : (evs.length ? evs.length + ' events' : '-');
+    rows.push(
+      '<div class="story-step '+esc(level)+'" role="button" tabindex="0" onclick="selectStep(\\''+esc(it.sid)+'\\', true)">' +
+        '<div class="story-step-id">STEP '+esc(it.sid)+'</div>' +
+        '<div class="story-step-main">' +
+          '<div class="story-step-title"><span>'+esc(headline)+'</span><span class="chip">'+esc(phase)+'</span></div>' +
+          '<div class="story-step-summary">'+esc(firstLine(detail, 170))+'</div>' +
+          (chips ? '<div class="story-step-meta">'+chips+'</div>' : '') +
+        '</div>' +
+        '<div class="story-step-time">'+esc(d)+'</div>' +
+      '</div>'
+    );
   }}
-  timelineRoot.innerHTML = rows.join('') || '<div class="muted">No event timing data.</div>';
+  timelineRoot.innerHTML = rows.length ? '<div class="story-rail">'+rows.join('')+'</div>' : '<div class="muted">No focused behavior steps.</div>';
 }}
 function buildHandoffGantt(items){{
   const el = document.getElementById('handoffGantt');
@@ -2471,11 +4137,12 @@ function buildHandoffGantt(items){{
 function buildCostPanel(items){{
   const el = document.getElementById('costPanel');
   if(!el) return;
-  const m = typeof manifest === 'object' ? manifest : {{}};
+  const m = (payload.manifest && typeof payload.manifest === 'object') ? payload.manifest : {{}};
   const s = m.summary || {{}};
   const c = s.context || {{}};
   const totalSteps = Number(m.step_count || items.length);
-  const tokensTotal = Number(c.tokens_total || m.token_usage || 0);
+  const tokenValue = c.tokens_total !== undefined ? c.tokens_total : (typeof m.token_usage === 'object' ? (m.token_usage.total || m.token_usage.tokens_total || 0) : m.token_usage);
+  const tokensTotal = Number(tokenValue || 0);
   const avgTokens = totalSteps > 0 ? Math.round(tokensTotal / totalSteps) : 0;
   const runtimeSec = Number(m.latency_seconds || 0);
   const costVal = m.cost != null ? Number(m.cost) : 0;
@@ -2486,10 +4153,10 @@ function buildCostPanel(items){{
   }}
   const barH = 24, maxBar = 280, gap = 18, labelW = 130, padTop = 10, padBottom = 8;
   const rows = [
-    {{label: 'tokens total', value: tokensTotal, max: Math.max(tokensTotal, 1), color: '#5e6ad2'}},
-    {{label: 'avg tokens/step', value: avgTokens, max: Math.max(avgTokens, 1), color: '#3dc9b0'}},
-    {{label: 'runtime (s)', value: runtimeSec, max: Math.max(runtimeSec, 1), color: '#e5c100'}},
-    {{label: 'cost ($)', value: costVal, max: Math.max(costVal, 0.001), color: '#e5484d'}},
+    {{label: 'tokens total', value: tokensTotal, max: Math.max(tokensTotal, 1), color: 'var(--accent)'}},
+    {{label: 'avg tokens/step', value: avgTokens, max: Math.max(avgTokens, 1), color: 'var(--kind-memory)'}},
+    {{label: 'runtime (s)', value: runtimeSec, max: Math.max(runtimeSec, 1), color: 'var(--warn)'}},
+    {{label: 'cost ($)', value: costVal, max: Math.max(costVal, 0.001), color: 'var(--err)'}},
   ];
   const totalH = padTop + rows.length * (barH + gap) + padBottom;
   const width = labelW + maxBar + 80;
@@ -2666,7 +4333,7 @@ function buildCriticTimeline(items){{
   const plotWidth = width - left - right;
   const n = points.length;
   const totalH = top + n * (barH + gap) + bottom;
-  const actionColors = {{continue:'#4ade80', stop:'#f87171', retry:'#fbbf24'}};
+  const actionColors = {{continue:'var(--ok)', stop:'var(--err)', retry:'var(--warn)'}};
   const rows = [];
   const labels = [];
   // X axis labels
@@ -2748,9 +4415,9 @@ function buildCriticTimeline(items){{
   const head = '<div class="context-head">' +
     '<div>interventions ' + esc(String(n)) + '</div>' +
     '<div style="display:flex;gap:10px;font-size:11px">' +
-    '<span style="color:#4ade80">● continue ' + continueCount + '</span>' +
-    '<span style="color:#f87171">● stop ' + stopCount + '</span>' +
-    '<span style="color:#fbbf24">● retry ' + retryCount + '</span>' +
+    '<span style="color:var(--ok)">● continue ' + continueCount + '</span>' +
+    '<span style="color:var(--err)">● stop ' + stopCount + '</span>' +
+    '<span style="color:var(--warn)">● retry ' + retryCount + '</span>' +
     '</div>' +
     '<div>patches ' + esc(String(patchCount)) + '</div>' +
     '<div>avg score ' + esc(String(avgScore)) + '</div>' +
@@ -2809,22 +4476,45 @@ function renderMultiAgentEvent(events){{
   }}
   return html;
 }}
+function renderStoryCard(it){{
+  const focus = stepFocusFor(it.sid) || {{}};
+  const summary = stepSummaryFor(it.sid) || {{}};
+  const interaction = stepInteractionFor(it.sid);
+  const flags = Array.isArray(focus.risk_flags) ? focus.risk_flags : (Array.isArray(summary.risk_flags) ? summary.risk_flags : []);
+  const phase = focus.phase || '-';
+  const flagHtml = flags.length ? flags.map(riskChip).join('') : '<span class="risk-chip ok">no risk flags</span>';
+  const agentId = it.step.agent_id || '';
+  const agentBadge = agentId ? '<span style="display:inline-block;padding:1px 8px;border-radius:999px;font-size:11px;background:' + agentColor(agentId) + '22;border:1px solid ' + agentColor(agentId) + '66;color:' + agentColor(agentId) + ';margin-left:8px">' + esc(agentId) + '</span>' : '';
+  return '' +
+    '<div class="card-head"><div class="step">STEP ' + esc(it.sid) + agentBadge + '</div><div>' + roleChip(focus) + '</div></div>' +
+    '<div class="story-card causal-stack">' +
+      '<div class="causal-stage"><div class="k">phase</div><div class="v">' + esc(phase) + '</div></div>' +
+      '<div class="causal-stage"><div class="k">input</div><div class="v">' + renderInputBlock(it.step, false) + '</div></div>' +
+      '<div class="causal-stage"><div class="k">thought</div><div class="v">' + renderThoughtBlock(it.step, false) + '</div></div>' +
+      renderActionCalls(it.step, interaction) +
+      renderEnvironmentObservation(interaction) +
+      '<div class="summary-actions">' + flagHtml + '</div>' +
+      renderEvidenceRefs(focus) +
+      '<div class="summary-actions"><button class="btn" type="button" onclick="selectStep(\\'' + esc(it.sid) + '\\', false); renderInspector(steps.find(function(s){{return String(s.step_id)===\\'' + esc(it.sid) + '\\';}}), \\'evidence\\');">Open full evidence</button></div>' +
+    '</div>';
+}}
 function render(){{
   const q = (document.getElementById('q').value||'').toLowerCase();
   const eventFilter = document.getElementById('eventFilter').value;
   const agentFilter = document.getElementById('agentFilter').value;
   const sort = document.getElementById('sort').value;
-  const showObs = document.getElementById('showObs').checked;
-  const showCritic = document.getElementById('showCritic').checked;
   let items = steps.map(function(s){{ return {{step:s, sid:String(s.step_id), events:(eventsByStep[String(s.step_id)]||[])}}; }});
   if(eventFilter) items = items.filter(function(it){{ return it.events.some(function(e){{ return String(e.phase||'')===eventFilter; }}); }});
   if(agentFilter) items = items.filter(function(it){{ return (it.step.agent_id || '') === agentFilter; }});
   if(q) items = items.filter(function(it){{ return cardText(it.step,it.events).includes(q); }});
   items.sort(function(a,b){{ return sort==='desc' ? Number(b.sid)-Number(a.sid) : Number(a.sid)-Number(b.sid); }});
+  const focusedItems = items.filter(function(it){{ return focusMatches(it, focusMode); }});
+  const storyItems = focusedItems.length ? focusedItems : items;
+  paintRunSummary();
   paintOverview(items);
   buildScreenshotStrip();
-  buildVisualTimeline(items);
-  buildTimeline(items);
+  buildVisualTimeline(storyItems);
+  buildTimeline(storyItems);
   buildHandoffGantt(items);
   buildCostPanel(items);
   buildContextTimeline(items);
@@ -2832,45 +4522,39 @@ function render(){{
   buildCriticTimeline(items);
   flow.innerHTML = '';
   toc.innerHTML = '';
-  let lastAgentId = null;
-  for(const it of items){{
-    const d = it.step.decision || {{}};
-    const obsInput = {{
-      observe_output: it.step.observation || {{}},
-      context: it.step.context || {{}},
-    }};
+  for(const it of storyItems){{
     const card = document.createElement('article');
     card.className = 'card kind-' + inferPrimaryKind(it.events);
     card.id = 'step-' + it.sid;
-    const agentId = it.step.agent_id || '';
-    const agentBadge = agentId ? '<span style="display:inline-block;padding:1px 8px;border-radius:999px;font-size:11px;background:' + agentColor(agentId) + '22;border:1px solid ' + agentColor(agentId) + '66;color:' + agentColor(agentId) + ';margin-left:8px">' + esc(agentId) + '</span>' : '';
-    let agentSwitch = '';
-    if(agentId && lastAgentId && lastAgentId !== agentId){{
-      agentSwitch = '<div style="padding:6px 12px;margin:0 0 4px;border-radius:var(--radius-md);background:var(--surface-2);border:1px solid var(--line);font-size:12px;color:var(--kind-handoff)">&#x26A1; Agent switched: <b>' + esc(lastAgentId) + '</b> &rarr; <b>' + esc(agentId) + '</b></div>';
-    }}
-    lastAgentId = agentId || lastAgentId;
-    let h = agentSwitch + '<div class="card-head"><div class="step">STEP ' + it.sid + agentBadge + '</div><div class="muted">events ' + it.events.length + '</div></div>';
-    // Multi-agent event banners
+    card.setAttribute('data-step', it.sid);
+    card.addEventListener('click', function(e){{
+      const target = e.target;
+      if(target instanceof HTMLElement && (target.closest('button') || target.closest('a') || target.closest('summary'))) return;
+      selectStep(it.sid, false);
+    }});
+    let h = '';
     const maHtml = renderMultiAgentEvent(it.events);
     if(maHtml) h += '<div style="margin-bottom:8px">' + maHtml + '</div>';
-    if(showObs) h += sectionHtml('State', renderState(obsInput), obsInput, 'state', collapsedAll);
-    h += sectionHtml('Prompt', renderPromptMetadata(it.step.prompt_metadata || {{}}), it.step.prompt_metadata || {{}}, 'prompt', collapsedAll);
-    h += sectionHtml('Visual Assets', renderVisualAssets(it.step), {{visual_assets: it.step.visual_assets || [], observation_modalities: it.step.observation_modalities || [], model_input_modalities: it.step.model_input_modalities || [], model_input_visual_count: it.step.model_input_visual_count || 0}}, 'visual_assets', collapsedAll);
-    h += sectionHtml('Thought', renderThought(d, it.events, it.step), d, 'thought', collapsedAll);
-    h += sectionHtml('Parser Diagnostics', renderParserDiagnostics(it.step.parser_diagnostics || {{}}), it.step.parser_diagnostics || {{}}, 'parser', collapsedAll);
-    h += sectionHtml('Action', renderAction(it.step.actions||[]), it.step.actions||[], 'action', collapsedAll);
-    h += sectionHtml('Direct Observation', renderDirectObservation(it.step.action_results||[]), it.step.action_results||[], 'direct_observation', collapsedAll);
-    h += sectionHtml('Memory Update', renderMemoryUpdate(obsInput.observe_output || {{}}), obsInput.observe_output || {{}}, 'memory', collapsedAll);
-    if(showCritic) h += sectionHtml('Critic', renderCritic(it.step.critic_outputs||[]), it.step.critic_outputs||[], 'critic', collapsedAll);
-    h += sectionHtml('Trace Events', renderEvents(it.events), it.events, 'events', true);
+    h += renderStoryCard(it);
     card.innerHTML = h;
     flow.appendChild(card);
+  }}
+  if(!storyItems.length){{
+    flow.innerHTML = '<div class="card"><div class="muted">No steps match this focus mode or filter.</div></div>';
+  }}
+  for(const it of storyItems){{
     const b = document.createElement('button');
     b.className = 'toc-item';
     b.type = 'button';
+    b.setAttribute('data-step', it.sid);
+    const summary = stepSummaryFor(it.sid) || {{}};
+    const focus = stepFocusFor(it.sid) || {{}};
+    const flags = Array.isArray(focus.risk_flags) ? focus.risk_flags : (Array.isArray(summary.risk_flags) ? summary.risk_flags : []);
+    const flagMarks = flags.map(function(f){{ return '<span class="toc-flag '+esc(String(f))+'" title="'+esc(String(f))+'"></span>'; }}).join('');
+    const agentId = it.step.agent_id || '';
     const tocLabel = 'STEP ' + it.sid + (agentId ? ' [' + agentId + ']' : '');
-    b.textContent = tocLabel;
-    b.onclick = function(){{ const target = document.getElementById('step-' + it.sid); if(target) target.scrollIntoView({{behavior:'smooth',block:'start'}}); highlightToc(b); }};
+    b.innerHTML = '<div>' + esc(tocLabel) + '</div><div class="muted" style="font-size:10px;margin-top:3px">' + esc(firstLine((focus.step_role || '') + ' · ' + (focus.action_label || summary.action || ''), 44)) + '</div><div class="toc-flags">' + flagMarks + '</div>';
+    b.onclick = function(){{ selectStep(it.sid, true); }};
     toc.appendChild(b);
   }}
   const phases = new Set();
@@ -2903,6 +4587,11 @@ function render(){{
     af.appendChild(op);
   }});
   if(keepAgent) af.value = keepAgent;
+  document.querySelectorAll('[data-focus-mode]').forEach(function(btn){{
+    btn.classList.toggle('active', btn.getAttribute('data-focus-mode') === focusMode);
+  }});
+  if(!storyItems.some(function(it){{ return it.sid === activeStepId; }}) && storyItems.length) activeStepId = storyItems[0].sid;
+  selectStep(activeStepId, false);
 }}
 function highlightToc(el){{
   document.querySelectorAll('.toc-item').forEach(function(x){{ x.classList.remove('active'); }});
@@ -2912,18 +4601,28 @@ document.getElementById('q').addEventListener('input', render);
 document.getElementById('eventFilter').addEventListener('change', render);
 document.getElementById('agentFilter').addEventListener('change', render);
 document.getElementById('sort').addEventListener('change', render);
-document.getElementById('showObs').addEventListener('change', render);
-document.getElementById('showCritic').addEventListener('change', render);
-document.getElementById('foldAll').addEventListener('click', function(){{
-  collapsedAll = !collapsedAll;
-  document.getElementById('foldAll').textContent = collapsedAll ? 'Expand all' : 'Fold all';
-  render();
+document.querySelectorAll('[data-focus-mode]').forEach(function(btn){{
+  btn.addEventListener('click', function(){{
+    focusMode = btn.getAttribute('data-focus-mode') || 'focus';
+    localStorage.setItem('qita_focus_mode', focusMode);
+    render();
+  }});
 }});
 fontDownBtn.addEventListener('click', function(){{ fontScale -= 0.1; applyFontScale(); }});
 fontUpBtn.addEventListener('click', function(){{ fontScale += 0.1; applyFontScale(); }});
 fontResetBtn.addEventListener('click', function(){{ fontScale = 1.1; applyFontScale(); }});
 tabTraj.addEventListener('click', function(){{ activeTab = 'traj'; applyTab(); }});
 tabManifest.addEventListener('click', function(){{ activeTab = 'manifest'; applyTab(); }});
+document.addEventListener('click', function(e){{
+  const t = e.target;
+  if(!(t instanceof HTMLElement)) return;
+  const callTarget = t.closest('[data-select-call="true"]');
+  if(!callTarget) return;
+  const sid = callTarget.getAttribute('data-call-step');
+  const index = callTarget.getAttribute('data-call-index') || callTarget.getAttribute('data-call-badge');
+  if(sid === null || index === null) return;
+  selectCall(sid, Number(index), callTarget.getAttribute('data-call-scroll') === 'true');
+}});
 document.addEventListener('click', function(e){{
   const t = e.target;
   if(!(t instanceof HTMLElement)) return;
@@ -2950,7 +4649,7 @@ function startStream(){{
   const endpoint = isLive ? '/api/live/' : '/api/stream/';
   _sse = new EventSource(endpoint + runId);
   document.getElementById('streamBtn').textContent = isLive ? 'stop live' : 'stop stream';
-  document.getElementById('streamBtn').style.borderColor = '#4ade80';
+  document.getElementById('streamBtn').style.borderColor = 'var(--ok)';
   _liveStepCount = 0;
   _sse.addEventListener('run_start', e => {{
     const d = JSON.parse(e.data);
@@ -3123,6 +4822,7 @@ def _render_replay_html(payload: Dict[str, Any], speed_ms: int) -> str:
     return f"""<!doctype html>
 <html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
 <title>qita replay {run_id}</title>
+{_DESIGN_HEAD}
 <style>
 {_DESIGN_TOKENS}
 body{{margin:0;background:var(--bg);font-family:var(--font-mono);color:var(--txt)}}
@@ -3139,7 +4839,7 @@ body{{margin:0;background:var(--bg);font-family:var(--font-mono);color:var(--txt
 .replay-shot{{position:relative;border:1px solid var(--line);border-radius:var(--radius-md);overflow:hidden;background:var(--bg);min-height:180px;display:flex;align-items:center;justify-content:center}}
 .replay-shot img{{max-width:100%;display:block}}
 .replay-overlay{{position:absolute;inset:0;pointer-events:none}}
-.replay-dot{{position:absolute;width:12px;height:12px;border-radius:var(--radius-pill);background:rgba(229,72,77,.85);border:2px solid var(--txt);transform:translate(-50%,-50%)}}
+.replay-dot{{position:absolute;width:12px;height:12px;border-radius:var(--radius-pill);background:var(--err);border:2px solid var(--txt);transform:translate(-50%,-50%)}}
 .card{{border:1px solid var(--line);background:var(--surface-1);border-radius:var(--radius-md);padding:10px}}
 .ctitle{{font-size:12px;font-weight:700;margin-bottom:6px;display:flex;justify-content:space-between;gap:8px}}
 .tag{{font-size:10px;border:1px solid var(--line);padding:1px 6px;border-radius:var(--radius-pill);color:var(--subtle)}}
@@ -3154,7 +4854,7 @@ body{{margin:0;background:var(--bg);font-family:var(--font-mono);color:var(--txt
 @keyframes blink{{to{{visibility:hidden}}}}
 </style></head><body>
 <div class="wrap">
-  <div class="top"><div>QitOS Replay · {run_id}</div><div><a class="btn" href="/run/{run_id}">view</a> <a class="btn" href="/">board</a></div></div>
+  <div class="top"><div>QitOS Replay · {run_id}</div><div><a class="btn" href="/run/{run_id}">view</a> <a class="btn" href="/">board</a> {_THEME_TOGGLE_HTML}</div></div>
   <div class="terminal">
     <div class="bar">
       <span>qita replay</span>

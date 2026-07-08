@@ -171,7 +171,6 @@ examples/qitos_tau_workspace/
 qitos_cybench_workspace/
 examples/qitos_cybench_workspace/
 examples/playground/
-qitos/benchmark/cybergym/agent/
 
 # API secrets (never push)
 api_info.md

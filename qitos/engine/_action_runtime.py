@@ -64,7 +64,11 @@ class _ActionRuntime(Generic[StateT, ActionT]):
             if handoff is not None:
                 return handoff
             actions.append(normalized)
-        for normalized_action in actions:
+        # Pre-flight checks: collect blocked/loop-blocked actions, execute the rest
+        blocked_indices: set[int] = set()
+        blocked_results: List[tuple[int, ToolResult]] = []
+        blocked_invocations: List[tuple[int, Dict[str, Any]]] = []
+        for i, normalized_action in enumerate(actions):
             engine._memory_append("action", normalized_action, record.step_id)
             block_reason = self._action_block_reason(state, normalized_action)
             if block_reason:
@@ -81,23 +85,22 @@ class _ActionRuntime(Generic[StateT, ActionT]):
                         "error_category": "action_blocked",
                     },
                 )
-                record.action_results = [blocked_result]
-                record.tool_invocations = [
-                    {
-                        "tool_name": normalized_action.name,
-                        "toolset_name": None,
-                        "toolset_version": None,
-                        "source": "agent_action_gate",
-                        "attempts": 0,
-                        "latency_ms": 0,
-                        "status": "error",
-                        "error_category": "action_blocked",
-                        "error": "action_blocked",
-                    }
-                ]
+                blocked_indices.add(i)
+                blocked_results.append((i, blocked_result))
+                blocked_invocations.append((i, {
+                    "tool_name": normalized_action.name,
+                    "toolset_name": None,
+                    "toolset_version": None,
+                    "source": "agent_action_gate",
+                    "attempts": 0,
+                    "latency_ms": 0,
+                    "status": "error",
+                    "error_category": "action_blocked",
+                    "error": "action_blocked",
+                }))
                 engine._memory_append("action_result", blocked_result, record.step_id)
                 if record.decision_source == "native_tool_calls" and record.native_tool_call_used:
-                    tool_call_id = normalized_action.action_id or f"call_{record.step_id}_0"
+                    tool_call_id = normalized_action.action_id or f"call_{record.step_id}_{i}"
                     engine._history_append(
                         "tool",
                         self._serialize_for_tool_message(
@@ -137,18 +140,7 @@ class _ActionRuntime(Generic[StateT, ActionT]):
                         ],
                     },
                 )
-                engine._dispatch_hook(
-                    "on_after_act",
-                    engine._hook_context(
-                        step_id=record.step_id,
-                        phase=RuntimePhase.ACT,
-                        state=state,
-                        decision=decision,
-                        action_results=[blocked_result.to_dict()],
-                        record=record,
-                    ),
-                )
-                return [blocked_result.to_dict()]
+                continue
             loop_result = engine._tool_loop_detector.check_detailed(
                 normalized_action.name, normalized_action.args
             )
@@ -162,7 +154,19 @@ class _ActionRuntime(Generic[StateT, ActionT]):
                         "reason": loop_result.message,
                     },
                 )
-                record.action_results = [loop_tool_result]
+                blocked_indices.add(i)
+                blocked_results.append((i, loop_tool_result))
+                blocked_invocations.append((i, {
+                    "tool_name": normalized_action.name,
+                    "toolset_name": None,
+                    "toolset_version": None,
+                    "source": "loop_detector",
+                    "attempts": 0,
+                    "latency_ms": 0,
+                    "status": "error",
+                    "error_category": "tool_call_loop_detected",
+                    "error": "tool_call_loop_detected",
+                }))
                 engine._history_append(
                     "user",
                     loop_result.message,
@@ -178,7 +182,7 @@ class _ActionRuntime(Generic[StateT, ActionT]):
                         "recovery_message": loop_result.message,
                     },
                 )
-                return [loop_tool_result.to_dict()]
+                continue
             elif loop_result.level == "warn":
                 # Soft warning: inject into the observation as guidance
                 engine._history_append(
@@ -188,8 +192,31 @@ class _ActionRuntime(Generic[StateT, ActionT]):
                     metadata={"source": "loop_detector_warning"},
                 )
 
-        execution = engine.executor.execute(actions, env=engine.env, state=state)
-        record.tool_invocations = [
+        # If all actions were blocked, return immediately
+        if len(blocked_indices) == len(actions):
+            merged_results = [br for _, br in sorted(blocked_results, key=lambda x: x[0])]
+            merged_invocations = [bi for _, bi in sorted(blocked_invocations, key=lambda x: x[0])]
+            record.action_results = merged_results
+            record.tool_invocations = merged_invocations
+            engine._dispatch_hook(
+                "on_after_act",
+                engine._hook_context(
+                    step_id=record.step_id,
+                    phase=RuntimePhase.ACT,
+                    state=state,
+                    decision=decision,
+                    action_results=[r.to_dict() for r in merged_results],
+                    record=record,
+                ),
+            )
+            return [r.to_dict() for r in merged_results]
+
+        # Execute non-blocked actions
+        executable_actions = [a for i, a in enumerate(actions) if i not in blocked_indices]
+        executable_indices = [i for i in range(len(actions)) if i not in blocked_indices]
+        execution = engine.executor.execute(executable_actions, env=engine.env, state=state)
+        # Build tool_invocations from execution results (executable only)
+        exec_invocations = [
             {
                 "tool_name": item.name,
                 "toolset_name": item.metadata.get("toolset_name"),
@@ -270,6 +297,35 @@ class _ActionRuntime(Generic[StateT, ActionT]):
                         },
                     )
                 )
+
+        # Merge blocked results and execution results back into original action order
+        if blocked_indices:
+            # Map execution result indices to original action indices
+            exec_result_by_orig_idx: Dict[int, ToolResult] = {}
+            for exec_i, orig_i in enumerate(executable_indices):
+                if exec_i < len(results):
+                    exec_result_by_orig_idx[orig_i] = results[exec_i]
+            blocked_result_by_orig_idx: Dict[int, ToolResult] = {idx: r for idx, r in blocked_results}
+            blocked_inv_by_orig_idx: Dict[int, Dict[str, Any]] = {idx: inv for idx, inv in blocked_invocations}
+            exec_inv_by_orig_idx: Dict[int, Dict[str, Any]] = {}
+            for exec_i, orig_i in enumerate(executable_indices):
+                if exec_i < len(exec_invocations):
+                    exec_inv_by_orig_idx[orig_i] = exec_invocations[exec_i]
+
+            merged_results: List[ToolResult] = []
+            merged_invocations: List[Dict[str, Any]] = []
+            for i in range(len(actions)):
+                if i in blocked_indices:
+                    merged_results.append(blocked_result_by_orig_idx.get(i, ToolResult(status="error", output=None, error="action_blocked")))
+                    merged_invocations.append(blocked_inv_by_orig_idx.get(i, {}))
+                else:
+                    merged_results.append(exec_result_by_orig_idx.get(i, ToolResult(status="error", output=None, error="execution_failed")))
+                    merged_invocations.append(exec_inv_by_orig_idx.get(i, {}))
+            results = merged_results
+            record.tool_invocations = merged_invocations
+        else:
+            record.tool_invocations = exec_invocations
+
         if engine.env is not None:
             env_result = engine._run_env_step(
                 decision=decision,
@@ -286,7 +342,7 @@ class _ActionRuntime(Generic[StateT, ActionT]):
         record.action_results = results
         for item in results:
             engine._memory_append("action_result", item, record.step_id)
-        for normalized_action in actions:
+        for normalized_action in executable_actions:
             engine._tool_loop_detector.record(
                 normalized_action.name, dict(normalized_action.args or {})
             )

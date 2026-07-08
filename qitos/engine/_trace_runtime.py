@@ -182,6 +182,7 @@ class _TraceRuntime(Generic[StateT]):
                 "prompt_builder": (engine._last_prompt_metadata or {}).get(
                     "prompt_builder"
                 ),
+                "inference_task_id": run_meta.get("inference_task_id"),
             }
         )
         run_spec = getattr(engine, "run_spec", None)
@@ -243,6 +244,14 @@ class _TraceRuntime(Generic[StateT]):
             if llm is not None
             else {}
         )
+        inference_task_id = ""
+        if llm is not None:
+            inference_task_id = str(
+                getattr(llm, "inference_key", None)
+                or harness_meta.get("inference_task_id")
+                or harness_meta.get("inference_key")
+                or ""
+            ).strip()
         protocol = engine.resolve_protocol() if hasattr(engine, "resolve_protocol") else None
         parser_name = (
             engine.parser.__class__.__name__
@@ -283,6 +292,7 @@ class _TraceRuntime(Generic[StateT]):
             "context": engine._context_runtime.run_meta(llm),
             "prompt": dict(getattr(engine, "_last_prompt_metadata", {}) or {}),
             "harness": harness_meta,
+            "inference_task_id": inference_task_id or None,
             "run_spec": (
                 engine.run_spec.to_dict()
                 if isinstance(getattr(engine, "run_spec", None), RunSpec)

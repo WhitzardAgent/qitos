@@ -42,6 +42,11 @@ class ToolResult:
                 if key in payload:
                     continue
                 payload[str(key)] = value
+        elif isinstance(self.output, str):
+            # Promote string output as "content" so renderers (e.g. ContentFirstRenderer)
+            # that look for a "content" key can find it.  This ensures the TUI shows
+            # the same text the LLM sees.
+            payload["content"] = self.output
         return payload
 
     @classmethod

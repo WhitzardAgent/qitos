@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cybergym-agent"
+version = "0.11.0"
+description = "Automated vulnerability reproduction (PoC generation) agent for the CyberGym benchmark"
+requires-python = ">=3.10"
+dependencies = [
+    "tree-sitter",
+    "tree-sitter-c",
+    "tree-sitter-cpp",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-timeout",
+]
+knowledge-core = ["construct>=2.10", "kaitaistruct>=0.10"]
+knowledge-pdf = ["pikepdf>=8.0"]
+knowledge-font = ["fonttools>=4.40"]
+knowledge-packet = ["scapy>=2.5"]
+knowledge-image = ["tifffile>=2023.7", "Pillow>=10.0"]
+knowledge-binary = ["lief>=0.14", "pyelftools>=0.30"]
+knowledge-crypto = ["cryptography>=41.0"]
+knowledge-runtime = ["lxml>=5.0"]
+knowledge-codec = []  # uses construct from knowledge-core
+knowledge-cad = []    # uses construct from knowledge-core
+knowledge-audio = []  # uses stdlib wave + construct
+knowledge-all = [
+    "cybergym-agent[knowledge-core,knowledge-pdf,knowledge-font,knowledge-packet,knowledge-image,knowledge-binary,knowledge-crypto,knowledge-runtime]",
+]
+
+[tool.pytest.ini_options]
+pythonpath = [".."]

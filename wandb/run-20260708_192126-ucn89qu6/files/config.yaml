@@ -1,0 +1,29 @@
+_wandb:
+    value:
+        cli_version: 0.27.0
+        e:
+            v010dac2egkd8221bnsui2vfzey2ohhu:
+                email: xdpan.fudan@gmail.com
+                executable: /opt/anaconda3/bin/python3
+                git:
+                    commit: e37540f15efb2f3c12d61c7ac5cb95fc7cf9b5ed
+                    remote: https://github.com/WhitzardAgent/qitos.git
+                host: morinopdeMacBook-Pro.local
+                os: macOS-15.7.3-arm64-arm-64bit
+                program: <python with no main file>
+                python: CPython 3.12.7
+                root: /Users/morinop/Desktop/traj_analyzer/qitos
+                startedAt: "2026-07-08T11:21:26.674838Z"
+                writerId: v010dac2egkd8221bnsui2vfzey2ohhu
+        m: []
+        python_version: 3.12.7
+        t:
+            "3":
+                - 2
+                - 13
+            "4": 3.12.7
+            "5": 0.27.0
+            "10":
+                - 20
+            "12": 0.27.0
+            "13": darwin-arm64

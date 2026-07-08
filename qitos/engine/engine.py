@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import logging
+import os
+import sys
 import time
+import traceback
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Dict, Generic, List, Optional, TypeVar
 from uuid import uuid4
 
@@ -834,7 +838,11 @@ class Engine(Generic[StateT, ObservationT, ActionT]):
         if _resume_state is not None:
             state = _resume_state
         else:
-            state = self.agent.init_state(task_text, **kwargs)
+            try:
+                state = self.agent.init_state(task_text, **kwargs)
+            except Exception as exc:
+                self._report_runtime_exception("INIT_STATE", 0, exc, emit=False)
+                raise
         self._memory_append(
             "task",
             {
@@ -849,14 +857,22 @@ class Engine(Generic[StateT, ObservationT, ActionT]):
         started_at = time.monotonic()
         self._hydrate_trace_metadata(task_obj=task_obj, task_text=task_text)
 
-        self._setup_toolsets(
-            {
-                "state": state,
-                "trace_writer": self.trace_writer,
-                "task": task_obj or task_text,
-            }
-        )
-        self._setup_env(task_obj=task_obj, state=state, kwargs=kwargs)
+        try:
+            self._setup_toolsets(
+                {
+                    "state": state,
+                    "trace_writer": self.trace_writer,
+                    "task": task_obj or task_text,
+                }
+            )
+        except Exception as exc:
+            self._report_runtime_exception("SETUP_TOOLSETS", 0, exc, emit=False)
+            raise
+        try:
+            self._setup_env(task_obj=task_obj, state=state, kwargs=kwargs)
+        except Exception as exc:
+            self._report_runtime_exception("SETUP_ENV", 0, exc, emit=False)
+            raise
         harness_diagnostics = self._harness_mismatch_diagnostics()
         self._emit(
             0,
@@ -1338,6 +1354,7 @@ class Engine(Generic[StateT, ObservationT, ActionT]):
                     "failure_report": build_failure_report(
                         self.recovery_policy, state.stop_reason
                     ),
+                    "last_error": self._last_runtime_error,
                 },
             )
 
@@ -1562,7 +1579,78 @@ class Engine(Generic[StateT, ObservationT, ActionT]):
                 diff[key] = {"before": b, "after": a}
         return diff
 
+    def _report_runtime_exception(
+        self,
+        phase: RuntimePhase | str,
+        step_id: int,
+        exc: Exception,
+        *,
+        emit: bool = True,
+    ) -> None:
+        """Make handled runtime exceptions visible in stderr, traces, and a file.
+
+        Python normally prints only uncaught exceptions. Recovery deliberately
+        catches exceptions, so without this explicit report a run can end with
+        ``unrecoverable_error`` and no useful diagnostics in redirected logs.
+        """
+        phase_name = getattr(phase, "value", str(phase))
+        traceback_text = "".join(
+            traceback.format_exception(type(exc), exc, exc.__traceback__)
+        )
+        payload = {
+            "phase": phase_name,
+            "step_id": int(step_id),
+            "error_type": type(exc).__name__,
+            "error_message": str(exc),
+            "traceback": traceback_text,
+        }
+        self._last_runtime_error = payload
+
+        print(
+            f"[QitOS] runtime exception phase={phase_name} step={step_id} "
+            f"type={type(exc).__name__}: {exc}",
+            file=sys.stderr,
+            flush=True,
+        )
+        print(traceback_text, file=sys.stderr, end="", flush=True)
+
+        error_log = os.environ.get("QITOS_ERROR_LOG", "").strip()
+        if not error_log:
+            trace_dir = (
+                os.environ.get("QITOS_TRACE_DIR", "").strip()
+                or os.environ.get("CYBERGYM_TASK_TRACE_DIR", "").strip()
+            )
+            if trace_dir:
+                error_log = str(Path(trace_dir) / "step_error.log")
+        if error_log:
+            try:
+                path = Path(error_log)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with path.open("a", encoding="utf-8") as stream:
+                    stream.write(
+                        f"\n{'=' * 60}\nQitOS RUNTIME EXCEPTION "
+                        f"phase={phase_name} step={step_id}\n"
+                    )
+                    stream.write(traceback_text)
+                    stream.flush()
+            except Exception as log_exc:
+                _logger.warning("Failed to write QitOS error log %s: %s", error_log, log_exc)
+
+        if emit:
+            try:
+                self._emit(
+                    int(step_id),
+                    RuntimePhase.RECOVER,
+                    ok=False,
+                    payload=payload,
+                    error=str(exc),
+                )
+            except Exception as emit_exc:
+                _logger.warning("Failed to emit QitOS recovery diagnostic: %s", emit_exc)
+
     def _recover(self, state: StateT, phase: RuntimePhase, exc: Exception) -> bool:
+        step_id = int(getattr(state, "current_step", len(self.records) - 1) or 0)
+        self._report_runtime_exception(phase, step_id, exc)
         return self._control_runtime.recover(state, phase, exc)
 
     def _emit(
@@ -2087,6 +2175,7 @@ class Engine(Generic[StateT, ObservationT, ActionT]):
 
     def _reset_run_state(self) -> None:
         self._trace_runtime.reset_run_state()
+        self._last_runtime_error: Optional[Dict[str, Any]] = None
         self._resolved_protocol = None
         self._resolved_protocol_source = ""
         self._last_prompt_metadata = {}

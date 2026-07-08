@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
@@ -128,11 +129,25 @@ def _run_example_job(
     run_spec: RunSpec,
     experiment_spec: ExperimentSpec,
 ) -> BenchmarkRunResult:
-    produced = runner(
-        **item,
-        run_spec=run_spec,
-        experiment_spec=experiment_spec,
-    )
+    # Set sticky-routing key so the upstream load balancer routes all
+    # LLM requests for this task to the same backend node.  This improves
+    # KV-cache hit rate and reduces latency jitter.
+    _prev_key = os.environ.get("QITOS_INFERENCE_KEY")
+    job_key = str(item.get("job_key") or item.get("task_id") or "")
+    if job_key:
+        os.environ["QITOS_INFERENCE_KEY"] = job_key
+
+    try:
+        produced = runner(
+            **item,
+            run_spec=run_spec,
+            experiment_spec=experiment_spec,
+        )
+    finally:
+        if _prev_key is not None:
+            os.environ["QITOS_INFERENCE_KEY"] = _prev_key
+        else:
+            os.environ.pop("QITOS_INFERENCE_KEY", None)
     row = BenchmarkRunResult.from_value(produced)
     metadata = dict(row.metadata or {})
     if item.get("job_key") is not None:

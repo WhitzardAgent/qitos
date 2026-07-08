@@ -57,6 +57,7 @@ class OpenAICompatibleAdapter(ModelAdapter):
         system_prompt = kwargs.get("system_prompt")
         context_window = kwargs.get("context_window")
         default_request_kwargs = kwargs.get("default_request_kwargs")
+        inference_key = kwargs.get("inference_key")
         if not isinstance(preset, FamilyPreset):
             raise TypeError("preset must be a FamilyPreset")
         if not isinstance(model_name, str):
@@ -81,15 +82,20 @@ class OpenAICompatibleAdapter(ModelAdapter):
                 ),
             ),
             default_request_kwargs=dict(default_request_kwargs) if isinstance(default_request_kwargs, dict) else None,
+            inference_key=str(inference_key) if inference_key is not None else None,
         )
+        metadata = {
+            "family_preset": preset.id,
+            "context_policy": context_policy.to_dict(),
+            "adapter_kind": self.kind,
+        }
+        if inference_key:
+            metadata["inference_key"] = str(inference_key)
+            metadata["inference_task_id"] = str(inference_key)
         setattr(
             llm,
             "qitos_harness_metadata",
-            {
-                "family_preset": preset.id,
-                "context_policy": context_policy.to_dict(),
-                "adapter_kind": self.kind,
-            },
+            metadata,
         )
         return llm
 

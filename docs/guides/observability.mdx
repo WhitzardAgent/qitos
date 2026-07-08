@@ -80,24 +80,42 @@ Click **view** on any run card to open the run detail page. The page has two tab
 
 **Traj tab**
 
-The trajectory (the ordered sequence of steps the agent took) view shows every step as a card with five collapsible sections:
+The trajectory (the ordered sequence of steps the agent took) view opens as a failure-diagnosis workbench. The first viewport includes:
 
-- **State** — scalar fields from the observation output
-- **Thought** -- the model's rationale (from `decision.rationale` or parsed `Thought:` line)
-- **Action** -- the tool call that was dispatched based on the decision
-- **Direct Observation** -- action results (the data returned after the tool executes); search hits render as a table, errors are highlighted
-- **Critic** -- critic (a step-level validator) output (`action`, `reason`, `score`) if critics were attached
-- **Trace Events** — raw `RuntimeEvent` list for the step (collapsed by default)
+- **Diagnosis Strip** — outcome, primary failure, next step to inspect, and trace-derived risk flags
+- **Focus Navigator** — defaults to critical steps, submissions, errors, and phase changes, with an `All Steps` mode when you want the full trajectory
+- **Agent Behavior Story** — step cards organized as a causal `Input -> Thought -> Action Calls -> Environment Observation` chain
+- **Inspector** — a sticky right-side panel with step-level tabs and call-level Summary, Params, Result, and Raw tabs
+- **Run Metadata** — config, cost, context, parser, critic, and raw telemetry are folded away by default so they do not compete with the diagnostic path
 
-The **Step Navigator** sidebar lets you jump to any step. Use the controls to:
+Each default step card is intentionally sparse:
+
+- **Role / phase** — why this step matters in the run narrative
+- **Input** — the complete prepared input delivered to the model, folded by default
+- **Thought** — the recorded rationale in an independent folded evidence block
+- **Action Calls** — numbered action controls followed by one paired unit per call, containing its parameters, execution status, latency, attempts, and corresponding result
+- **Environment Observation** — environment-only results in a separate, visually quieter folded lane so they are not mistaken for tool results
+- **Evidence links** — jump points for full thought/action/observation/parser/critic/raw evidence in the Inspector
+
+Input prefers the current step's `model_input.prepared_full`, then `prepared`, and falls back to the recorded step observation for older traces. Each evidence block shows its source and complete character count; expanded code views preserve every recorded character, newline, and field, wrap long lines inside the available width, and support copying the complete unmodified text.
+
+For each action call, qita prefers an explicit `action_id` when pairing results. Standard QitOS traces without IDs use the Engine's original action/result order. The call's Result view uses `observation_ready.action_results`, which is what the agent could observe, while the Inspector Raw view also preserves canonical `step.action_results`. Environment-only results are separated before pairing. Extra actions or results are shown as **Unmatched evidence** rather than assigned speculatively.
+
+The run API exposes this derived view as optional `step_interactions`. It is a qita presentation model, not a new stable core trace schema; `manifest.json`, `events.jsonl`, and `steps.jsonl` remain unchanged.
+
+Numbered call badges select and locate calls without hiding repeated tool names. Failed, blocked, `NO_TRIGGER`, and submission-error calls expand automatically; successful and verified calls stay folded until needed. On narrow screens, the causal chain and Inspector stack vertically without horizontal page overflow.
+
+Long evidence is not truncated as the only available view. qita uses short status labels for scanning, then keeps the full input, thought, raw model output, action parameters, tool results, environment observations, terminal output, parser diagnostics, critic output, and raw JSON in expandable scrollable detail blocks.
+
+The **Focus Navigator** sidebar lets you jump to important steps and shows small health markers for parser errors, tool/event errors, critic retries/stops, context pressure, CyberGym PoC submissions, and visual evidence. Use the controls to:
 - Filter by text across all step content
 - Filter by event phase
 - Sort steps ascending or descending
-- Toggle observation and critic sections
-- Fold or expand all sections at once
+- Switch between critical/submission/error/phase/all-step views
 - Adjust font size with `A-` / `A` / `A+`
+- Toggle between light and dark qita themes; the choice is saved in the browser and applies to board, run detail, replay, and comparison pages
 
-A gantt-like **phase timeline** at the top of the traj view shows phase durations for each step as color-coded segments.
+Click a navigator item, timeline row, or story card to synchronize the Inspector with that step. Click a numbered action badge or call unit to switch the Inspector into call mode, where **Params** and **Result** show complete wrapped evidence and **Raw** keeps action, invocation, model-visible result, and canonical raw result together.
 
 **Manifest tab**
 
