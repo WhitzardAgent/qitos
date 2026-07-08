@@ -368,16 +368,23 @@ class ContentFirstRenderer:
         return f"stop={stop_reason} · result={self._truncate(self._to_text(final_result), 180)}"
 
     def _action_from_dict(self, action: Any) -> Dict[str, str]:
-        if not isinstance(action, dict):
+        # Normalize: if it's an Action object, extract name/args directly
+        if hasattr(action, "name") and hasattr(action, "args"):
+            name = str(getattr(action, "name", "") or "action")
+            args = getattr(action, "args", None)
+            if not isinstance(args, dict):
+                args = {}
+        elif isinstance(action, dict):
+            name = str(
+                action.get("name") or action.get("tool") or action.get("action") or "action"
+            )
+            args = action.get("args") if isinstance(action.get("args"), dict) else {}
+        else:
             return {
                 "label": "ACTION",
                 "detail": self._to_text(action),
                 "status": "neutral",
             }
-        name = str(
-            action.get("name") or action.get("tool") or action.get("action") or "action"
-        )
-        args = action.get("args") if isinstance(action.get("args"), dict) else {}
         if args:
             # Format as Python call: tool_name(key1=val1, key2=val2, ...)
             # NO truncation — full args are critical for debugging

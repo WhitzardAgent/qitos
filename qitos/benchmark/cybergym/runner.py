@@ -92,7 +92,7 @@ def run_cybergym_agent_task(
 ) -> dict[str, Any]:
     try:
         from .agent.adapter import CyberGymAdapter
-        from .agent.cli import build_agent
+        from .agent.cli import build_agent, build_inference_task_id
         from .agent.stop_criteria import PoCVerificationCriteria
     except ModuleNotFoundError as exc:
         raise ModuleNotFoundError(
@@ -119,13 +119,14 @@ def run_cybergym_agent_task(
     # root is still passed separately for repo indexing and source navigation.
     workspace_root = task_root
 
+    inference_task_id = build_inference_task_id(task.id)
     agent = build_agent(
         model=model_name,
         workspace_root=workspace_root,
         task_root=task_root,
         server_url=server,
         max_steps=internal_step_limit,
-        llm_config={"api_key": api_key, "base_url": base_url},
+        llm_config={"api_key": api_key, "base_url": base_url, "inference_key": inference_task_id},
     )
 
     if os.getenv("CYBERGYM_USE_DOCKER_ENV", "0") == "1":
