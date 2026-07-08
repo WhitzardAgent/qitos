@@ -27,8 +27,8 @@ xref
 trailer
 << /Size 4 /Root 1 0 R >>
 startxref
-190
-%%%%EOF
+186
+%%EOF
 """
 
 
@@ -63,9 +63,20 @@ def inspect(path: str) -> Dict[str, Any]:
     result["objects"] = objects
 
     # Check xref and trailer
-    xref_pos = text.rfind("startxref")
-    if xref_pos >= 0:
-        result["startxref_offset"] = xref_pos
+    xref_table_pos = text.find("xref")
+    if xref_table_pos >= 0:
+        result["xref_table_offset"] = xref_table_pos
+    startxref_pos = text.rfind("startxref")
+    if startxref_pos >= 0:
+        result["startxref_offset"] = startxref_pos
+        after = text[startxref_pos + len("startxref"):startxref_pos + len("startxref") + 64].strip()
+        value_text = after.splitlines()[0].strip() if after else ""
+        try:
+            startxref_value = int(value_text)
+            result["startxref_value"] = startxref_value
+            result["startxref_matches_xref"] = startxref_value == xref_table_pos
+        except ValueError:
+            result["startxref_error"] = "Invalid startxref value"
     eof_pos = text.rfind("%%EOF")
     result["has_eof_marker"] = eof_pos >= 0
 

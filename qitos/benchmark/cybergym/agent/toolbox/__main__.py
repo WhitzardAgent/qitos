@@ -2,12 +2,13 @@
 
 Usage:
     python3 -m toolbox <domain> <command> [options]
+    python3 -m toolbox capabilities --json
 
-Domains: png, jpeg, zip, pdf, bmp, wav, mutate, binary
+Domains: capabilities, png, jpeg, zip, pdf, bmp, wav, mutate, binary
 
 Commands per format domain:
     minimal     - Generate a minimal valid carrier (stdout or --output FILE)
-    inspect FILE - Parse file structure, output JSON
+    inspect --file FILE - Parse file structure, output JSON
 
 Mutate commands:
     patch   --file FILE --offset N --hex AA BB ...
@@ -15,9 +16,9 @@ Mutate commands:
     truncate --file FILE --size N
 
 Binary commands:
-    hexdump FILE [--offset N] [--length N]
-    find    FILE --hex AA BB ...
-    slice   FILE --offset N --length N
+    hexdump --file FILE [--offset N] [--length N]
+    find    --file FILE --hex AA BB ...
+    slice   --file FILE --offset N --length N
 """
 
 from __future__ import annotations
@@ -26,6 +27,12 @@ import argparse
 import json
 import sys
 from pathlib import Path
+
+
+def _coerce_positional_file(args: argparse.Namespace) -> None:
+    """Allow legacy positional file syntax while documenting --file."""
+    if not args.file and getattr(args, "extra", None):
+        args.file = args.extra[0]
 
 
 def _write_output(data: bytes, output_path: str | None) -> None:
@@ -40,11 +47,12 @@ def _write_output(data: bytes, output_path: str | None) -> None:
 def _handle_format_domain(domain: str, command: str, args: argparse.Namespace) -> None:
     """Handle format domain commands (minimal, inspect)."""
     from .formats import png, jpeg, zipfmt, pdf, bmp, wav
+    from .capabilities import normalize_format
 
+    domain = normalize_format(domain)
     domain_map = {
         "png": png,
         "jpeg": jpeg,
-        "jpg": jpeg,
         "zip": zipfmt,
         "pdf": pdf,
         "bmp": bmp,
@@ -59,6 +67,7 @@ def _handle_format_domain(domain: str, command: str, args: argparse.Namespace) -
         data = mod.minimal()
         _write_output(data, args.output)
     elif command == "inspect":
+        _coerce_positional_file(args)
         if not args.file:
             print("inspect requires --file", file=sys.stderr)
             sys.exit(1)
@@ -109,6 +118,7 @@ def _handle_binary(command: str, args: argparse.Namespace) -> None:
     from .binary import hexdump, find_bytes, slice_bytes
 
     if command == "hexdump":
+        _coerce_positional_file(args)
         if not args.file:
             print("hexdump requires --file", file=sys.stderr)
             sys.exit(1)
@@ -117,6 +127,7 @@ def _handle_binary(command: str, args: argparse.Namespace) -> None:
         length = args.length or 256
         print(hexdump(data, offset, length))
     elif command == "find":
+        _coerce_positional_file(args)
         if not args.file or not args.hex:
             print("find requires --file, --hex", file=sys.stderr)
             sys.exit(1)
@@ -128,6 +139,7 @@ def _handle_binary(command: str, args: argparse.Namespace) -> None:
         else:
             print("Pattern not found")
     elif command == "slice":
+        _coerce_positional_file(args)
         if not args.file or args.offset is None or args.length is None:
             print("slice requires --file, --offset, --length", file=sys.stderr)
             sys.exit(1)
@@ -144,16 +156,28 @@ def main() -> None:
         prog="toolbox",
         description="Format-aware toolbox for PoC generation",
     )
-    parser.add_argument("domain", help="Domain: png, jpeg, zip, pdf, bmp, wav, mutate, binary")
-    parser.add_argument("command", help="Command: minimal, inspect, patch, append, truncate, hexdump, find, slice")
+    parser.add_argument("domain", help="Domain: capabilities, png, jpeg, zip, pdf, bmp, wav, mutate, binary")
+    parser.add_argument("command", nargs="?", help="Command: minimal, inspect, patch, append, truncate, hexdump, find, slice")
+    parser.add_argument("extra", nargs="*", help="Legacy positional file path")
     parser.add_argument("--file", "-f", help="Input file path")
     parser.add_argument("--output", "-o", help="Output file path")
     parser.add_argument("--offset", type=int, default=None, help="Byte offset")
     parser.add_argument("--length", type=int, default=None, help="Length in bytes")
     parser.add_argument("--size", type=int, default=None, help="Target size for truncate")
     parser.add_argument("--hex", nargs="+", help="Hex byte values (e.g., 89 50 4E)")
+    parser.add_argument("--json", action="store_true", help="Emit JSON for capability discovery")
 
     args = parser.parse_args()
+
+    if args.domain == "capabilities":
+        from .capabilities import capabilities_payload
+
+        print(json.dumps(capabilities_payload(), indent=2, sort_keys=True))
+        return
+
+    if not args.command:
+        print(f"{args.domain} requires a command", file=sys.stderr)
+        sys.exit(1)
 
     format_domains = {"png", "jpeg", "jpg", "zip", "pdf", "bmp", "wav"}
     if args.domain in format_domains:

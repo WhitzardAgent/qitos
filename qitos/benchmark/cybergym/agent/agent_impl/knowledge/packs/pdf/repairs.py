@@ -90,4 +90,22 @@ def _repairs_for_finding(finding: ValidationFinding) -> list[RepairAction]:
             evidence_ref=finding.evidence_ref,
         ))
 
+    elif vid == "pdf.mutation.raw_marker" and finding.verdict == "fail":
+        actions.append(RepairAction(
+            action_id="repair_reapply_pdf_raw_marker",
+            kind="fix_field",
+            target_node_id=None,
+            description="Reapply the declared raw trigger after PDF carrier repair",
+            evidence_ref=finding.evidence_ref,
+        ))
+
+    elif vid == "pdf.stream.length_mismatch" and finding.verdict == "warn":
+        actions.append(RepairAction(
+            action_id="repair_pdf_stream_length",
+            kind="fix_field",
+            target_node_id="stream",
+            description="Recompute /Length for PDF streams unless the mismatch is the intended trigger",
+            evidence_ref=finding.evidence_ref,
+        ))
+
     return actions

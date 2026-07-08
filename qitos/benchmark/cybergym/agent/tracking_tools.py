@@ -140,6 +140,137 @@ def _append_exploration_note(
         _append_jsonl(root / ".cybergym" / "exploration_notes.jsonl", payload)
 
 
+# ------------------------------------------------------------------
+# Phase transition validation
+# ------------------------------------------------------------------
+
+def _validate_phase_transition(current: str, target: str, state: Any) -> tuple[bool, str]:
+    """Check if a phase transition is allowed given current state."""
+    ALLOWED: dict[tuple[str, str], str | None] = {
+        ("exploration", "investigation"): None,
+        ("exploration", "formulation"): "exploration_to_formulation",
+        ("investigation", "exploration"): None,
+        ("investigation", "formulation"): None,
+        ("formulation", "investigation"): None,
+        ("formulation", "exploration"): "formulation_to_exploration",
+        ("verification", "investigation"): None,
+        ("verification", "formulation"): None,
+    }
+
+    key = (current, target)
+    if key not in ALLOWED:
+        return False, f"Transition {current} → {target} is not allowed"
+
+    constraint = ALLOWED[key]
+    if constraint is None:
+        return True, ""
+
+    # Check specific constraints
+    if constraint == "exploration_to_formulation":
+        nodes = list(getattr(state, "call_chain_nodes", []) or [])
+        gates = list(getattr(state, "call_chain_gates", []) or [])
+        has_chain = len(nodes) >= 2
+        has_gate = any(g.status == "confirmed" for g in gates)
+        has_hypothesis = bool(getattr(state, "trigger_hypothesis", ""))
+        if not (has_chain and has_gate):
+            return False, "Need 2+ chain nodes and 1+ confirmed gate to skip investigation"
+        if not has_hypothesis:
+            return False, "Need a trigger hypothesis to enter formulation"
+
+    if constraint == "formulation_to_exploration":
+        reason_lower = str(getattr(state, "metadata", "") or "").lower()
+        # Allow if the agent mentions format/corpus issues
+        if "format" not in reason_lower and "corpus" not in reason_lower:
+            return False, "Can only return to exploration for format/corpus re-analysis. Use investigation for code re-reading."
+
+    return True, ""
+
+
+class SwitchPhaseTool(BaseTool):
+    def __init__(self) -> None:
+        super().__init__(
+            ToolSpec(
+                name="switch_phase",
+                description=(
+                    "Switch to a different phase of the agent workflow. Use this when "
+                    "you realize the current phase is not the right one for what you "
+                    "need to do next. Examples: go back to investigation when you need "
+                    "to re-read the vulnerable code after repeated failures, or go to "
+                    "formulation when auto-analysis has built a complete chain."
+                ),
+                parameters={
+                    "target_phase": {
+                        "type": "string",
+                        "enum": ["exploration", "investigation", "formulation"],
+                        "description": "Target phase to switch to",
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": "Why you need to switch phase (e.g., 'Need to re-read code to understand the dispatch path')",
+                    },
+                },
+                required=["target_phase", "reason"],
+                permissions=ToolPermission(filesystem_write=True),
+            )
+        )
+
+    def validate_input(
+        self, args: Dict[str, Any], runtime_context: Optional[Dict[str, Any]] = None
+    ) -> ToolValidationResult:
+        target = str(args.get("target_phase", "")).strip()
+        if target not in ("exploration", "investigation", "formulation"):
+            return ToolValidationResult.fail("target_phase must be exploration, investigation, or formulation")
+        if not str(args.get("reason", "")).strip():
+            return ToolValidationResult.fail("reason is required")
+        return ToolValidationResult.ok()
+
+    def execute(
+        self, args: Dict[str, Any], runtime_context: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        state = (runtime_context or {}).get("state")
+        target = str(args.get("target_phase", "")).strip()
+        reason = str(args.get("reason", "")).strip()
+        current = str(getattr(state, "current_phase", "") or "")
+
+        # Validate transition
+        allowed, block_reason = _validate_phase_transition(current, target, state)
+        if not allowed:
+            return {"status": "rejected", "reason": block_reason}
+
+        # Apply transition
+        state.current_phase = target
+        state.phase_enter_step = int(getattr(state, "current_step", 0) or 0)
+        state.phase_local_steps = 0
+        state.phase_submissions = 0
+        state.phase_read_actions = 0
+        state.repeated_read_target = ""
+        state.repeated_read_count = 0
+
+        # Set phase-specific flags
+        if target == "exploration":
+            state.exploration_complete = False
+        if target == "investigation":
+            state.reinvestigate_requested = False
+            state.candidate_required = False
+        if target == "formulation":
+            if not state.trigger_hypothesis:
+                state.trigger_hypothesis = reason
+
+        # Signal to reduce() that a manual switch happened this step
+        # so PhaseEngine.advance() does not overwrite it.
+        state.metadata["_manual_phase_switch"] = target
+
+        # Append exploration note
+        _append_exploration_note(state, runtime_context, {
+            "note_type": "phase_switch",
+            "from": current,
+            "to": target,
+            "reason": _clip(reason, 120),
+        })
+
+        return {"status": "success", "from": current, "to": target, "reason": reason}
+
+
 class RecordChainNodeTool(BaseTool):
     """Record a node in the entry-to-sink call chain.
 
@@ -1050,11 +1181,13 @@ class AnalyzeDescriptionTool(BaseTool):
 
 
 class ConfirmFormatTool(BaseTool):
-    """Confirm or update the detected input format for this task.
+    """Confirm, switch, or reset the active input format for this task.
 
     The LLM calls this after identifying the input format from harness source,
-    corpus inspection, or other evidence. This activates format-specific
-    construction tools, validation, and prompt guidance.
+    corpus inspection, or other evidence. The active format is a soft lock:
+    it activates format-specific construction, validation, and prompt guidance,
+    but later contradictory evidence should trigger another confirm_format call
+    to switch packs or reset to unknown.
     """
 
     # Valid format identifiers matching knowledge pack IDs
@@ -1068,13 +1201,15 @@ class ConfirmFormatTool(BaseTool):
             ToolSpec(
                 name="confirm_format",
                 description=(
-                    "Confirm or update the detected input format for this task. "
+                    "Confirm, switch, or reset the active input format for this task. "
                     "Use after identifying the format from harness source, corpus "
-                    "inspection, or hex_view of seed files. This activates "
-                    "format-specific construction tools, validation, and guidance. "
+                    "inspection, or hex_view of seed files. A confirmed format is a "
+                    "soft lock: format-specific construction, validation, and guidance "
+                    "use the active pack, but if later evidence contradicts it, call "
+                    "confirm_format again with the corrected format_id and evidence. "
                     "Valid formats: pdf, sfnt, packet, elf, image, codec, "
                     "structured_text, crypto, archive, cad, audio. Use 'unknown' "
-                    "to reset if the format is truly unclear."
+                    "to reset when evidence proves the active format is wrong or unclear."
                 ),
                 parameters={
                     "format_id": {
@@ -1090,14 +1225,16 @@ class ConfirmFormatTool(BaseTool):
                         "description": (
                             "\"confirmed\" if based on strong evidence (corpus magic, "
                             "harness API, fuzzer name). \"candidate\" if based on "
-                            "weaker evidence (description keywords, project name)."
+                            "weaker evidence (description keywords, project name). "
+                            "Use confirmed when switching away from a contradicted active pack."
                         ),
                     },
                     "evidence": {
                         "type": "string",
                         "description": (
                             "Brief description of what evidence supports this "
-                            "format identification"
+                            "format identification, switch, or reset. Include the "
+                            "contradiction when replacing an active format."
                         ),
                     },
                 },
@@ -1148,6 +1285,8 @@ class ConfirmFormatTool(BaseTool):
         mode = updated.get("mode", "unconfirmed")
         pack_id = updated.get("pack_id", "")
         score = updated.get("detection_score", 0.0)
+        previous_pack_id = updated.get("previous_pack_id", "")
+        switch_reason = updated.get("switch_reason", "")
 
         result = {
             "status": "success",
@@ -1155,6 +1294,9 @@ class ConfirmFormatTool(BaseTool):
             "mode": mode,
             "pack_id": pack_id,
             "detection_score": score,
+            "previous_pack_id": previous_pack_id,
+            "switch_reason": switch_reason,
+            "soft_lock": True,
         }
 
         # Report activated capabilities
@@ -1170,7 +1312,8 @@ class ConfirmFormatTool(BaseTool):
                 pass
             result["message"] = (
                 f"Format {pack_id} confirmed. Format-specific validation, "
-                f"recipe planning, and build pipeline activated."
+                f"recipe planning, and build pipeline activated. This is a soft "
+                f"lock; call confirm_format again if later evidence contradicts it."
             )
         elif mode == "candidate":
             result["message"] = (
@@ -1178,6 +1321,9 @@ class ConfirmFormatTool(BaseTool):
                 f"with confidence='confirmed' after stronger evidence."
             )
         else:
-            result["message"] = "Format reset to unknown."
+            result["message"] = (
+                "Format reset to unknown. Re-identify the carrier from corpus, "
+                "harness, or parser evidence before using pack-specific build paths."
+            )
 
         return result

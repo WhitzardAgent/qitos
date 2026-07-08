@@ -1,2 +1,2 @@
 
-Toolbox: Use `python3 -m toolbox <format> minimal` to generate a minimal valid carrier, then `python3 -m toolbox <format> inspect` to verify structure, then `python3 -m toolbox mutate patch` to modify specific fields. Formats: png, jpeg, zip, pdf, bmp, wav.
+Toolbox: Use `python3 -m toolbox capabilities --json` to confirm supported formats. For supported carriers, use `python3 -m toolbox <format> minimal` to generate a minimal valid carrier, then `python3 -m toolbox <format> inspect --file <file>` to verify structure, then `python3 -m toolbox mutate patch --file <file>` to modify specific fields. Current carrier formats: png, jpeg, zip, pdf, bmp, wav.

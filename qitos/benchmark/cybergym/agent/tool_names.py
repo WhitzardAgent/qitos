@@ -42,6 +42,7 @@ RECORD_CHAIN_NODE = "record_chain_node"
 RECORD_GATE = "record_gate"
 RECORD_SINK_CANDIDATE = "record_sink_candidate"
 CONFIRM_FORMAT = "confirm_format"
+SWITCH_PHASE = "switch_phase"
 ANALYSIS_QUERY_TOOLS = frozenset({
     "discover_sink_navigation_leads",
 })
@@ -84,6 +85,7 @@ TRACKING_TOOLS = frozenset({
     RECORD_GATE,
     RECORD_SINK_CANDIDATE,
     CONFIRM_FORMAT,
+    SWITCH_PHASE,
 })
 
 READ_ONLY_TOOLS = frozenset({

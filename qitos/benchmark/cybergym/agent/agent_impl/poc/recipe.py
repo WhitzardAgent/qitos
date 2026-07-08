@@ -199,30 +199,49 @@ def _best_seed_path(state: CyberGymState) -> str:
     # Check corpus files
     corpus = list(getattr(state, "corpus_files", []) or [])
 
-    # Try ranked seed selection via SeedSelector
-    if corpus and len(corpus) > 1:
+    # Try ranked seed selection via SeedSelector.
+    if corpus or (getattr(state, "pack_mode", {}) or {}).get("pack_id"):
         try:
-            from ..knowledge.corpus import SeedSelector, build_seed_records
+            from ..knowledge.corpus import select_seed_for_pack
             from ..knowledge.registry import get_knowledge_registry
             from ..knowledge.evidence import build_evidence_view
 
             registry = get_knowledge_registry()
-            evidence = build_evidence_view(state)
-            selected = registry.select_packs(evidence)
-
-            pack = selected[0][0] if selected else None
-            records = build_seed_records(corpus, pack=pack)
-            if records:
-                selector = SeedSelector()
-                ranked = selector.rank_seeds(records, objective=None, pack=pack)
-                if ranked:
-                    return ranked[0].path
+            pack = None
+            pack_mode = getattr(state, "pack_mode", {}) or {}
+            if pack_mode.get("pack_id"):
+                pack = registry.get_pack(str(pack_mode.get("pack_id") or ""))
+            if pack is None:
+                evidence = build_evidence_view(state)
+                selected = registry.select_packs(evidence)
+                pack = selected[0][0] if selected else None
+            selection = select_seed_for_pack(corpus, pack=pack, objective=None)
+            if selection is not None:
+                record = selection.record
+                state.metadata["selected_seed"] = {
+                    "seed_id": record.seed_id,
+                    "path": record.path,
+                    "source": record.source,
+                    "source_ref": record.source_ref,
+                    "selection_scope": record.selection_scope,
+                    "runtime_allowed": record.runtime_allowed,
+                    "detected_carrier": record.detected_carrier,
+                    "parse_status": record.parse_status,
+                    "sha256_or_digest": record.digest,
+                    "size": record.size,
+                    "reason": selection.reason,
+                    "ranked_count": selection.ranked_count,
+                    "candidates_considered": selection.candidates_considered,
+                }
+                return record.path
         except Exception:
             pass  # SeedSelector is supplementary — fallback is fine
 
     # Fallback: first corpus file
     if corpus:
-        return corpus[0]
+        for path in corpus:
+            if "cybergym_full_tasks" not in str(path):
+                return path
 
     # Check input_format sample paths
     fmt = getattr(state, "input_format", None)

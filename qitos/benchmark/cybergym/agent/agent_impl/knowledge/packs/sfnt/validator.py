@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import os
+import struct
 from typing import Any
 
 from ...models import (
@@ -20,6 +21,7 @@ from ...models import (
     ValidationFinding,
     ValidationReport,
 )
+from ..raw_marker import validate_raw_marker_intent
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +40,9 @@ def validate_sfnt_candidate(
     findings.extend(_validate_byte_safety(candidate_path))
     if any(f.verdict == "fail" and f.strength == "authoritative" for f in findings):
         return _build_report(candidate_path, "sfnt", findings, early_exit=True)
+
+    # Backend-independent SFNT header/table directory checks.
+    findings.extend(_validate_sfnt_directory(candidate_path))
 
     # Layer 2: structural_parse
     findings.extend(_validate_structural_parse(candidate_path))
@@ -166,6 +171,146 @@ def _validate_structural_parse(candidate_path: str) -> list[ValidationFinding]:
         )]
 
 
+def _validate_sfnt_directory(candidate_path: str) -> list[ValidationFinding]:
+    try:
+        data = open(candidate_path, "rb").read()
+    except OSError:
+        return []
+
+    if len(data) < 12:
+        return [ValidationFinding(
+            validator_id="sfnt.directory.header",
+            layer="invariant_check",
+            verdict="fail",
+            strength="authoritative",
+            evidence_ref=f"size_{len(data)}_need_12",
+            repair_actions=("use_task_local_font_seed", "rebuild_sfnt_header"),
+        )]
+
+    sfnt_version = data[:4]
+    valid_magics = {b"\x00\x01\x00\x00", b"OTTO", b"true", b"ttcf"}
+    if sfnt_version not in valid_magics:
+        return [ValidationFinding(
+            validator_id="sfnt.directory.magic",
+            layer="invariant_check",
+            verdict="fail",
+            strength="strong",
+            evidence_ref=f"version_{sfnt_version.hex()}_not_sfnt",
+            repair_actions=("fix_header_magic",),
+        )]
+
+    num_tables, search_range, entry_selector, range_shift = struct.unpack(">HHHH", data[4:12])
+    findings: list[ValidationFinding] = []
+    expected_sr, expected_es, expected_rs = _expected_search_params(num_tables)
+    if (search_range, entry_selector, range_shift) != (expected_sr, expected_es, expected_rs):
+        findings.append(ValidationFinding(
+            validator_id="sfnt.directory.search_params",
+            layer="invariant_check",
+            verdict="warn",
+            strength="supporting",
+            evidence_ref=(
+                f"numTables_{num_tables}_searchRange_{search_range}_expected_{expected_sr}_"
+                f"entrySelector_{entry_selector}_expected_{expected_es}_rangeShift_{range_shift}_expected_{expected_rs}"
+            ),
+            repair_actions=("recompute_sfnt_search_params",),
+        ))
+    else:
+        findings.append(ValidationFinding(
+            validator_id="sfnt.directory.search_params",
+            layer="invariant_check",
+            verdict="pass",
+            strength="supporting",
+            evidence_ref=f"numTables_{num_tables}",
+        ))
+
+    directory_end = 12 + num_tables * 16
+    if directory_end > len(data):
+        findings.append(ValidationFinding(
+            validator_id="sfnt.directory.range",
+            layer="invariant_check",
+            verdict="fail",
+            strength="strong",
+            evidence_ref=f"directory_end_{directory_end}_exceeds_size_{len(data)}",
+            repair_actions=("repair_table_directory", "use_task_local_font_seed"),
+        ))
+        return findings
+
+    findings.append(ValidationFinding(
+        validator_id="sfnt.directory.range",
+        layer="invariant_check",
+        verdict="pass",
+        strength="strong",
+        evidence_ref=f"directory_end_{directory_end}",
+    ))
+
+    bad_ranges: list[str] = []
+    checksum_mismatches: list[str] = []
+    for index in range(num_tables):
+        entry = data[12 + index * 16:28 + index * 16]
+        tag, declared_checksum, offset, length = struct.unpack(">4sIII", entry)
+        tag_text = _tag_text(tag)
+        if offset + length > len(data):
+            bad_ranges.append(f"{tag_text}@{offset}+{length}")
+            continue
+        table_data = data[offset:offset + length]
+        actual_checksum = _sfnt_table_checksum(tag, table_data)
+        if actual_checksum != declared_checksum:
+            checksum_mismatches.append(tag_text)
+
+    if bad_ranges:
+        findings.append(ValidationFinding(
+            validator_id="sfnt.directory.table_range",
+            layer="invariant_check",
+            verdict="fail",
+            strength="strong",
+            evidence_ref=f"bad_table_ranges_{bad_ranges[:5]}",
+            repair_actions=("repair_table_offsets_lengths", "use_task_local_font_seed"),
+        ))
+    if checksum_mismatches:
+        findings.append(ValidationFinding(
+            validator_id="sfnt.directory.checksum",
+            layer="invariant_check",
+            verdict="warn",
+            strength="supporting",
+            evidence_ref=f"checksum_mismatches_{checksum_mismatches[:5]}",
+            repair_actions=("recompute_table_checksums", "recompute_head_checkSumAdjustment"),
+        ))
+    elif num_tables > 0:
+        findings.append(ValidationFinding(
+            validator_id="sfnt.directory.checksum",
+            layer="invariant_check",
+            verdict="pass",
+            strength="supporting",
+            evidence_ref="table_checksums_match",
+        ))
+    return findings
+
+
+def _expected_search_params(num_tables: int) -> tuple[int, int, int]:
+    max_power = 1
+    entry_selector = 0
+    while max_power * 2 <= num_tables:
+        max_power *= 2
+        entry_selector += 1
+    search_range = max_power * 16 if num_tables else 0
+    range_shift = num_tables * 16 - search_range
+    return search_range, entry_selector, range_shift
+
+
+def _sfnt_table_checksum(tag: bytes, table_data: bytes) -> int:
+    if tag == b"head" and len(table_data) >= 12:
+        table_data = table_data[:8] + b"\x00\x00\x00\x00" + table_data[12:]
+    padded = table_data + b"\x00" * ((4 - len(table_data) % 4) % 4)
+    total = 0
+    for offset in range(0, len(padded), 4):
+        total = (total + struct.unpack(">I", padded[offset:offset + 4])[0]) & 0xFFFFFFFF
+    return total
+
+
+def _tag_text(tag: bytes) -> str:
+    return tag.decode("latin-1", errors="replace")
+
+
 def _validate_invariants(
     candidate_path: str,
     contract: CarrierContract,
@@ -204,6 +349,17 @@ def _validate_mutation_intent(
             raw_bytes = f.read()
     except OSError:
         return findings
+
+    findings.extend(validate_raw_marker_intent(
+        raw_bytes,
+        mutation_intent,
+        validator_id="sfnt.mutation.raw_marker",
+        repair_actions=(
+            "reapply_mutation_after_table_repair",
+            "use_raw_byte_mutation",
+            "check_recipe_target_expression",
+        ),
+    ))
 
     try:
         from fontTools.ttLib import TTFont

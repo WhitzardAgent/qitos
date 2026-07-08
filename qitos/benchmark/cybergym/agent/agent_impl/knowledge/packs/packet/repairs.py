@@ -35,4 +35,31 @@ def explain_packet_repairs(report: ValidationReport) -> tuple[RepairAction, ...]
                 evidence_ref=finding.evidence_ref,
             ))
 
+        elif vid == "packet.mutation.raw_marker" and finding.verdict == "fail":
+            repairs.append(RepairAction(
+                action_id="repair_reapply_packet_payload_marker",
+                kind="fix_field",
+                target_node_id=None,
+                description="Reapply the declared payload trigger after checksum or selector repair",
+                evidence_ref=finding.evidence_ref,
+            ))
+
+        elif vid in {"packet.pcap.header", "packet.pcap.magic"} and finding.verdict in {"fail", "warn"}:
+            repairs.append(RepairAction(
+                action_id="repair_wrap_raw_frame_as_pcap",
+                kind="restore",
+                target_node_id="pcap.header",
+                description="Wrap the raw frame with a pcap global header and packet record",
+                evidence_ref=finding.evidence_ref,
+            ))
+
+        elif vid in {"packet.pcap.record", "packet.pcap.record_length"} and finding.verdict in {"fail", "warn"}:
+            repairs.append(RepairAction(
+                action_id="repair_pcap_record_length",
+                kind="fix_field",
+                target_node_id="pcap.record",
+                description="Repair pcap packet record captured/original length fields",
+                evidence_ref=finding.evidence_ref,
+            ))
+
     return tuple(repairs)

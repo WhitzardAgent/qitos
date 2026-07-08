@@ -6,7 +6,11 @@ from typing import Any
 from ...state import CyberGymState
 from ...agent_impl.core.constants import FAILURE_REFLECTION_ACK_KEY
 from ..core.fact_extraction import append_capped_fact
-from ..core.metadata_keys import LAST_FEEDBACK_ACTION, LAST_FEEDBACK_ACTION_RESULT
+from ..core.metadata_keys import (
+    LAST_FEEDBACK_ACTION,
+    LAST_FEEDBACK_ACTION_RESULT,
+    LAST_PACK_FEEDBACK_ACTION,
+)
 
 
 def process_submit_result(agent: Any, state: CyberGymState, result: Any, output: Any) -> None:
@@ -84,6 +88,7 @@ def process_submit_result(agent: Any, state: CyberGymState, result: Any, output:
     elif state.is_verified():
         # SUCCESS: full differential confirmation accepted the candidate.
         state.metadata.pop("needs_reflection_nudge", None)
+        state.metadata.pop(LAST_PACK_FEEDBACK_ACTION, None)
         state.consecutive_submit_errors = 0
         state.metadata.pop(FAILURE_REFLECTION_ACK_KEY, None)
         state.set_stop(
@@ -110,6 +115,7 @@ def process_submit_result(agent: Any, state: CyberGymState, result: Any, output:
             # precision against the fix" step (that would leak the
             # discriminant).
             state.metadata.pop("needs_reflection_nudge", None)
+            state.metadata.pop(LAST_PACK_FEEDBACK_ACTION, None)
             state.metadata.pop(FAILURE_REFLECTION_ACK_KEY, None)
             state.set_stop(
                 "success",
@@ -239,6 +245,11 @@ def process_submit_result(agent: Any, state: CyberGymState, result: Any, output:
                         "Your constraint board may have incorrect gates. "
                         "Re-READ the call chain and use record_gate to update."
                     )
+        _record_pack_feedback_taxonomy(
+            state=state,
+            output=output,
+            failed_gate=gate or "no_crash_unknown",
+        )
         _record_feedback_arbitration(
             state=state,
             output=output,
@@ -300,5 +311,36 @@ def _record_feedback_arbitration(
             "negative_evidence_kind": "",
             "blocks_submit": False,
             "target_ids": {},
+            "prompt_instruction": "",
+        }
+
+
+def _record_pack_feedback_taxonomy(
+    *,
+    state: CyberGymState,
+    output: dict[str, Any],
+    failed_gate: str,
+) -> None:
+    try:
+        from ..feedback.pack_taxonomy import derive_pack_feedback_action
+        from ..core.runtime_context_contract import bump_context_revision
+
+        action = derive_pack_feedback_action(
+            state=state,
+            submit_result=output,
+            failed_gate=failed_gate,
+        )
+        if action:
+            state.metadata[LAST_PACK_FEEDBACK_ACTION] = action
+            bump_context_revision(state, "pack_feedback_action")
+        else:
+            state.metadata.pop(LAST_PACK_FEEDBACK_ACTION, None)
+    except Exception as exc:
+        state.metadata[LAST_PACK_FEEDBACK_ACTION] = {
+            "pack_id": "",
+            "category": "taxonomy_error",
+            "action": "inspect_pack_feedback_taxonomy",
+            "reason": f"{type(exc).__name__}:{str(exc)[:160]}",
+            "blocks_submit": False,
             "prompt_instruction": "",
         }

@@ -107,6 +107,9 @@ LAST_FEEDBACK_ACTION: str = "last_feedback_action"
 LAST_FEEDBACK_ACTION_RESULT: str = "last_feedback_action_result"
 """Owner: feedback_action_runner — result of running the chosen action."""
 
+LAST_PACK_FEEDBACK_ACTION: str = "last_pack_feedback_action"
+"""Owner: feedback — pack-aware taxonomy/action from latest submit feedback."""
+
 LAST_POC_SANITY: str = "last_poc_sanity"
 """Owner: feedback — PoC sanity-check result."""
 

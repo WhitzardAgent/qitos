@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from importlib import resources
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -94,11 +95,17 @@ class PromptsMixin:
                 f"Missing evidence: {', '.join(missing[:3]) or 'none'}\n"
             )
 
-        # confirmed: load format-specific guidance
+        # confirmed: load pack-local SKILL.md summary first, then legacy guidance
+        skill_summary = self._pack_skill_summary(pack_id)
         try:
             resource = prompt_resource(f"format_guidance/{pack_id}.md")
         except (FileNotFoundError, TypeError):
             resource = ""
+        if skill_summary:
+            parts = [f"\n## Pack Skill: {pack_id}", skill_summary]
+            if resource:
+                parts.append(f"\n## Format Guidance: {pack_id}\n{resource}")
+            return "\n".join(parts)
         if resource:
             return f"\n## Format Guidance: {pack_id}\n" + resource
 
@@ -117,6 +124,35 @@ class PromptsMixin:
             lines.append(f"- Derived fields (auto-recomputed): {derived}")
         lines.append("- Pack-driven build handles checksums, lengths, and cross-references")
         return "\n".join(lines)
+
+    @staticmethod
+    def _pack_skill_summary(pack_id: str, max_lines: int = 80) -> str:
+        """Return a compact active-pack SKILL.md summary for prompt guidance."""
+        safe_id = "".join(ch for ch in str(pack_id or "") if ch.isalnum() or ch in {"_", "-"})
+        if not safe_id:
+            return ""
+        try:
+            text = (
+                resources.files("cybergym_agent.agent_impl.knowledge.packs")
+                .joinpath(safe_id, "SKILL.md")
+                .read_text(encoding="utf-8")
+            )
+        except (FileNotFoundError, ModuleNotFoundError, TypeError, ValueError):
+            return ""
+
+        lines = text.splitlines()
+        if lines and lines[0].strip() == "---":
+            for idx, line in enumerate(lines[1:], start=1):
+                if line.strip() == "---":
+                    lines = lines[idx + 1:]
+                    break
+
+        kept: list[str] = []
+        for line in lines:
+            kept.append(line)
+            if len(kept) >= max_lines:
+                break
+        return "\n".join(kept).strip()
 
     def base_persona_prompt(self, state: CyberGymState) -> str:
         return render_prompt_resource("system/base_persona.md", project_root=PROJECT_ARTIFACT_ROOT.as_posix())
@@ -151,6 +187,9 @@ class PromptsMixin:
 
     def _phase_operating_guidance(self, state: CyberGymState) -> str:
         if self._should_reinvestigate(state):
+            # Auto-activate reinvestigation transition + unblock reads
+            state.reinvestigate_requested = True
+            state.candidate_required = False
             return render_prompt_resource("phase/reinvestigate.md", poc_attempts=int(state.poc_attempts or 0))
         mode = self._derive_control_mode(state)
         if mode == "chain_checkpoint_pending":

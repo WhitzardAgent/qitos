@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import struct
 from typing import Any
 
 from ...models import (
@@ -12,6 +13,7 @@ from ...models import (
     ValidationFinding,
     ValidationReport,
 )
+from ..raw_marker import validate_raw_marker_intent
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +34,10 @@ def validate_packet_candidate(
         return _build_report(candidate_path, "packet", findings, early_exit=True)
 
     # Layer 2: structural_parse
-    findings.extend(_validate_structural_parse(candidate_path))
+    if _looks_like_pcap(candidate_path):
+        findings.extend(_validate_pcap_structural_parse(candidate_path))
+    else:
+        findings.extend(_validate_structural_parse(candidate_path))
 
     # Layer 3: invariant_check
     findings.extend(_validate_invariants(candidate_path, contract))
@@ -137,13 +142,143 @@ def _validate_structural_parse(candidate_path: str) -> list[ValidationFinding]:
         )]
 
 
+def _looks_like_pcap(candidate_path: str) -> bool:
+    try:
+        with open(candidate_path, "rb") as f:
+            magic = f.read(4)
+    except OSError:
+        return False
+    return magic in {
+        b"\xd4\xc3\xb2\xa1",
+        b"\xa1\xb2\xc3\xd4",
+        b"\x4d\x3c\xb2\xa1",
+        b"\xa1\xb2\x3c\x4d",
+    }
+
+
+def _validate_pcap_structural_parse(candidate_path: str) -> list[ValidationFinding]:
+    try:
+        data = open(candidate_path, "rb").read()
+    except OSError as e:
+        return [ValidationFinding(
+            validator_id="packet.pcap.readable",
+            layer="structural_parse",
+            verdict="fail",
+            strength="authoritative",
+            evidence_ref=f"read_error_{e}",
+        )]
+
+    if len(data) < 24:
+        return [ValidationFinding(
+            validator_id="packet.pcap.header",
+            layer="structural_parse",
+            verdict="fail",
+            strength="strong",
+            evidence_ref=f"pcap_size_{len(data)}_need_24",
+            repair_actions=("wrap_raw_frame_as_pcap",),
+        )]
+
+    magic = data[:4]
+    if magic in {b"\xd4\xc3\xb2\xa1", b"\x4d\x3c\xb2\xa1"}:
+        endian = "<"
+    elif magic in {b"\xa1\xb2\xc3\xd4", b"\xa1\xb2\x3c\x4d"}:
+        endian = ">"
+    else:
+        return [ValidationFinding(
+            validator_id="packet.pcap.magic",
+            layer="structural_parse",
+            verdict="fail",
+            strength="strong",
+            evidence_ref=f"invalid_pcap_magic_{magic.hex()}",
+            repair_actions=("wrap_raw_frame_as_pcap",),
+        )]
+
+    version_major, version_minor, _thiszone, _sigfigs, snaplen, linktype = struct.unpack(
+        f"{endian}HHiiii", data[4:24]
+    )
+    findings = [ValidationFinding(
+        validator_id="packet.pcap.header",
+        layer="structural_parse",
+        verdict="pass",
+        strength="strong",
+        evidence_ref=f"pcap_v{version_major}.{version_minor}_snaplen_{snaplen}_linktype_{linktype}",
+    )]
+
+    if len(data) == 24:
+        findings.append(ValidationFinding(
+            validator_id="packet.pcap.record",
+            layer="structural_parse",
+            verdict="warn",
+            strength="supporting",
+            evidence_ref="pcap_has_no_packet_records",
+            repair_actions=("add_pcap_record",),
+        ))
+        return findings
+
+    if len(data) < 40:
+        findings.append(ValidationFinding(
+            validator_id="packet.pcap.record",
+            layer="structural_parse",
+            verdict="fail",
+            strength="strong",
+            evidence_ref=f"pcap_record_header_truncated_size_{len(data)}",
+            repair_actions=("repair_pcap_record_header",),
+        ))
+        return findings
+
+    _ts_sec, _ts_usec, incl_len, orig_len = struct.unpack(f"{endian}IIII", data[24:40])
+    remaining = len(data) - 40
+    if incl_len > remaining:
+        findings.append(ValidationFinding(
+            validator_id="packet.pcap.record_length",
+            layer="invariant_check",
+            verdict="fail",
+            strength="strong",
+            evidence_ref=f"incl_len_{incl_len}_exceeds_remaining_{remaining}",
+            repair_actions=("repair_pcap_record_length",),
+        ))
+    elif orig_len < incl_len:
+        findings.append(ValidationFinding(
+            validator_id="packet.pcap.record_length",
+            layer="invariant_check",
+            verdict="fail",
+            strength="strong",
+            evidence_ref=f"orig_len_{orig_len}_smaller_than_incl_len_{incl_len}",
+            repair_actions=("repair_pcap_record_length",),
+        ))
+    else:
+        findings.append(ValidationFinding(
+            validator_id="packet.pcap.record_length",
+            layer="invariant_check",
+            verdict="pass",
+            strength="strong",
+            evidence_ref=f"incl_len_{incl_len}_orig_len_{orig_len}",
+        ))
+    return findings
+
+
 def _validate_invariants(candidate_path: str, contract: CarrierContract) -> list[ValidationFinding]:
     # Packet invariants are mostly checksum-based; Scapy handles on build
     return []
 
 
 def _validate_mutation_intent(candidate_path: str, mutation_intent: ExpectedEffect) -> list[ValidationFinding]:
-    return []  # Simplified — full implementation would check target field preserved
+    try:
+        with open(candidate_path, "rb") as f:
+            raw_bytes = f.read()
+    except OSError:
+        return []
+
+    return validate_raw_marker_intent(
+        raw_bytes,
+        mutation_intent,
+        validator_id="packet.mutation.raw_marker",
+        repair_actions=(
+            "reapply_payload_after_checksum_repair",
+            "use_raw_byte_mutation",
+            "check_selector_and_payload_recipe",
+        ),
+    )
 
 
 def _build_report(candidate_path: str, pack_id: str, findings: list[ValidationFinding], early_exit: bool = False) -> ValidationReport:

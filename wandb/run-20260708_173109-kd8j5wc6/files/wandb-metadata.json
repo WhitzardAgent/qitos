@@ -1,0 +1,36 @@
+{
+  "os": "macOS-15.7.3-arm64-arm-64bit",
+  "python": "CPython 3.12.7",
+  "startedAt": "2026-07-08T09:31:09.986127Z",
+  "program": "<python with no main file>",
+  "git": {
+    "remote": "https://github.com/WhitzardAgent/qitos.git",
+    "commit": "e37540f15efb2f3c12d61c7ac5cb95fc7cf9b5ed"
+  },
+  "email": "xdpan.fudan@gmail.com",
+  "root": "/Users/morinop/Desktop/traj_analyzer/qitos",
+  "host": "morinopdeMacBook-Pro.local",
+  "executable": "/opt/anaconda3/bin/python3",
+  "cpu_count": 14,
+  "cpu_count_logical": 14,
+  "disk": {
+    "/": {
+      "total": "994662584320",
+      "used": "939652788224"
+    }
+  },
+  "memory": {
+    "total": "38654705664"
+  },
+  "apple": {
+    "name": "Apple M4 Max",
+    "ecpuCores": 4,
+    "pcpuCores": 10,
+    "gpuCores": 32,
+    "memoryGb": 36,
+    "swapTotalBytes": "17179869184",
+    "ramTotalBytes": "38654705664",
+    "macModel": "Mac16,5"
+  },
+  "writerId": "77yv69zt5tnxxxdvdyvfw7hciefh3fcd"
+}

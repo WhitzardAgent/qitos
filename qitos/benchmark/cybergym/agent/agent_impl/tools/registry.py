@@ -8,7 +8,7 @@ from typing import Any
 from qitos.core.tool_registry import ToolRegistry
 
 from ...submit_tool import SubmitPoCTool
-from ...tracking_tools import AnalyzeDescriptionTool, RecordChainNodeTool, RecordGateTool, RecordSinkCandidateTool, ConfirmFormatTool
+from ...tracking_tools import AnalyzeDescriptionTool, RecordChainNodeTool, RecordGateTool, RecordSinkCandidateTool, ConfirmFormatTool, SwitchPhaseTool
 from ...analysis.tools import analysis_tools
 from .dynamic_execution import GdbDebugTool, ProbeRuntimeFrontierTool, RunCandidateTool
 
@@ -69,6 +69,7 @@ def build_tool_registry(agent: Any, *, llm: Any, shell_timeout: int, server_url:
     tool_registry.register(RecordSinkCandidateTool())
     tool_registry.register(AnalyzeDescriptionTool())
     tool_registry.register(ConfirmFormatTool())
+    tool_registry.register(SwitchPhaseTool())
     for analysis_tool in analysis_tools():
         tool_registry.register(analysis_tool)
 

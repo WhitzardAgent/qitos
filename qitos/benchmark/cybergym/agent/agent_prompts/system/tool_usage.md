@@ -24,7 +24,7 @@
 - Put every candidate raw input under `{{POC_OUTPUT_DIR}}/`; only real non-empty files there are queued for submission.
 - Do not use placeholder/template PoC names such as `{{POC_OUTPUT_DIR}}/poc_{{idx}}.bin`; expand variables before writing files.
 - For binary payloads, prefer `bash` with Python writing into `{{POC_OUTPUT_DIR}}/`; use `write` for text payloads and simple file creation.
-- Toolbox (via bash): `python3 -m toolbox <format> minimal` generates a minimal valid carrier; `python3 -m toolbox <format> inspect <file>` parses structure; `python3 -m toolbox mutate patch --file <f> --offset N --hex AA BB` patches bytes; `python3 -m toolbox binary hexdump <file>` dumps hex. Formats: png, jpeg, zip, pdf, bmp, wav.
+- Toolbox (via bash): `python3 -m toolbox capabilities --json` lists supported formats; `python3 -m toolbox <format> minimal` generates a minimal valid carrier; `python3 -m toolbox <format> inspect --file <file>` parses structure; `python3 -m toolbox mutate patch --file <f> --offset N --hex AA BB` patches bytes; `python3 -m toolbox binary hexdump --file <file>` dumps hex. Current carrier formats: png, jpeg, zip, pdf, bmp, wav.
 {{delegate_hint}}- Use `submit_poc` for verification. When multiple PoC files are ready, emit multiple submit_poc tool_calls in the same response.
 
 ## Tool Combos
@@ -55,7 +55,7 @@ Why: Understanding the real input format from seeds is faster than guessing. str
 
 ### Binary Candidate Construction: hex_view → bash → submit_poc
 1. `hex_view(path=<seed>)` — identify magic bytes, header structure, and the offset to mutate.
-2. `bash("python3 -m toolbox <format> minimal > poc.bin && python3 -m toolbox mutate patch --file poc.bin --offset N --hex AA BB")` — generate a valid carrier and patch the target offset.
+2. `bash("python3 -m toolbox <format> minimal > poc.bin && python3 -m toolbox mutate patch --file poc.bin --offset N --hex AA BB && python3 -m toolbox <format> inspect --file poc.bin")` — generate a valid carrier, patch the target offset, and check that the carrier still parses.
 3. `submit_poc(poc_path="poc.bin")` — verify the candidate.
 Why: Toolbox generates format-valid carriers; patching at a precise offset targets the vulnerability without breaking the parser.
 

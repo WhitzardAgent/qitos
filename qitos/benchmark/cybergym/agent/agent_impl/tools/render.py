@@ -1001,6 +1001,31 @@ def render_record_gate(payload: Dict[str, Any]) -> str:
     return "\n".join(parts)
 
 
+def render_confirm_format(payload: Dict[str, Any]) -> str:
+    """Render confirm_format output with switch/reset semantics visible."""
+    fmt = str(payload.get("format_id") or "")
+    mode = str(payload.get("mode") or "")
+    pack_id = str(payload.get("pack_id") or "")
+    previous = str(payload.get("previous_pack_id") or "")
+    reason = str(payload.get("switch_reason") or "")
+    parts = [_call_header("confirm_format", format_id=fmt, mode=mode)]
+    if previous and previous != pack_id:
+        parts.append(f"  switch: {previous} -> {pack_id or 'unknown'}")
+    if reason:
+        parts.append(f"  evidence: {reason[:180]}")
+    message = str(payload.get("message") or "")
+    if message:
+        parts.append(f"  {message}")
+    if pack_id:
+        caps = payload.get("capabilities") or []
+        if caps:
+            parts.append(f"  active pack: {pack_id}; capabilities={', '.join(str(c) for c in caps[:8])}")
+        else:
+            parts.append(f"  active pack: {pack_id}")
+    parts.append("  soft-lock: call confirm_format again to switch or use format_id=unknown to reset if contradicted.")
+    return "\n".join(parts)
+
+
 # ---------------------------------------------------------------------------
 # Dispatch
 # ---------------------------------------------------------------------------
@@ -1033,6 +1058,7 @@ _RENDERERS = {
     "submit_poc": render_submit_poc,
     "record_chain_node": render_record_chain_node,
     "record_gate": render_record_gate,
+    "confirm_format": render_confirm_format,
 }
 
 

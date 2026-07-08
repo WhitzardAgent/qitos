@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from .models import RecipeOperation, RecipePlan
+from .models import ExpectedEffect, Invariant, RecipeOperation, RecipePlan
 
 logger = logging.getLogger(__name__)
 
@@ -168,6 +168,69 @@ def recipe_to_dict(plan: RecipePlan) -> dict[str, Any]:
         "evidence_ids": list(plan.evidence_ids),
         "knowledge_revision": plan.knowledge_revision,
     }
+
+
+def recipe_from_dict(value: dict[str, Any] | RecipePlan | None) -> RecipePlan | None:
+    """Reconstruct a RecipePlan from the serializable metadata form."""
+    if isinstance(value, RecipePlan):
+        return value
+    if not isinstance(value, dict):
+        return None
+
+    operations = tuple(
+        RecipeOperation(
+            op_id=str(item.get("op_id", "") or ""),
+            kind=str(item.get("kind", "") or ""),
+            target_node_id=item.get("target_node_id"),
+            read_spans=tuple(tuple(span) for span in list(item.get("read_spans", []) or [])),
+            write_spans=tuple(tuple(span) for span in list(item.get("write_spans", []) or [])),
+            preconditions=tuple(str(x) for x in list(item.get("preconditions", []) or [])),
+            postconditions=tuple(str(x) for x in list(item.get("postconditions", []) or [])),
+            invalidated_derivations=tuple(str(x) for x in list(item.get("invalidated_derivations", []) or [])),
+            rollback_hint=str(item.get("rollback_hint", "") or ""),
+            evidence_id=str(item.get("evidence_id", "") or ""),
+            ast_transform=dict(item.get("ast_transform", {}) or {}),
+        )
+        for item in list(value.get("operations", []) or [])
+        if isinstance(item, dict)
+    )
+    invariants = tuple(
+        Invariant(
+            invariant_id=str(item.get("invariant_id", "") or ""),
+            kind=str(item.get("kind", "") or ""),
+            expression=str(item.get("expression", "") or ""),
+            protected=bool(item.get("protected", False)),
+        )
+        for item in list(value.get("invariants", []) or [])
+        if isinstance(item, dict)
+    )
+    expected_effects = tuple(
+        ExpectedEffect(
+            effect_id=str(item.get("effect_id", "") or ""),
+            target_expression=str(item.get("target_expression", "") or ""),
+            desired_relation=str(item.get("desired_relation", "") or ""),
+            expected_runtime_probe=str(item.get("expected_runtime_probe", "") or ""),
+        )
+        for item in list(value.get("expected_effects", []) or [])
+        if isinstance(item, dict)
+    )
+
+    return RecipePlan(
+        recipe_id=str(value.get("recipe_id", "") or ""),
+        schema_version=str(value.get("schema_version", "2.0") or "2.0"),
+        objective_id=str(value.get("objective_id", "") or ""),
+        carrier_contract_id=str(value.get("carrier_contract_id", "") or ""),
+        seed_id=str(value.get("seed_id", "") or ""),
+        operations=operations,
+        invariants=invariants,
+        expected_effects=expected_effects,
+        evidence_ids=tuple(str(x) for x in list(value.get("evidence_ids", []) or [])),
+        knowledge_revision=str(value.get("knowledge_revision", "") or ""),
+        carrier=dict(value.get("carrier", {}) or {}),
+        trigger_mutations=list(value.get("trigger_mutations", []) or []),
+        open_gaps=list(value.get("open_gaps", []) or []),
+        sanity_expectations=list(value.get("sanity_expectations", []) or []),
+    )
 
 
 def _operation_to_dict(op: RecipeOperation) -> dict[str, Any]:

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from typing import Any
 
 from ...models import (
@@ -23,6 +24,7 @@ from ...models import (
     ValidationFinding,
     ValidationReport,
 )
+from ..raw_marker import validate_raw_marker_intent
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +43,10 @@ def validate_pdf_candidate(
     findings.extend(_validate_byte_safety(candidate_path))
     if any(f.verdict == "fail" and f.strength == "authoritative" for f in findings):
         return _build_report(candidate_path, "pdf", findings, early_exit=True)
+
+    # Backend-independent checks that should still be visible if pikepdf later
+    # normalizes or rejects the candidate.
+    findings.extend(_validate_stream_lengths(candidate_path))
 
     # Layer 2: structural_parse
     findings.extend(_validate_structural_parse(candidate_path))
@@ -203,6 +209,53 @@ def _validate_structural_parse(candidate_path: str) -> list[ValidationFinding]:
         )]
 
 
+def _validate_stream_lengths(candidate_path: str) -> list[ValidationFinding]:
+    """Check literal /Length values against raw stream byte spans."""
+    try:
+        data = open(candidate_path, "rb").read()
+    except OSError:
+        return []
+
+    findings: list[ValidationFinding] = []
+    mismatches: list[str] = []
+    checked = 0
+    for match in re.finditer(rb"<<(?P<dict>.*?)>>\s*stream\r?\n", data, flags=re.DOTALL):
+        dict_bytes = match.group("dict")
+        length_match = re.search(rb"/Length\s+(?P<length>\d+)", dict_bytes)
+        if not length_match:
+            continue
+        checked += 1
+        declared = int(length_match.group("length"))
+        stream_start = match.end()
+        end_match = re.search(rb"\r?\nendstream\b", data[stream_start:])
+        if not end_match:
+            mismatches.append(f"stream@{stream_start}:missing_endstream")
+            continue
+        stream_end = stream_start + end_match.start()
+        actual = stream_end - stream_start
+        if declared != actual:
+            mismatches.append(f"stream@{stream_start}:declared_{declared}_actual_{actual}")
+
+    if mismatches:
+        findings.append(ValidationFinding(
+            validator_id="pdf.stream.length_mismatch",
+            layer="invariant_check",
+            verdict="warn",
+            strength="supporting",
+            evidence_ref=f"stream_length_mismatches_{mismatches[:5]}",
+            repair_actions=("fix_stream_length", "preserve_intended_length_mismatch_if_trigger"),
+        ))
+    elif checked:
+        findings.append(ValidationFinding(
+            validator_id="pdf.stream.length_mismatch",
+            layer="invariant_check",
+            verdict="pass",
+            strength="supporting",
+            evidence_ref=f"stream_lengths_match_{checked}",
+        ))
+    return findings
+
+
 def _validate_invariants(
     candidate_path: str,
     contract: CarrierContract,
@@ -257,6 +310,17 @@ def _validate_mutation_intent(
             raw_bytes = f.read()
     except OSError:
         return findings
+
+    findings.extend(validate_raw_marker_intent(
+        raw_bytes,
+        mutation_intent,
+        validator_id="pdf.mutation.raw_marker",
+        repair_actions=(
+            "reapply_mutation_after_carrier_repair",
+            "use_raw_byte_mutation",
+            "check_recipe_target_expression",
+        ),
+    ))
 
     try:
         import pikepdf

@@ -327,6 +327,8 @@ class CyberGymState(StateSchema):
             self.pack_mode.setdefault("missing_evidence", ())
             self.pack_mode.setdefault("confirmed_at_step", -1)
             self.pack_mode.setdefault("upgrade_history", ())
+            self.pack_mode.setdefault("previous_pack_id", "")
+            self.pack_mode.setdefault("switch_reason", "")
         self.path_constraints = self._normalize_record_list(self.path_constraints, PathConstraint)
         self.call_chain_nodes = self._normalize_record_list(self.call_chain_nodes, ChainNode)
         self.call_chain_gates = self._normalize_record_list(self.call_chain_gates, ChainGate)

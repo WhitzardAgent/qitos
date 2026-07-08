@@ -120,13 +120,44 @@ def build_candidate_from_recipe(state: CyberGymState) -> dict[str, Any]:
     if pack_mode.get("mode") == "confirmed" and pack_mode.get("pack_id"):
         try:
             from ..knowledge.registry import get_knowledge_registry
-            from ..knowledge.recipe_ir import recipe_to_dict
+            from ..knowledge.recipe_ir import recipe_from_dict, recipe_to_dict
             pack = get_knowledge_registry().get_pack(pack_mode["pack_id"])
             if pack and "build" in pack.descriptor.capabilities:
-                plan_dict = (state.metadata or {}).get("pack_recipe_plan")
-                if plan_dict and seed_path and Path(seed_path).is_file():
+                plan_value = (state.metadata or {}).get("pack_recipe_plan")
+                plan = recipe_from_dict(plan_value)
+                if plan is None:
+                    carrier_contract = None
+                    try:
+                        from ..knowledge.models import CarrierContract
+                        contract_dict = (state.metadata or {}).get("carrier_contract")
+                        if isinstance(contract_dict, dict):
+                            carrier_contract = CarrierContract(**contract_dict)
+                    except Exception:
+                        carrier_contract = None
+                    objective = {
+                        "objective_id": str(recipe.get("recipe_id", "") or f"active_{pack_mode['pack_id']}"),
+                        "kind": str(getattr(state, "bug_type", "") or getattr(state, "crash_type", "") or "generic"),
+                        "description": str(getattr(state, "vulnerability_description", "") or ""),
+                    }
+                    provenance = {
+                        "format": carrier_format or (pack.descriptor.carrier_families[0] if pack.descriptor.carrier_families else pack_mode["pack_id"]),
+                        "seed_path": seed_path,
+                        "seed_policy": "task_local_seed" if seed_path else "minimal_template_ok",
+                    }
+                    plan = pack.plan(objective, provenance, carrier_contract)
+                    state.metadata["pack_recipe_plan"] = recipe_to_dict(plan)
+                if plan and seed_path and Path(seed_path).is_file():
                     seed_data = Path(seed_path).read_bytes()
-                    build_result = pack.build(seed_data, plan_dict)
+                    build_result = pack.build(seed_data, plan)
+                    state.metadata["last_poc_build_result"] = {
+                        "backend": "pack_build",
+                        "pack_id": str(pack_mode.get("pack_id", "") or ""),
+                        "status": build_result.status,
+                        "artifact_path": build_result.artifact_path,
+                        "applied_operations": list(build_result.applied_operations),
+                        "blocked_operations": list(build_result.blocked_operations),
+                        "reason": build_result.reason,
+                    }
                     if build_result.status == "success" and build_result.artifact_path:
                         import shutil
                         Path(out_path).parent.mkdir(parents=True, exist_ok=True)
@@ -348,7 +379,7 @@ xref
 trailer
 << /Size 4 /Root 1 0 R >>
 startxref
-190
+186
 %%EOF
 """
     return pdf

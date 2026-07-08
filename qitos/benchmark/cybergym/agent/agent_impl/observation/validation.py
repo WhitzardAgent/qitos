@@ -47,6 +47,7 @@ from ...tool_names import (
     RECORD_SINK_CANDIDATE,
     ANALYSIS_QUERY_TOOLS,
     CONFIRM_FORMAT,
+    SWITCH_PHASE,
 )
 
 
@@ -667,6 +668,7 @@ class ValidationMixin:
                 WRITE,
                 SUBMIT_POC,
                 CONFIRM_FORMAT,
+                SWITCH_PHASE,
             }
         if ValidationMixin._ready_poc_paths(state):
             if self._candidate_ready_file_missing(state):
@@ -688,6 +690,7 @@ class ValidationMixin:
                     SUBMIT_POC,
                     RECORD_CHAIN_NODE,
                     RECORD_GATE,
+                    SWITCH_PHASE,
                 }
             # After a NO TRIGGER, allow construction tools so the agent can
             # build a new PoC variant.  The post_submit_miss mode lasts 2 steps.
@@ -706,6 +709,7 @@ class ValidationMixin:
             RECORD_CHAIN_NODE,
             RECORD_GATE,
             RECORD_SINK_CANDIDATE,
+            SWITCH_PHASE,
         }
         # Only offer submit_poc when there are ready PoCs to submit.
         # Without this guard, the model calls submit_poc() with empty
@@ -760,10 +764,10 @@ class ValidationMixin:
                 names.add(tool_name)
         if brief:
             pass  # analysis result details available in observation sections
-        # confirm_format: available when format is not yet confirmed
-        pack_mode = getattr(state, "pack_mode", {}) or {}
-        if pack_mode.get("mode", "unconfirmed") != "confirmed":
-            names.add(CONFIRM_FORMAT)
+        # confirm_format is also the active-pack switch/reset tool. Keep it
+        # available after confirmation so contradictory evidence can replace
+        # the soft-locked pack.
+        names.add(CONFIRM_FORMAT)
         return names
 
     @staticmethod

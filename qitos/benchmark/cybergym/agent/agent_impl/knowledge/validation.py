@@ -16,6 +16,7 @@ from typing import Any
 from .models import (
     CarrierContract,
     ExpectedEffect,
+    RepairAction,
     ValidationFinding,
     ValidationReport,
 )
@@ -39,16 +40,22 @@ def validate_with_knowledge_pack(
         if registry.is_empty():
             return None
 
-        evidence = build_evidence_view(state)
-        selected = registry.select_packs(evidence)
+        pack = None
+        pack_mode = getattr(state, "pack_mode", {}) or {}
+        if pack_mode.get("mode") == "confirmed" and pack_mode.get("pack_id"):
+            pack = registry.get_pack(str(pack_mode.get("pack_id") or ""))
 
-        if not selected:
-            return None
+        if pack is None:
+            evidence = build_evidence_view(state)
+            selected = registry.select_packs(evidence)
 
-        # Use the best-matching pack
-        pack, det_result = selected[0]
-        if det_result.decision not in ("confirmed", "candidate"):
-            return None
+            if not selected:
+                return None
+
+            # Use the best-matching pack only when no active confirmed pack exists.
+            pack, det_result = selected[0]
+            if det_result.decision not in ("confirmed", "candidate"):
+                return None
 
         # Build carrier contract from state metadata
         carrier_contract = _build_carrier_contract(state, pack)
@@ -74,11 +81,60 @@ def validate_with_knowledge_pack(
 
         # Run pack validation
         report = pack.validate(candidate_bytes, carrier_contract, mutation_intent)
+        _store_pack_validation_report(state, report, pack)
         return report
 
     except Exception as e:
         logger.warning("Knowledge pack validation failed: %s", e)
         return None
+
+
+def validation_report_to_dict(
+    report: ValidationReport,
+    repairs: tuple[RepairAction, ...] = (),
+) -> dict[str, Any]:
+    """Serialize a ValidationReport for state metadata and observation."""
+    return {
+        "candidate_path": report.candidate_path,
+        "pack_id": report.pack_id,
+        "overall_verdict": report.overall_verdict,
+        "blocks_submit": report.blocks_submit,
+        "findings": [
+            {
+                "validator_id": finding.validator_id,
+                "layer": finding.layer,
+                "verdict": finding.verdict,
+                "strength": finding.strength,
+                "invariant_id": finding.invariant_id,
+                "evidence_ref": finding.evidence_ref,
+                "repair_actions": list(finding.repair_actions),
+            }
+            for finding in report.findings
+        ],
+        "repairs": [
+            {
+                "action_id": repair.action_id,
+                "kind": repair.kind,
+                "target_node_id": repair.target_node_id,
+                "description": repair.description,
+                "evidence_ref": repair.evidence_ref,
+            }
+            for repair in repairs
+        ],
+    }
+
+
+def _store_pack_validation_report(state: Any, report: ValidationReport, pack: Any) -> None:
+    metadata = getattr(state, "metadata", None)
+    if not isinstance(metadata, dict):
+        return
+    repairs: tuple[RepairAction, ...] = ()
+    try:
+        if hasattr(pack, "explain_repair"):
+            repairs = tuple(pack.explain_repair(report) or ())
+    except Exception:
+        repairs = ()
+    metadata["last_pack_validation"] = validation_report_to_dict(report, repairs)
 
 
 def merge_pack_findings(

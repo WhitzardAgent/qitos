@@ -1237,16 +1237,17 @@ class SectionMixin:
                 "- `submit_poc(poc_path)` — submit ready PoCs",
                 "- `CorpusInspect` / `HexView` — inspect seed files before constructing candidates",
             ]
-            # Add confirm_format if format is not yet confirmed
-            pack_mode = getattr(state, "pack_mode", {}) or {}
-            if pack_mode.get("mode", "unconfirmed") != "confirmed":
-                lines.append("- `confirm_format(format_id, confidence, evidence)` — confirm input format to activate format-specific tools")
+            lines.append(
+                "- `confirm_format(format_id, confidence, evidence)` — confirm, switch, or reset the active format; "
+                "confirmed format is a soft lock and can be changed if later evidence contradicts it"
+            )
             return lines
         elif phase == "verification":
             return [
                 "- `READ` / `GREP` — analyze verification feedback",
                 "- `BASH` / `WRITE` — revise PoC",
                 "- `submit_poc` — resubmit revised PoC",
+                "- `confirm_format(format_id, confidence, evidence)` — switch/reset active format if feedback or corpus evidence contradicts it",
                 "- Reflect on failure patterns to guide next PoC revision",
             ]
         else:

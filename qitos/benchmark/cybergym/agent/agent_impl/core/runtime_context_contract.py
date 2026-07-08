@@ -13,6 +13,7 @@ from .metadata_keys import (
     CONTEXT_REVISIONS,
     INVOCATION_PROFILE,
     LAST_FEEDBACK_ACTION,
+    LAST_PACK_FEEDBACK_ACTION,
     RUNTIME_EVIDENCE,
     STAGED_BINARY_CAPABILITY,
     bump_context_revision_value,
@@ -37,6 +38,7 @@ REVISION_KEYS: frozenset[str] = frozenset({
     "local_mining_refs",
     "harness_protocols",
     "feedback_action",
+    "pack_feedback_action",
     "poc_recipe",
     "numeric_constraints",
     "constraint_solutions",
@@ -619,6 +621,8 @@ def render_experiment_contract_snippets(state: CyberGymState) -> List[str]:
             block_tag = " BLOCKED" if blocks else ""
             lines.append(f"- feedback{block_tag}: {action} — {reason}")
 
+    _append_pack_feedback_action(lines, state)
+
     evidence_gap = _runtime_evidence_gap_line(state)
     if evidence_gap:
         lines.append(evidence_gap)
@@ -708,6 +712,30 @@ def derive_contract_next_action_block(state: CyberGymState) -> Dict[str, str]:
             "target": repair[:200] if repair else "fix magic/header/container structure",
             "stop_condition": "sanity check passes before submit",
             "do_not": "submit this PoC until carrier structure is valid",
+        }
+
+    # 2.5 Pack validation fail with typed repair
+    pack_validation = metadata.get("last_pack_validation") or {}
+    if isinstance(pack_validation, dict) and pack_validation.get("overall_verdict") == "fail":
+        repairs = [
+            item for item in list(pack_validation.get("repairs") or [])
+            if isinstance(item, dict)
+        ]
+        first_repair = repairs[0] if repairs else {}
+        findings = [
+            item for item in list(pack_validation.get("findings") or [])
+            if isinstance(item, dict) and item.get("verdict") == "fail"
+        ]
+        first_finding = findings[0] if findings else {}
+        return {
+            "required": "Fix pack validation failure",
+            "why": (
+                f"{pack_validation.get('pack_id', '')} {first_finding.get('layer', '')}: "
+                f"{str(first_finding.get('evidence_ref') or '')[:160]}"
+            ).strip(),
+            "target": str(first_repair.get("description") or first_finding.get("repair_actions") or "")[:200],
+            "stop_condition": "pack validation passes or the active pack is corrected via confirm_format",
+            "do_not": "submit this PoC until pack validation failure is addressed",
         }
 
     # 3. Consistency block
@@ -864,6 +892,119 @@ def _frontier_requires_action(status: str) -> bool:
 # Hard contract slots — Fix A
 # ------------------------------------------------------------------
 
+def _append_pack_backend_readiness(lines: List[str], state: CyberGymState, pack_id: str) -> None:
+    """Append concise active-pack backend readiness to condition lines."""
+    try:
+        from ..knowledge.registry import get_knowledge_registry
+        pack = get_knowledge_registry().get_pack(pack_id)
+        if pack is None:
+            lines.append(f"- Active pack backend: {pack_id} not registered; use task-local seed mutation fallback")
+        else:
+            caps = sorted(str(c) for c in pack.descriptor.capabilities)
+            cap_text = ", ".join(caps[:8]) if caps else "none"
+            lines.append(f"- Active pack backend: {pack_id} registered; capabilities={cap_text}")
+    except Exception:
+        lines.append(f"- Active pack backend: {pack_id} readiness unknown")
+
+    try:
+        from ...toolbox.capabilities import inspect_command, minimal_command, supports
+        if supports(pack_id, "minimal"):
+            build_cmd = minimal_command(pack_id, "poc.bin")
+            inspect_cmd = inspect_command(pack_id, "poc.bin")
+            lines.append(f"  toolbox fallback: `{build_cmd}` then `{inspect_cmd}`")
+        else:
+            lines.append(f"  toolbox fallback: no minimal carrier builder for {pack_id}; prefer task-local seed mutation")
+    except Exception:
+        pass
+
+
+def _append_wrong_format_risk(lines: List[str], state: CyberGymState, active_pack: str) -> None:
+    """Warn when ready candidates may have been built under a previous pack."""
+    metadata = getattr(state, "metadata", {}) or {}
+    previous_pack = str(metadata.get("previous_pack_id") or "")
+    if not previous_pack or previous_pack == active_pack:
+        return
+
+    ready = [c for c in list(getattr(state, "ready_pocs", []) or []) if getattr(c, "ready_to_submit", False)]
+    if not ready:
+        return
+
+    build_result = metadata.get("last_poc_build_result") if isinstance(metadata, dict) else {}
+    build_pack = ""
+    if isinstance(build_result, dict):
+        build_pack = str(build_result.get("pack_id") or "")
+    if build_pack and build_pack == active_pack:
+        return
+
+    lines.append(
+        f"- Wrong-format risk: {len(ready)} ready PoC(s) may come from previous pack {previous_pack}; "
+        "revalidate or rebuild under the active pack before submit"
+    )
+
+
+def _append_pack_validation_summary(lines: List[str], state: CyberGymState) -> None:
+    """Append latest pack validation verdict and repair action."""
+    report = (getattr(state, "metadata", {}) or {}).get("last_pack_validation")
+    if not isinstance(report, dict):
+        return
+    pack_id = str(report.get("pack_id") or "")
+    verdict = str(report.get("overall_verdict") or "")
+    if not pack_id and not verdict:
+        return
+    prefix = f"- Pack validation: {pack_id} verdict={verdict}"
+    if bool(report.get("blocks_submit", False)):
+        prefix += " blocks_submit=true"
+    lines.append(prefix)
+    findings = [
+        item for item in list(report.get("findings") or [])
+        if isinstance(item, dict) and item.get("verdict") in {"fail", "warn", "unknown"}
+    ]
+    for finding in findings[:2]:
+        lines.append(
+            "  "
+            f"{finding.get('layer', '')}:{finding.get('verdict', '')} "
+            f"{str(finding.get('evidence_ref') or '')[:120]}"
+        )
+        repairs = list(finding.get("repair_actions") or [])
+        if repairs:
+            lines.append(f"  repair: {str(repairs[0])[:120]}")
+            break
+    repair_actions = [
+        item for item in list(report.get("repairs") or [])
+        if isinstance(item, dict)
+    ]
+    if repair_actions:
+        action = repair_actions[0]
+        lines.append(
+            f"  pack_repair: {action.get('action_id', '')} {str(action.get('description') or '')[:140]}"
+        )
+
+
+def _append_pack_feedback_action(lines: List[str], state: CyberGymState) -> None:
+    action = (getattr(state, "metadata", {}) or {}).get(LAST_PACK_FEEDBACK_ACTION)
+    if not isinstance(action, dict):
+        return
+    category = str(action.get("category") or "")
+    act = str(action.get("action") or "")
+    if not category and not act:
+        return
+    pack_id = str(action.get("pack_id") or "")
+    blocks = " BLOCKED" if action.get("blocks_submit") else ""
+    reason = str(action.get("reason") or "")[:100]
+    prefix = f"- Pack feedback{blocks}:"
+    if pack_id:
+        prefix += f" {pack_id}"
+    prefix += f" {category}"
+    if act:
+        prefix += f" -> {act}"
+    if reason:
+        prefix += f" — {reason}"
+    lines.append(prefix)
+    prompt = str(action.get("prompt_instruction") or "")[:140]
+    if prompt:
+        lines.append(f"  pack_next: {prompt}")
+
+
 def render_context_contract_slots(state: CyberGymState) -> Dict[str, List[str]]:
     """Render the mandatory context slots for each observation section.
 
@@ -895,7 +1036,12 @@ def render_context_contract_slots(state: CyberGymState) -> Dict[str, List[str]]:
     pm_pack = pack_mode.get("pack_id", "")
     if pm_mode == "confirmed" and pm_pack:
         pm_score = pack_mode.get("detection_score", 0.0)
-        slots["assessment"].append(f"- Format: {pm_pack} (confirmed, score={pm_score:.2f})")
+        slots["assessment"].append(f"- Format: {pm_pack} (confirmed soft-lock, score={pm_score:.2f})")
+        previous_pack = str(pack_mode.get("previous_pack_id") or (state.metadata or {}).get("previous_pack_id") or "")
+        switch_reason = str(pack_mode.get("switch_reason") or "")
+        if previous_pack and previous_pack != pm_pack:
+            suffix = f"; evidence: {switch_reason[:100]}" if switch_reason else ""
+            slots["assessment"].append(f"- Pack switched: {previous_pack} -> {pm_pack}{suffix}")
     elif pm_mode == "candidate" and pm_pack:
         pm_score = pack_mode.get("detection_score", 0.0)
         pm_missing = pack_mode.get("missing_evidence", ())
@@ -1078,11 +1224,27 @@ def render_context_contract_slots(state: CyberGymState) -> Dict[str, List[str]]:
     if open_gaps:
         slots["conditions"].append(f"- Recipe gaps ({len(open_gaps)}): {', '.join(str(g)[:60] for g in open_gaps[:4])}")
 
+    selected_seed = (state.metadata or {}).get("selected_seed")
+    if isinstance(selected_seed, dict) and selected_seed.get("path"):
+        source = str(selected_seed.get("source") or "unknown")
+        reason = str(selected_seed.get("reason") or "")[:120]
+        runtime_allowed = bool(selected_seed.get("runtime_allowed", False))
+        slots["conditions"].append(
+            f"- Selected seed: {selected_seed.get('path')} source={source} runtime_allowed={runtime_allowed}"
+            + (f" reason={reason}" if reason else "")
+        )
+
     # Pack mode — format-specific conditions
     pm = getattr(state, "pack_mode", {}) or {}
     pm_mode = pm.get("mode", "unconfirmed")
     pm_pack = pm.get("pack_id", "")
     if pm_mode == "confirmed" and pm_pack:
+        slots["conditions"].append(
+            "- Active pack soft-lock: use this pack for format build/validate; call `confirm_format` again to switch or `format_id=unknown` to reset if contradicted"
+        )
+        _append_pack_backend_readiness(slots["conditions"], state, pm_pack)
+        _append_wrong_format_risk(slots["conditions"], state, pm_pack)
+        _append_pack_validation_summary(slots["conditions"], state)
         # Rich rendering: CarrierContract + ParseResult + RecipePlan
         contract_dict = (state.metadata or {}).get("carrier_contract")
         if isinstance(contract_dict, dict):
@@ -1154,6 +1316,8 @@ def render_context_contract_slots(state: CyberGymState) -> Dict[str, List[str]]:
         if action:
             tag = " BLOCKED" if blocks else ""
             slots["experiments"].append(f"- Feedback{tag}: {action} — {reason}")
+
+    _append_pack_feedback_action(slots["experiments"], state)
 
     evidence_gap = _runtime_evidence_gap_line(state)
     if evidence_gap:
@@ -1272,11 +1436,15 @@ def render_context_contract_slots(state: CyberGymState) -> Dict[str, List[str]]:
             slots["experiments"].append(f"- Action runner: {name} → {status}")
 
     last_build = (state.metadata or {}).get("last_poc_build_result") or {}
-    # Only show candidate builder when it actually produced something.
-    # Silently skip blocked/skipped — pack is optional, not a blocker.
+    # Show successful builds and typed pack/backend failures; skip only
+    # intentionally skipped optional paths.
     if last_build and last_build.get("status") == "success":
         slots["experiments"].append(
             f"- Candidate builder: built recipe={last_build.get('recipe_id', '')}"
+        )
+    elif last_build and last_build.get("status") not in {"", "skipped"}:
+        slots["experiments"].append(
+            f"- Candidate builder: status={last_build.get('status', '')} reason={str(last_build.get('reason') or '')[:100]}"
         )
 
     # === Next Action slot (single required action from derive_contract_next_action_block) ===

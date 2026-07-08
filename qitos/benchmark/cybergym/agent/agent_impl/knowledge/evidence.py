@@ -337,16 +337,23 @@ def activate_pack_from_tool(state: Any, pack_id: str, confidence: str, evidence_
     current_mode = current.get("mode", "unconfirmed")
 
     registry = get_knowledge_registry()
+    metadata = getattr(state, "metadata", {})
+    if not isinstance(metadata, dict):
+        metadata = {}
 
     # Handle "unknown" — reset to unconfirmed
     if pack_id == "unknown":
-        if _MODE_ORDER.get("unconfirmed", 0) < _MODE_ORDER.get(current_mode, 0):
-            # Don't downgrade
-            return dict(current)
+        history = list(current.get("upgrade_history", ()))
+        step = int(getattr(state, "current_step", 0) or 0)
+        history.append(f"{current_mode}->unconfirmed@step{step}")
+        previous_pack_id = str(current.get("pack_id", "") or "")
+        _clear_active_pack_metadata(metadata, previous_pack_id=previous_pack_id)
         state.pack_mode = {
             "mode": "unconfirmed", "pack_id": "", "detection_score": 0.0,
             "positive_evidence_ids": (), "missing_evidence": (),
-            "confirmed_at_step": -1, "upgrade_history": current.get("upgrade_history", ()),
+            "confirmed_at_step": -1, "upgrade_history": tuple(history),
+            "previous_pack_id": previous_pack_id,
+            "switch_reason": evidence_text,
         }
         try:
             from ..core.runtime_context_contract import bump_context_revision
@@ -364,6 +371,8 @@ def activate_pack_from_tool(state: Any, pack_id: str, confidence: str, evidence_
         step = int(getattr(state, "current_step", 0) or 0)
         mode = "confirmed" if confidence == "confirmed" else "candidate"
         score = 0.7 if confidence == "confirmed" else 0.3
+        previous_pack_id = str(current.get("pack_id", "") or "")
+        _clear_active_pack_metadata(metadata, previous_pack_id=previous_pack_id)
         state.pack_mode = {
             "mode": mode, "pack_id": pack_id, "detection_score": score,
             "positive_evidence_ids": ("agent_inference",),
@@ -371,6 +380,8 @@ def activate_pack_from_tool(state: Any, pack_id: str, confidence: str, evidence_
             "confirmed_at_step": step if mode == "confirmed" else -1,
             "upgrade_history": current.get("upgrade_history", ())
                               + (f"{current_mode}->{mode}@step{step}",),
+            "previous_pack_id": previous_pack_id,
+            "switch_reason": evidence_text,
         }
         try:
             from ..core.runtime_context_contract import bump_context_revision
@@ -395,6 +406,10 @@ def activate_pack_from_tool(state: Any, pack_id: str, confidence: str, evidence_
     upgrade_record = f"{current_mode}->{new_mode}@step{step}"
     history = list(current.get("upgrade_history", ()))
     history.append(upgrade_record)
+    previous_pack_id = ""
+    if current.get("pack_id") != pack_id:
+        previous_pack_id = str(current.get("pack_id", "") or "")
+        _clear_active_pack_metadata(metadata, previous_pack_id=previous_pack_id)
 
     score = 0.9 if new_mode == "confirmed" else 0.5
     state.pack_mode = {
@@ -405,6 +420,8 @@ def activate_pack_from_tool(state: Any, pack_id: str, confidence: str, evidence_
         "missing_evidence": (),
         "confirmed_at_step": step if new_mode == "confirmed" else -1,
         "upgrade_history": tuple(history),
+        "previous_pack_id": previous_pack_id,
+        "switch_reason": evidence_text,
     }
 
     # Activate full pipeline for confirmed
@@ -428,8 +445,12 @@ def _activate_confirmed_pack(state: Any, pack: Any, evidence: EvidenceView) -> N
         return
 
     try:
+        metadata["active_pack_id"] = pack.descriptor.pack_id
+        parse_result = None
+        contract = None
+
         # Parse best seed
-        seed_path = _find_best_seed(state)
+        seed_path = _find_best_seed(state, pack)
         if seed_path:
             try:
                 with open(seed_path, "rb") as f:
@@ -452,7 +473,7 @@ def _activate_confirmed_pack(state: Any, pack: Any, evidence: EvidenceView) -> N
 
         # Derive carrier contract
         try:
-            contract = pack.derive_contract(parse_result if 'parse_result' in dir() else None, None)
+            contract = pack.derive_contract(parse_result, None)
             metadata["carrier_contract"] = {
                 "format_id": contract.format_id,
                 "seed_required": contract.seed_required,
@@ -465,11 +486,57 @@ def _activate_confirmed_pack(state: Any, pack: Any, evidence: EvidenceView) -> N
         except Exception:
             pass
 
+        # Produce a pack recipe plan during activation so downstream builders do
+        # not depend on a later recipe-rendering side effect.
+        try:
+            from .recipe_ir import recipe_to_dict
+
+            if contract is None:
+                contract = pack.derive_contract(None, None)
+            objective = _default_pack_objective(state, pack)
+            provenance = {
+                "format": getattr(contract, "format_id", "") or (
+                    pack.descriptor.carrier_families[0] if pack.descriptor.carrier_families else pack.descriptor.pack_id
+                ),
+                "seed_path": seed_path,
+                "seed_policy": "task_local_seed" if seed_path else "minimal_template_ok",
+            }
+            plan = pack.plan(objective, provenance, contract)
+            metadata["pack_recipe_plan"] = recipe_to_dict(plan)
+        except Exception:
+            pass
+
     except Exception:
         pass
 
 
-def _find_best_seed(state: Any) -> str:
+def _clear_active_pack_metadata(metadata: dict[str, Any], previous_pack_id: str = "") -> None:
+    """Clear runtime pack artifacts when switching or resetting active format."""
+    for key in (
+        "active_pack_id",
+        "pack_parse_result",
+        "carrier_contract",
+        "pack_recipe_plan",
+        "domain_packs",
+        "selected_seed",
+    ):
+        metadata.pop(key, None)
+    if previous_pack_id:
+        metadata["previous_pack_id"] = previous_pack_id
+
+
+def _default_pack_objective(state: Any, pack: Any) -> dict[str, Any]:
+    """Build a conservative objective for pack.plan() when none is explicit."""
+    functions = list(getattr(state, "vulnerable_functions", []) or [])
+    return {
+        "objective_id": f"active_{pack.descriptor.pack_id}",
+        "kind": str(getattr(state, "bug_type", "") or getattr(state, "crash_type", "") or "generic"),
+        "description": str(getattr(state, "vulnerability_description", "") or ""),
+        "target_function": str(functions[0]) if functions else "",
+    }
+
+
+def _find_best_seed(state: Any, pack: Any | None = None) -> str:
     """Find the best seed file path from state."""
     # Check recipe seed first
     recipe = {}
@@ -479,13 +546,58 @@ def _find_best_seed(state: Any) -> str:
     if seed_path:
         import os
         if os.path.exists(seed_path):
+            metadata = getattr(state, "metadata", {}) or {}
+            if isinstance(metadata, dict):
+                metadata["selected_seed"] = {
+                    "path": seed_path,
+                    "source": "poc_recipe",
+                    "runtime_allowed": True,
+                    "reason": "existing recipe seed_path",
+                }
             return seed_path
 
-    # Fall back to first corpus file
+    # Rank task-local corpus first, then pack-local curated fallback.
     corpus_files = list(getattr(state, "corpus_files", []) or [])
+    try:
+        from .corpus import select_seed_for_pack
+        selection = select_seed_for_pack(corpus_files, pack=pack)
+        if selection is not None:
+            metadata = getattr(state, "metadata", {}) or {}
+            if isinstance(metadata, dict):
+                record = selection.record
+                metadata["selected_seed"] = {
+                    "seed_id": record.seed_id,
+                    "path": record.path,
+                    "source": record.source,
+                    "source_ref": record.source_ref,
+                    "selection_scope": record.selection_scope,
+                    "runtime_allowed": record.runtime_allowed,
+                    "detected_carrier": record.detected_carrier,
+                    "parse_status": record.parse_status,
+                    "sha256_or_digest": record.digest,
+                    "size": record.size,
+                    "reason": selection.reason,
+                    "ranked_count": selection.ranked_count,
+                    "candidates_considered": selection.candidates_considered,
+                }
+            return selection.record.path
+    except Exception:
+        pass
+
+    # Backward-compatible fallback: first non-ground-truth local file.
     for f in corpus_files:
         import os
+        if "cybergym_full_tasks" in str(f):
+            continue
         if os.path.exists(f):
+            metadata = getattr(state, "metadata", {}) or {}
+            if isinstance(metadata, dict):
+                metadata["selected_seed"] = {
+                    "path": f,
+                    "source": "task_local",
+                    "runtime_allowed": True,
+                    "reason": "fallback first task-local corpus file",
+                }
             return f
 
     return ""

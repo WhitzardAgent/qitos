@@ -20,7 +20,7 @@ Usage:
 
 from .backend_registry import BackendStatus, BackendRegistry, get_backend_registry
 from .capability_matrix import TaskCapability, generate_capability_matrix, compute_coverage_summary
-from .corpus import SeedRecord, SeedSelector, build_seed_records
+from .corpus import SeedRecord, SeedSelection, SeedSelector, build_seed_records, load_pack_seed_index, select_seed_for_pack
 from .evidence import EvidenceView, build_evidence_view, eager_pack_select, maybe_upgrade_pack_mode, activate_pack_from_tool
 from .models import (
     BuildResult,
@@ -39,10 +39,10 @@ from .models import (
     ValidationReport,
 )
 from .protocol import KnowledgePack
-from .recipe_ir import topological_sort_ops, detect_conflicts, apply_backpatch, recipe_to_dict
+from .recipe_ir import topological_sort_ops, detect_conflicts, apply_backpatch, recipe_from_dict, recipe_to_dict
 from .registry import KnowledgeRegistry, get_knowledge_registry
 from .unknown_resolver import UnknownDomainResolver, UnknownDomainResult
-from .validation import validate_with_knowledge_pack, merge_pack_findings
+from .validation import validate_with_knowledge_pack, merge_pack_findings, validation_report_to_dict
 
 __all__ = [
     # Registry
@@ -78,11 +78,15 @@ __all__ = [
     "topological_sort_ops",
     "detect_conflicts",
     "apply_backpatch",
+    "recipe_from_dict",
     "recipe_to_dict",
     # Corpus intelligence
     "SeedRecord",
+    "SeedSelection",
     "SeedSelector",
     "build_seed_records",
+    "load_pack_seed_index",
+    "select_seed_for_pack",
     # Capability matrix
     "TaskCapability",
     "generate_capability_matrix",
@@ -93,4 +97,5 @@ __all__ = [
     # Validation bridge
     "validate_with_knowledge_pack",
     "merge_pack_findings",
+    "validation_report_to_dict",
 ]

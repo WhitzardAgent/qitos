@@ -101,6 +101,7 @@ def advance_phase(agent: Any, state: CyberGymState, step: int) -> tuple[str, str
         state.phase_submissions = 0
         if old_phase == "verification" and new_phase == "investigation":
             state.reinvestigate_requested = False
+            state.candidate_required = False
         state.phase_read_actions = 0
         state.repeated_read_target = ""
         state.repeated_read_count = 0
@@ -224,7 +225,12 @@ def apply_sink_rotation(agent: Any, state: CyberGymState) -> None:
 # ------------------------------------------------------------------
 
 def apply_consecutive_miss_nudge(state: CyberGymState) -> None:
-    """Add reinvestigation nudge after 4+ consecutive misses."""
+    """Add reinvestigation nudge after 4+ consecutive misses.
+
+    Also activates the reinvestigation state-machine transition so the
+    PhaseEngine can move from verification back to investigation, and
+    clears candidate_required so READ/GREP are unblocked.
+    """
     if (state.consecutive_misses >= 4
             and not state.pending_reminder):
         state.pending_reminder = (
@@ -235,6 +241,11 @@ def apply_consecutive_miss_nudge(state: CyberGymState) -> None:
             "choose one concrete fix before the next submit."
         )
         state.pending_reminder_signature = "consecutive-miss-reinvestigate"
+        # Activate the reinvestigation transition so PhaseEngine can move
+        # from verification back to investigation on the next advance.
+        state.reinvestigate_requested = True
+        # Clear candidate_required so READ/GREP are unblocked for investigation.
+        state.candidate_required = False
 
 
 # ------------------------------------------------------------------
