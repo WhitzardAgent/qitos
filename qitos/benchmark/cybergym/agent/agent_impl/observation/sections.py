@@ -218,10 +218,13 @@ class SectionMixin:
         # --- Gate table ---
         gates = list(getattr(state, "call_chain_gates", []) or [])
         active_sink_id = str(getattr(state, "active_sink_candidate_id", "") or "")
+        # record_gate uses _primary_sink_id() which returns "function@location" format,
+        # while active_sink_candidate_id uses "sink_HASH" format. Accept both.
+        primary_sink = str(getattr(state, "_primary_sink_id", lambda: "")()) if hasattr(state, "_primary_sink_id") else ""
 
-        # Filter to active sink
-        if active_sink_id:
-            filtered = [g for g in gates if not g.sink_id or g.sink_id == active_sink_id]
+        # Filter to active sink (match either identifier format)
+        if active_sink_id or primary_sink:
+            filtered = [g for g in gates if not g.sink_id or g.sink_id == active_sink_id or g.sink_id == primary_sink]
         else:
             filtered = gates
 
