@@ -1353,10 +1353,10 @@ class ToolMixin:
     @staticmethod
     def _annotate_glob_entries(entries: List[Dict[str, Any]], state: Any) -> None:
         """Attach short static leads and reorder matches without dropping any."""
-        if state is None or not entries:
+        # Static analysis annotations disabled — sort by path only
+        if entries:
             entries.sort(key=lambda entry: (entry.get("kind") != "dir", str(entry.get("path") or "")))
-            return
-        from ..static.tool_hints import AnnotatedHit, annotate_file_path, hint_to_dict, rank_annotated_hits
+        return
 
         by_identity: Dict[int, Dict[str, Any]] = {}
         annotated_hits: List[AnnotatedHit] = []
@@ -1382,8 +1382,7 @@ class ToolMixin:
     @staticmethod
     def _annotate_grep_payload(result: Any, state: Any) -> None:
         """Rerank returned GREP hits using state-backed static leads."""
-        if state is None or not isinstance(result, dict) or result.get("status") != "success":
-            return
+        return  # Static analysis annotations disabled
         from ..static.tool_hints import AnnotatedHit, annotate_file_path, annotate_text_hit, hint_to_dict, rank_annotated_hits
 
         matches = result.get("matches")
@@ -1432,8 +1431,7 @@ class ToolMixin:
     @staticmethod
     def _annotate_read_payload(payload: Any, state: Any) -> None:
         """Add a bounded Static context block to a successful READ payload."""
-        if state is None or not isinstance(payload, dict) or payload.get("status") != "success":
-            return
+        return  # Static analysis annotations disabled
         from ..static.tool_hints import annotate_read_region, hint_to_dict
 
         path = str(payload.get("path") or "")

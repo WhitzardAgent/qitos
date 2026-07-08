@@ -106,9 +106,9 @@ Rules:
 - A `no_crash_unknown` result does NOT prove the path was missed. It also
   does not prove the path was reached. Classify the miss before replanning.
 - When dynamic tools are available and Next Action asks for runtime diagnosis,
-  run the exact latest candidate once with `run_candidate` before switching
+  use `gdb_debug` to trace execution before switching
   objectives or resubmitting near-duplicate inputs.
-- If a GDB frontier probe is requested, use only `probe_runtime_frontier`; do
+- If a GDB frontier probe is requested, use `gdb_debug`; do
   not write raw GDB scripts or commands. The useful outputs are
   `last_hit_role`, `first_unreached_role`, `status`, and `evidence_ref`.
 - When the Experiments section shows 3+ no-trigger evidences for the same

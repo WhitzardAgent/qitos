@@ -99,7 +99,7 @@ def advance_phase(agent: Any, state: CyberGymState, step: int) -> tuple[str, str
         state.phase_enter_step = int(step)
         state.phase_local_steps = 0
         state.phase_submissions = 0
-        if old_phase == "verification" and new_phase == "investigation":
+        if new_phase == "investigation" and old_phase != "investigation":
             state.reinvestigate_requested = False
             state.candidate_required = False
         state.phase_read_actions = 0
@@ -228,11 +228,11 @@ def apply_consecutive_miss_nudge(state: CyberGymState) -> None:
     """Add reinvestigation nudge after 4+ consecutive misses.
 
     Also activates the reinvestigation state-machine transition so the
-    PhaseEngine can move from verification back to investigation, and
-    clears candidate_required so READ/GREP are unblocked.
+    PhaseEngine can move back to investigation, and clears candidate_required
+    so read/grep are unblocked.
     """
     if (state.consecutive_misses >= 4
-            and not state.pending_reminder):
+            and state.pending_reminder_signature != "consecutive-miss-reinvestigate"):
         state.pending_reminder = (
             f"{state.consecutive_misses} consecutive no-crash submissions. "
             "STOP submitting variants until you classify the miss: either the input is "
@@ -242,9 +242,9 @@ def apply_consecutive_miss_nudge(state: CyberGymState) -> None:
         )
         state.pending_reminder_signature = "consecutive-miss-reinvestigate"
         # Activate the reinvestigation transition so PhaseEngine can move
-        # from verification back to investigation on the next advance.
+        # back to investigation on the next advance.
         state.reinvestigate_requested = True
-        # Clear candidate_required so READ/GREP are unblocked for investigation.
+        # Clear candidate_required so read/grep are unblocked for investigation.
         state.candidate_required = False
 
 

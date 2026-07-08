@@ -78,9 +78,7 @@ class PromptsMixin:
 
     def _format_guidance_prompt(self, state: CyberGymState) -> str:
         """Render format-specific guidance from the active pack mode."""
-        pack_mode = getattr(state, "pack_mode", {}) or {}
-        mode = pack_mode.get("mode", "unconfirmed")
-        pack_id = pack_mode.get("pack_id", "")
+        return ""  # Pack knowledge disabled
 
         if mode == "unconfirmed" or not pack_id:
             return ""

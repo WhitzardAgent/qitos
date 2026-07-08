@@ -18,11 +18,7 @@ def derive_pack_feedback_action(
     submit_result: dict[str, Any],
     failed_gate: str,
 ) -> dict[str, Any]:
-    if submit_result.get("accepted") is True:
-        return {}
-
-    pack_id = _active_pack_id(state)
-    pack_validation = (getattr(state, "metadata", {}) or {}).get("last_pack_validation") or {}
+    return {}  # Pack knowledge disabled
     if isinstance(pack_validation, dict):
         validation_action = _from_pack_validation(pack_validation, pack_id)
         if validation_action:

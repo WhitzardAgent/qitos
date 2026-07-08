@@ -170,7 +170,7 @@ class ObservationMixin(MemoryMixin, SectionMixin):
         if (state.task_spec_confidence < 0.4
                 and getattr(state, "current_phase", "") == "exploration"):
             vague_lines = [
-                "- Description is vague — use broad GREP searches with keywords "
+                "- Description is vague — use broad grep searches with keywords "
                 "from the description to locate the vulnerable code before reading deeply."
             ]
             if getattr(state, "search_anchors", None):
@@ -204,14 +204,14 @@ class ObservationMixin(MemoryMixin, SectionMixin):
                 "   - For double-free: free/delete called twice on same pointer\n"
                 "   - For uninit: variable used before being set in a conditional branch\n\n"
                 "3. **Key information from description**: Extract function names, file names, "
-                "module names, parameter names, trigger conditions. Use GREP to search for these "
+                "module names, parameter names, trigger conditions. Use grep to search for these "
                 "in the codebase — description names may differ from code names "
                 "(e.g., 'USER NAME' in description → `user_name` in code).\n\n"
                 "4. **Input path**: How does the fuzz driver consume input? "
                 "Read the harness entry function to determine: "
                 "direct data/size passing? temp file? structured split? magic header check?\n\n"
                 "5. **Sink hypothesis**: Based on the above, which function is most likely the crash site? "
-                "Call `record_sink_candidate(function, evidence, confidence)` with your best hypothesis.\n\n"
+                "Call `sink(function, location?, evidence?, confidence?)` with your best hypothesis.\n\n"
                 "This analysis guides your exploration. You can revise your hypothesis later "
                 "based on code reading and ASAN feedback."
             )
@@ -262,7 +262,7 @@ class ObservationMixin(MemoryMixin, SectionMixin):
                     "⚠ DEPTH NUDGE: You recorded entry-point functions only. "
                     "These are NOT the crash sinks — the actual crash is typically 3-8 calls deeper. "
                     + hint_text + kw_hint +
-                    " Use CallsiteSearch or READ to trace deeper."
+                    " Use callsite_search or read to trace deeper."
                 )
         else:
             checkpoint_active = getattr(state, "pending_sink_checkpoint", False)
@@ -270,15 +270,15 @@ class ObservationMixin(MemoryMixin, SectionMixin):
                 sections.extend([
                     "## Sink Candidates",
                     "- **SINK HYPOTHESIS NEEDED** — You haven't recorded a sink candidate yet. "
-                    "Call `record_sink_candidate(function, evidence, location?, confidence?)` "
+                    "Call `sink(function, location?, evidence?, confidence?)` "
                     "to record your best hypothesis. You may proceed without one, but a recorded sink helps focus.",
                     "- If you have identified a vulnerable function in your reasoning, record it. "
-                    "You can also proceed with WRITE/BASH/submit if you have a working hypothesis to test.",
+                    "You can also proceed with write/bash/submit if you have a working hypothesis to test.",
                 ])
             else:
                 sections.extend([
                     "## Sink Candidates",
-                    "- None recorded yet. Call `record_sink_candidate(function, evidence, location?, confidence?)` "
+                    "- None recorded yet. Call `sink(function, location?, evidence?, confidence?)` "
                     "when you identify a vulnerable function. This is REQUIRED before leaving exploration.",
                 ])
         # Suggested Sinks — auto-discovered candidates not yet confirmed by model
@@ -301,7 +301,7 @@ class ObservationMixin(MemoryMixin, SectionMixin):
                     detail += f" — {risk_desc}"
                 suggest_lines.append(
                     f"  `{c.function}`{detail} — "
-                    f"Call `record_sink_candidate(\"{c.function}\", evidence)` to confirm."
+                    f"Call `sink(\"{c.function}\", evidence)` to confirm."
                 )
             sections.extend(["## Suggested Sinks", *suggest_lines])
         # Sink Localization Strategy — show whenever no confirmed sinks
@@ -491,22 +491,20 @@ class ObservationMixin(MemoryMixin, SectionMixin):
             or semantic_event
         )
 
-        # Build all section content
-        mission = self._render_mission(state)
-        assessment = self._render_current_assessment(state)
-        vuln_path = self._render_vulnerability_path(state)
-        conditions = self._render_required_conditions(state)
+        # Build all section content (5-section model)
+        vulnerability = self._render_vulnerability(state)
+        sink_candidates = self._render_sink_candidates(state)
+        constraint_board = self._render_constraint_board(state)
         experiments = self._render_experiments(state)
-        next_action = self._render_next_action(state)
+        task_memory = self._render_task_memory(state)
 
         # Named sections for delta comparison and TUI storage
         current_sections = {
-            "mission": mission,
-            "assessment": assessment,
-            "vuln_path": vuln_path,
-            "conditions": conditions,
+            "vulnerability": vulnerability,
+            "sink_candidates": sink_candidates,
+            "constraint_board": constraint_board,
             "experiments": experiments,
-            "next_action": next_action,
+            "task_memory": task_memory,
         }
 
         # Store current sections for next step's delta comparison
@@ -528,7 +526,7 @@ class ObservationMixin(MemoryMixin, SectionMixin):
             for k, v in current_sections.items()
         }
 
-        # Context contract: observation has exactly these six top-level
+        # Context contract: observation has exactly these five top-level
         # sections.  Hashes above remain available for future compact delta
         # rendering, but delta markers/Foundation/Allowed Tools are not emitted
         # as separate model-facing sections.
@@ -582,7 +580,7 @@ class ObservationMixin(MemoryMixin, SectionMixin):
             lines.append(
                 "SUBMISSION BUDGET NOTE: You've submitted many candidates in this phase "
                 "without triggering the vulnerability. Before submitting another variant, "
-                "READ the vulnerable code path to understand why your inputs don't reach "
+                "read the vulnerable code path to understand why your inputs don't reach "
                 "the sink. Consider whether the trigger requires a different input format "
                 "or a different code path entirely."
             )
@@ -636,10 +634,10 @@ class ObservationMixin(MemoryMixin, SectionMixin):
             conf = float(getattr(state, "task_spec_confidence", 0.5) or 0.5)
             if not active_sinks and conf >= 0.6:
                 return ("Description is specific — quickly locate the named function, "
-                        "trace to its leaf callee, and call `record_sink_candidate`.")
+                        "trace to its leaf callee, and call `sink`.")
             if not active_sinks:
                 return ("Explore the repo to identify the vulnerable sink function, "
-                        "then call `record_sink_candidate`. Use broad GREP searches "
+                        "then call `sink`. Use broad grep searches "
                         "to compensate for the vague description.")
             return "Narrow to one concrete vulnerable path and extract the trigger condition."
         if state.current_phase == "verification":
@@ -661,7 +659,7 @@ class ObservationMixin(MemoryMixin, SectionMixin):
         if getattr(state, "pending_sink_checkpoint", False):
             conf = float(getattr(state, "task_spec_confidence", 0.5) or 0.5)
             nudge_lines = [
-                "- `record_sink_candidate(function, evidence, location?, confidence?)` — "
+                "- `sink(function, location?, evidence?, confidence?)` — "
                 "STRONGLY RECOMMENDED before proceeding.",
             ]
             # For descriptions that name specific functions, hint at them
@@ -673,17 +671,17 @@ class ObservationMixin(MemoryMixin, SectionMixin):
                     f"`{c.function}`" for c in sorted(desc_sinks, key=lambda x: -x.confidence)[:3]
                 )
                 nudge_lines.append(
-                    f"- Description names {names} — READ its source, then call "
-                    f"`record_sink_candidate` for the function (or its leaf callee) where "
+                    f"- Description names {names} — read its source, then call "
+                    f"`sink` for the function (or its leaf callee) where "
                     f"the actual crash occurs."
                 )
             elif conf >= 0.6:
                 nudge_lines.append(
                     "- The description is specific — you likely already know the target function. "
-                    "READ it briefly, then record your sink candidate."
+                    "read it briefly, then record your sink candidate."
                 )
             nudge_lines.extend([
-                "- `READ` / `GREP` / `FindSymbols` / `CallsiteSearch` — "
+                "- `read` / `grep` / `find_symbols` / `callsite_search` — "
                 "only if needed to identify the sink function.",
                 "- `WRITE` / `BASH` — allowed if you have a hypothesis to test.",
                 "- `submit_poc` — allowed if you have a PoC file ready.",
@@ -695,7 +693,7 @@ class ObservationMixin(MemoryMixin, SectionMixin):
                 "record one function in the entry-to-sink chain NOW.",
                 "- `record_gate(node_function, gate_type, description, required_condition, status?)` — "
                 "record one path constraint the PoC must satisfy.",
-                "- `READ` / `GREP` / `FindSymbols` / `CallsiteSearch` — "
+                "- `read` / `grep` / `find_symbols` / `callsite_search` — "
                 "only if needed to identify the next chain node.",
                 "- Do not call `submit_poc`, `WRITE`, `BASH`, or edit tools until the checkpoint is satisfied.",
             ]
@@ -731,7 +729,7 @@ class ObservationMixin(MemoryMixin, SectionMixin):
                 for chunk in chunks[1:]:
                     lines.append(f"- Continue complete ready PoC list: {chunk}.")
             lines.append("- Do not stop after submitting only one path; submit every listed path.")
-            lines.append("- Do not call `READ`, `GREP`, `BASH`, or edit tools before the complete list is submitted.")
+            lines.append("- Do not call `read`, `grep`, `bash`, or edit tools before the complete list is submitted.")
             return lines
         if self._should_filter_to_candidate_tools(state):
             names = self._candidate_construction_tool_names(state)
@@ -766,18 +764,18 @@ class ObservationMixin(MemoryMixin, SectionMixin):
                 lines.append("- `" + "` / `".join(tracking) + "`")
             return lines
         lines = [
-            f"- `{self.READ_TOOL}(path, offset?, limit?)` or `READ(match_id=..., radius=...)` to jump to any search hit",
-            f"- `{self.GREP_TOOL}(pattern, path?, glob?, output_mode?, head_limit?, offset?)` → results include match_id for READ jumps",
-            f"- `{self.GLOB_TOOL}(pattern, path?)` → narrow files before GREP/FindSymbols",
-            f"- `{self.REPO_MAP_TOOL}(path?)` / `{self.FIND_SYMBOLS_TOOL}(query, kind?, path?)` / `{self.CALLSITE_SEARCH_TOOL}(symbol, path?)` — RepoMap maps layout; FindSymbols finds definitions+signatures; CallsiteSearch traces callers",
+            f"- `{self.READ_TOOL}(path, offset?, limit?)` or `read(match_id=..., radius=...)` to jump to any search hit",
+            f"- `{self.GREP_TOOL}(pattern, path?, glob?, output_mode?, head_limit?, offset?)` → results include match_id for read jumps",
+            f"- `{self.GLOB_TOOL}(pattern, path?)` → narrow files before grep/find_symbols",
+            f"- `{self.REPO_MAP_TOOL}(path?)` / `{self.FIND_SYMBOLS_TOOL}(query, kind?, path?)` / `{self.CALLSITE_SEARCH_TOOL}(symbol, path?)` — repo_map maps layout; find_symbols finds definitions+signatures; callsite_search traces callers",
             f"- `{self.CORPUS_INSPECT_TOOL}(path?)` / `{self.FILE_INFO_TOOL}(path)` / `{self.HEX_VIEW_TOOL}(path, offset?, length?)` / `{self.STRUCT_PROBE_TOOL}(path, offset?, formats?, endian?)` — inspect seeds before constructing candidates",
             f"- `{self.BASH_TOOL}(command)` — write candidates with Python; use toolbox for format-specific mutation",
-            f"- `{self.WRITE_TOOL}(path, content)` — text candidates only; prefer BASH for binary",
+            f"- `{self.WRITE_TOOL}(path, content)` — text candidates only; prefer bash for binary",
             "- `submit_poc(poc_path)`; submit every distinct ready PoC in one step when multiple PoCs are ready.",
-            "- `record_chain_node` / `record_gate` / `record_sink_candidate`",
+            "- `record_chain_node` / `record_gate` / `sink`",
             "- `record_chain_node(function, location, role, description, status)` — record each function in the entry-to-sink chain",
             "- `record_gate(node_function, gate_type, description, required_condition, status)` — record each constraint the PoC must satisfy",
-            "- `record_sink_candidate(function, evidence, location?, confidence?)` — propose a sink candidate after reading code",
+            "- `sink(function, location?, evidence?, confidence?)` — propose a sink candidate after reading code",
             "- Parallel read-only calls are allowed; keep batches to at most `4` tools.",
         ]
         return lines

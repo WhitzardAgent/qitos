@@ -169,6 +169,16 @@ def cybergym_phase_engine() -> PhaseEngine:
                         ),
                         priority=10,
                     ),
+                    # Reinvestigation: after repeated failures, go back to
+                    # investigation to re-read code and update hypotheses.
+                    TransitionRule(
+                        target="investigation",
+                        condition=lambda s: (
+                            s.reinvestigate_requested
+                            and int(getattr(s, 'consecutive_misses', 0) or 0) >= 2
+                        ),
+                        priority=15,
+                    ),
                     # Fallback: after 6 phase-local steps with no PoC, force
                     # candidate_required to push the agent toward building one.
                     TransitionRule(

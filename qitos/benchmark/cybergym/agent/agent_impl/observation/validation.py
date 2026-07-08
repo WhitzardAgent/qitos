@@ -44,9 +44,8 @@ from ...tool_names import (
     READ_ONLY_TOOLS,
     RECORD_CHAIN_NODE,
     RECORD_GATE,
-    RECORD_SINK_CANDIDATE,
+    SINK,
     ANALYSIS_QUERY_TOOLS,
-    CONFIRM_FORMAT,
     SWITCH_PHASE,
 )
 
@@ -391,37 +390,16 @@ class ValidationMixin:
                     f"A ready PoC path is missing. Create or regenerate the file "
                     f"with BASH/WRITE before {action_verb}."
                 )
-            # Escape hatch: when consecutive_misses >= 4, the reminder tells
-            # the agent to stop submitting and re-investigate.  Allow
-            # read-only tools so it can actually follow that guidance.
-            # Same for consecutive_submit_errors >= 3 (server errors).
-            if tool_label in READ_ONLY_TOOLS and (
-                state.consecutive_misses >= 4 or state.consecutive_submit_errors >= 3
-            ):
-                return ""
-            # Soft nudge for evidence/reading tools — the agent may need to
-            # verify a constraint before submitting.  Don't hard-block.
-            if tool_label in READ_ONLY_TOOLS:
-                return (
-                    "A candidate PoC exists — submit it with submit_poc. "
-                    "If you need to verify a specific constraint first, you may "
-                    f"{action_verb}, but submit promptly afterward."
-                )
-            return (
-                "Candidate is ready for submission. Call submit_poc now; "
-                f"do not {action_verb} before submitting."
-            )
-        # Hard-block READ/GREP when candidate_required and no PoC exists.
-        # The agent has been reading long enough — force it to build.
-        if (
-            getattr(state, "candidate_required", False)
-            and tool_label in READ_ONLY_TOOLS
-        ):
-            return (
-                "candidate_required is active — stop reading and build a PoC "
-                f"using BASH/WRITE. {action_verb.capitalize()} is blocked "
-                "until a PoC is submitted or candidate_required clears."
-            )
+            # Allow all tools when a candidate is ready — the observation and
+            # objective already convey "submit your candidate". Returning a
+            # non-empty string from _validate_tool_access always produces a
+            # tool error with error_category="candidate_required_guard", which
+            # the model interprets as a hard block.
+            return ""
+        # candidate_required: soft nudge only — do NOT hard-block reads.
+        # The model should be free to read code when it determines that's
+        # needed.  Hard-blocking creates deadlocks where the agent can't
+        # build a correct PoC because it can't read the vulnerable code.
         return ""
 
     # ------------------------------------------------------------------
@@ -659,47 +637,37 @@ class ValidationMixin:
             )
 
     def _candidate_construction_tool_names(self, state: CyberGymState) -> set[str]:
-        # When candidate_required is set and no PoC exists, hard-block
-        # READ/GREP to force the agent to build a PoC instead of reading
-        # more code.
+        # When candidate_required is set, still show all tools — do NOT
+        # restrict the tool schema.  The model should be free to read code
+        # when it determines that's needed.  Soft nudges in
+        # _validate_tool_access provide guidance without hard-blocking.
         if getattr(state, "candidate_required", False) and not ValidationMixin._ready_poc_paths(state):
             return {
-                BASH,
-                WRITE,
-                SUBMIT_POC,
-                CONFIRM_FORMAT,
+                *READ_ONLY_TOOLS,
+                WRITE, BASH, SUBMIT_POC,
                 SWITCH_PHASE,
+                RECORD_CHAIN_NODE, RECORD_GATE, SINK,
+                "find_symbols", "callsite_search",
             }
         if ValidationMixin._ready_poc_paths(state):
             if self._candidate_ready_file_missing(state):
                 return {
-                    BASH,
-                    WRITE,
-                    SUBMIT_POC,
-                }
-            # Escape hatch: when consecutive_misses >= 4 or
-            # consecutive_submit_errors >= 3, allow investigation tools so
-            # the agent can re-read source code and trace the path-gating
-            # condition as the reminder advises.
-            if state.consecutive_misses >= 4 or state.consecutive_submit_errors >= 3:
-                return {
                     *READ_ONLY_TOOLS,
-                    "find_symbols", "callsite_search",
-                    BASH,
-                    WRITE,
-                    SUBMIT_POC,
-                    RECORD_CHAIN_NODE,
-                    RECORD_GATE,
+                    WRITE, BASH, SUBMIT_POC,
                     SWITCH_PHASE,
+                    RECORD_CHAIN_NODE, RECORD_GATE, SINK,
+                    "find_symbols", "callsite_search",
                 }
             # After a NO TRIGGER, allow construction tools so the agent can
             # build a new PoC variant.  The post_submit_miss mode lasts 2 steps.
             current_mode = str(getattr(state, "control_mode", "") or "")
             if current_mode == "post_submit_miss":
                 return {
-                    BASH,
-                    WRITE,
-                    SUBMIT_POC,
+                    *READ_ONLY_TOOLS,
+                    WRITE, BASH, SUBMIT_POC,
+                    SWITCH_PHASE,
+                    RECORD_CHAIN_NODE, RECORD_GATE, SINK,
+                    "find_symbols", "callsite_search",
                 }
             return self._submit_ready_tool_names()
         names = {
@@ -708,7 +676,7 @@ class ValidationMixin:
             BASH,
             RECORD_CHAIN_NODE,
             RECORD_GATE,
-            RECORD_SINK_CANDIDATE,
+            SINK,
             SWITCH_PHASE,
         }
         # Only offer submit_poc when there are ready PoCs to submit.
@@ -748,7 +716,7 @@ class ValidationMixin:
         )
         if advanced_context:
             names.update(EVIDENCE_TOOLS)
-        names.add(RECORD_SINK_CANDIDATE)
+        names.add(SINK)
         desc_analysis = getattr(state, "description_analysis", None)
         desc_status = str(getattr(desc_analysis, "status", "") or "pending")
         if state.current_phase in {"ingestion", "exploration", "investigation"} and desc_status in {"", "pending", "recorded"}:
@@ -756,7 +724,7 @@ class ValidationMixin:
         if state.current_phase in {"ingestion", "exploration", "investigation"}:
             names.add("discover_sink_navigation_leads")
         if getattr(state, "active_sink_candidate_id", ""):
-            pass  # sink analysis is auto-triggered by record_sink_candidate
+            pass  # sink analysis is auto-triggered by sink tool
         brief = dict(getattr(state, "latest_sink_analysis_brief", {}) or {})
         for query in brief.get("suggested_queries", []):
             tool_name = str(query.get("tool") or "")
@@ -764,10 +732,7 @@ class ValidationMixin:
                 names.add(tool_name)
         if brief:
             pass  # analysis result details available in observation sections
-        # confirm_format is also the active-pack switch/reset tool. Keep it
-        # available after confirmation so contradictory evidence can replace
-        # the soft-locked pack.
-        names.add(CONFIRM_FORMAT)
+        # confirm_format removed — pack knowledge disabled
         return names
 
     @staticmethod

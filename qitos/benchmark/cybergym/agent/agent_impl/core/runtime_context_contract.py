@@ -621,7 +621,7 @@ def render_experiment_contract_snippets(state: CyberGymState) -> List[str]:
             block_tag = " BLOCKED" if blocks else ""
             lines.append(f"- feedback{block_tag}: {action} — {reason}")
 
-    _append_pack_feedback_action(lines, state)
+    # _append_pack_feedback_action(lines, state)  # pack knowledge disabled
 
     evidence_gap = _runtime_evidence_gap_line(state)
     if evidence_gap:
@@ -714,29 +714,7 @@ def derive_contract_next_action_block(state: CyberGymState) -> Dict[str, str]:
             "do_not": "submit this PoC until carrier structure is valid",
         }
 
-    # 2.5 Pack validation fail with typed repair
-    pack_validation = metadata.get("last_pack_validation") or {}
-    if isinstance(pack_validation, dict) and pack_validation.get("overall_verdict") == "fail":
-        repairs = [
-            item for item in list(pack_validation.get("repairs") or [])
-            if isinstance(item, dict)
-        ]
-        first_repair = repairs[0] if repairs else {}
-        findings = [
-            item for item in list(pack_validation.get("findings") or [])
-            if isinstance(item, dict) and item.get("verdict") == "fail"
-        ]
-        first_finding = findings[0] if findings else {}
-        return {
-            "required": "Fix pack validation failure",
-            "why": (
-                f"{pack_validation.get('pack_id', '')} {first_finding.get('layer', '')}: "
-                f"{str(first_finding.get('evidence_ref') or '')[:160]}"
-            ).strip(),
-            "target": str(first_repair.get("description") or first_finding.get("repair_actions") or "")[:200],
-            "stop_condition": "pack validation passes or the active pack is corrected via confirm_format",
-            "do_not": "submit this PoC until pack validation failure is addressed",
-        }
+    # 2.5 Pack validation — disabled (pack knowledge disabled)
 
     # 3. Consistency block
     signals = list(getattr(state, "consistency_signals", []) or [])
@@ -1030,32 +1008,7 @@ def render_context_contract_slots(state: CyberGymState) -> Dict[str, List[str]]:
     if cap:
         slots["assessment"].append(cap)
 
-    # Pack mode format status
-    pack_mode = getattr(state, "pack_mode", {}) or {}
-    pm_mode = pack_mode.get("mode", "unconfirmed")
-    pm_pack = pack_mode.get("pack_id", "")
-    if pm_mode == "confirmed" and pm_pack:
-        pm_score = pack_mode.get("detection_score", 0.0)
-        slots["assessment"].append(f"- Format: {pm_pack} (confirmed soft-lock, score={pm_score:.2f})")
-        previous_pack = str(pack_mode.get("previous_pack_id") or (state.metadata or {}).get("previous_pack_id") or "")
-        switch_reason = str(pack_mode.get("switch_reason") or "")
-        if previous_pack and previous_pack != pm_pack:
-            suffix = f"; evidence: {switch_reason[:100]}" if switch_reason else ""
-            slots["assessment"].append(f"- Pack switched: {previous_pack} -> {pm_pack}{suffix}")
-    elif pm_mode == "candidate" and pm_pack:
-        pm_score = pack_mode.get("detection_score", 0.0)
-        pm_missing = pack_mode.get("missing_evidence", ())
-        missing_str = ", ".join(pm_missing[:3]) or "none"
-        slots["assessment"].append(f"- Format: {pm_pack} (candidate, score={pm_score:.2f}, missing: {missing_str})")
-    else:
-        # Format hint: suggest confirmation when unconfirmed/candidate during formulation
-        phase = str(getattr(state, "current_phase", "") or "")
-        if phase in ("formulation", "verification"):
-            slots["assessment"].append(
-                "- Format: unknown — consider `confirm_format` after identifying format from corpus/harness"
-            )
-        else:
-            slots["assessment"].append("- Format: unknown (no matching knowledge pack)")
+    # Pack mode format status — disabled (pack knowledge disabled)
 
     # 1. Active objective
     objectives = list(getattr(state, "active_trigger_objectives", []) or [])
@@ -1234,51 +1187,7 @@ def render_context_contract_slots(state: CyberGymState) -> Dict[str, List[str]]:
             + (f" reason={reason}" if reason else "")
         )
 
-    # Pack mode — format-specific conditions
-    pm = getattr(state, "pack_mode", {}) or {}
-    pm_mode = pm.get("mode", "unconfirmed")
-    pm_pack = pm.get("pack_id", "")
-    if pm_mode == "confirmed" and pm_pack:
-        slots["conditions"].append(
-            "- Active pack soft-lock: use this pack for format build/validate; call `confirm_format` again to switch or `format_id=unknown` to reset if contradicted"
-        )
-        _append_pack_backend_readiness(slots["conditions"], state, pm_pack)
-        _append_wrong_format_risk(slots["conditions"], state, pm_pack)
-        _append_pack_validation_summary(slots["conditions"], state)
-        # Rich rendering: CarrierContract + ParseResult + RecipePlan
-        contract_dict = (state.metadata or {}).get("carrier_contract")
-        if isinstance(contract_dict, dict):
-            slots["conditions"].append(f"- Carrier contract: {contract_dict.get('format_id', pm_pack)}")
-            protected = list(contract_dict.get('protected_fields', []))[:5]
-            derived = list(contract_dict.get('derived_fields', []))[:5]
-            if protected:
-                slots["conditions"].append(f"  Protected fields (do NOT overwrite): {', '.join(protected)}")
-            if derived:
-                slots["conditions"].append(f"  Derived fields (auto-recomputed on build): {', '.join(derived)}")
-        parse_dict = (state.metadata or {}).get("pack_parse_result")
-        if isinstance(parse_dict, dict):
-            slots["conditions"].append(
-                f"- Parsed: {parse_dict.get('node_count', '?')} nodes, "
-                f"family={parse_dict.get('carrier_family', '?')}, "
-                f"version={parse_dict.get('version', '?')}"
-            )
-        recipe_plan = (state.metadata or {}).get("pack_recipe_plan")
-        if isinstance(recipe_plan, dict):
-            ops = recipe_plan.get('operations', [])
-            invs = recipe_plan.get('invariants', [])
-            slots["conditions"].append(f"- Recipe plan: {len(ops)} operations, {len(invs)} invariants")
-    elif pm_mode == "candidate" and pm_pack:
-        slots["conditions"].append(f"- Format candidate: {pm_pack} (score={pm.get('detection_score', 0):.2f})")
-        pm_missing = pm.get("missing_evidence", ())
-        if pm_missing:
-            slots["conditions"].append(f"  Missing evidence: {', '.join(pm_missing[:3])}")
-    else:
-        # Fallback: legacy domain_packs for backward compat
-        domain_packs = list((state.metadata or {}).get("domain_packs", []) or [])
-        for pack in domain_packs[:2]:
-            slots["conditions"].append(
-                f"- Domain pack {pack.get('pack', '')}: status={pack.get('status', '')}"
-            )
+    # Pack mode conditions — disabled (pack knowledge disabled)
 
     numeric_constraints = list((state.metadata or {}).get("numeric_constraints", []) or [])
     if numeric_constraints:
@@ -1317,7 +1226,7 @@ def render_context_contract_slots(state: CyberGymState) -> Dict[str, List[str]]:
             tag = " BLOCKED" if blocks else ""
             slots["experiments"].append(f"- Feedback{tag}: {action} — {reason}")
 
-    _append_pack_feedback_action(slots["experiments"], state)
+    # _append_pack_feedback_action(slots["experiments"], state)  # pack knowledge disabled
 
     evidence_gap = _runtime_evidence_gap_line(state)
     if evidence_gap:

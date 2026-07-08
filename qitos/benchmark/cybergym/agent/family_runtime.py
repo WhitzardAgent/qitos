@@ -58,6 +58,7 @@ class FeedbackRecord:
     storage_path: str = ""
     assessment: str = ""
     suggested_action: str = ""
+    key_insight: str = ""
 
 
 class FailureType(str, Enum):

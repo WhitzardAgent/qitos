@@ -295,7 +295,7 @@ class RecordChainNodeTool(BaseTool):
                     "location": {"type": "string", "description": "Source location (e.g., 'attribute.c:1880')"},
                     "role": {
                         "type": "string",
-                        "description": "Role in the chain: 'entry' (harness), 'parser' (format decode), 'dispatch' (branch router), 'guard' (condition check), or 'sink' (vulnerable point)",
+                        "description": "Role in the chain: 'entry' (harness), 'parser' (format decode), 'dispatch' (branch router), 'guard' (condition check). Use the sink() tool for the vulnerable endpoint.",
                     },
                     "description": {"type": "string", "description": "What this function does in the data flow"},
                     "status": {
@@ -321,8 +321,8 @@ class RecordChainNodeTool(BaseTool):
         if not str(args.get("location") or "").strip():
             return ToolValidationResult.fail("location is required")
         role = str(args.get("role") or "").strip()
-        if role not in ("entry", "parser", "dispatch", "guard", "sink"):
-            return ToolValidationResult.fail("role must be one of: entry, parser, dispatch, guard, sink")
+        if role not in ("entry", "parser", "dispatch", "guard"):
+            return ToolValidationResult.fail("role must be one of: entry, parser, dispatch, guard")
         if not str(args.get("description") or "").strip():
             return ToolValidationResult.fail("description is required")
         return ToolValidationResult.ok()
@@ -374,43 +374,6 @@ class RecordChainNodeTool(BaseTool):
             # Cap
             if len(state.call_chain_nodes) > 20:
                 state.call_chain_nodes = state.call_chain_nodes[-20:]
-
-            # Auto-populate sink candidate when role="sink" and no
-            # matching SinkCandidate exists yet.  This catches the common
-            # case where the agent records record_chain_node(role="sink")
-            # but forgets to call record_sink_candidate.
-            if role == "sink":
-                existing = None
-                for c in state.sink_candidates:
-                    if c.function.lower() == function.lower() and c.status != "eliminated":
-                        existing = c
-                        break
-                if existing is None:
-                    from .state import SinkCandidate
-                    raw_file, sep, raw_line = location.rpartition(":")
-                    file_name = raw_file if sep and raw_line.isdigit() else location
-                    line_num = int(raw_line) if sep and raw_line.isdigit() else 0
-                    state.sink_candidates.append(SinkCandidate(
-                        function=function,
-                        location=location,
-                        confidence=0.6,
-                        evidence=f"Auto-created from chain node: {description}",
-                        status="candidate",
-                        source="model_candidate",
-                        file=file_name,
-                        line=line_num,
-                        reason=description,
-                        metadata={"requires_review": False, "confirmed_via": "record_chain_node"},
-                    ))
-                    created = state.sink_candidates[-1]
-                    import hashlib
-                    material = f"{created.repository_id}|{created.file}|{created.line}|{created.function}||"
-                    created.candidate_id = "sink_" + hashlib.blake2s(material.encode(), digest_size=6).hexdigest()
-                    state.active_sink_candidate_id = created.candidate_id
-                    state.active_sink_id = state._primary_sink_id()
-                    state.analysis_status = "TARGET_PROPOSED"
-                    state.metadata["_pending_sink_analysis"] = created.candidate_id
-                    state.pending_sink_checkpoint = False
 
             # Persist to exploration notes (like record_hypothesis/reflection)
             _append_exploration_note(
@@ -632,51 +595,59 @@ class RecordGateTool(BaseTool):
         }
 
 
-class RecordSinkCandidateTool(BaseTool):
-    """Record a sink candidate proposed by the LLM after reading code.
+class SinkTool(BaseTool):
+    """Unified sink candidate management: add, retire, or update sinks.
 
-    The LLM calls this when it identifies a function that is likely the
-    vulnerability entry point.  This replaces the noisy regex-based extraction
-    from description text with code-informed proposals.
+    Replaces the old record_sink_candidate tool with a richer interface that
+    allows the LLM to explicitly mark sinks as wrong (retire) or modify
+    their properties (update), in addition to creating new ones (add).
     """
 
     def __init__(self) -> None:
         super().__init__(
             ToolSpec(
-                name="record_sink_candidate",
+                name="sink",
                 description=(
-                    "Record a sink candidate — a function you believe is the "
-                    "vulnerability entry point — after reading and understanding "
-                    "the code. Use this when you identify a vulnerable function "
-                    "that is not already in the Sink Candidates list, or to "
-                    "upgrade confidence/evidence for an existing candidate."
+                    "Manage sink candidates — functions you believe are the "
+                    "vulnerability crash site. Default action is 'add'. "
+                    "Examples: sink('parse_header', 'attr.c:1880') adds a sink; "
+                    "sink('parse_header', action='retire', reason='wrong location') "
+                    "marks it eliminated; "
+                    "sink('parse_header', evidence='unchecked memcpy', confidence=0.7) "
+                    "adds with details."
                 ),
                 parameters={
                     "function": {
                         "type": "string",
-                        "description": "Function name that is the vulnerability sink",
-                    },
-                    "evidence": {
-                        "type": "string",
-                        "description": "Why this function is a sink (e.g., 'READ attribute.c:1905 — unchecked memcpy with user-controlled size')",
+                        "description": "Function name (required)",
                     },
                     "location": {
                         "type": "string",
                         "description": "Source location (e.g., 'attribute.c:1880')",
                     },
+                    "action": {
+                        "type": "string",
+                        "enum": ["add", "retire", "update"],
+                        "description": "Action: 'add' (default) record or upgrade a sink; 'retire' mark as wrong/eliminated (auto-rotates to next); 'update' modify confidence/evidence of existing sink.",
+                    },
+                    "evidence": {
+                        "type": "string",
+                        "description": "Why this function is a sink (recommended for add, optional for update)",
+                    },
                     "confidence": {
                         "type": "number",
-                        "description": "Confidence 0.0-1.0. Suggested: 0.7 for confirmed from source, 0.5 for strong evidence, 0.4 for plausible.",
+                        "description": "Confidence 0.0-1.0. add: suggested 0.7 confirmed, 0.5 strong, 0.4 plausible. update: can raise or lower.",
                     },
                     "callee": {"type": "string", "description": "Optional target callee at the sink callsite"},
                     "expression": {"type": "string", "description": "Optional sink expression"},
                     "category": {"type": "string", "description": "Optional vulnerability/sink category"},
                     "candidate_role": {"type": "string", "description": "Optional role: crash_site | causal_site | path_anchor | dangerous_primitive | unknown"},
-                    "ranked_path_id": {"type": "string", "description": "Optional path_id from Vulnerability Path when reviewing a static candidate"},
+                    "ranked_path_id": {"type": "string", "description": "Optional path_id from Vulnerability Path"},
                     "source_span": {"type": "object", "description": "Optional source span {file,line,end_line}"},
-                    "paired_with": {"type": "string", "description": "Optional paired candidate/path id for UAF/uninit/integer/overlap evidence"},
+                    "paired_with": {"type": "string", "description": "Optional paired candidate/path id for UAF/uninit/integer evidence"},
+                    "reason": {"type": "string", "description": "Reason for retire/update action (e.g., 'ASAN crash at different function')"},
                 },
-                required=["function", "evidence"],
+                required=["function"],
                 permissions=ToolPermission(filesystem_write=True),
             )
         )
@@ -685,10 +656,13 @@ class RecordSinkCandidateTool(BaseTool):
         self, args: Dict[str, Any], runtime_context: Optional[Dict[str, Any]] = None
     ) -> ToolValidationResult:
         _ = runtime_context
+        action = str(args.get("action") or "add").strip()
+        if action not in ("add", "retire", "update"):
+            return ToolValidationResult.fail("action must be 'add', 'retire', or 'update'")
         if not str(args.get("function") or "").strip():
             return ToolValidationResult.fail("function is required")
-        if not str(args.get("evidence") or "").strip():
-            return ToolValidationResult.fail("evidence is required")
+        if action == "retire" and not str(args.get("reason") or "").strip():
+            return ToolValidationResult.fail("reason is required for retire action")
         conf = args.get("confidence")
         if conf is not None:
             try:
@@ -702,10 +676,25 @@ class RecordSinkCandidateTool(BaseTool):
     def execute(
         self, args: Dict[str, Any], runtime_context: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
+        state = (runtime_context or {}).get("state")
+        action = str(args.get("action") or "add").strip()
+        func_name = str(args.get("function") or "").strip()
+
+        if action == "add":
+            return self._do_add(args, state, func_name, runtime_context)
+        if action == "retire":
+            return self._do_retire(args, state, func_name, runtime_context)
+        if action == "update":
+            return self._do_update(args, state, func_name, runtime_context)
+        return {"status": "error", "message": f"Unknown action: {action}"}
+
+    # ------------------------------------------------------------------
+    # ADD — same logic as old RecordSinkCandidateTool
+    # ------------------------------------------------------------------
+
+    def _do_add(self, args, state, func_name, runtime_context):
         from .state import SinkCandidate
 
-        state = (runtime_context or {}).get("state")
-        func_name = str(args.get("function") or "").strip()
         evidence = str(args.get("evidence") or "").strip()
         location = str(args.get("location") or "").strip()
         confidence = float(args.get("confidence") or 0.5)
@@ -726,20 +715,18 @@ class RecordSinkCandidateTool(BaseTool):
         elif location:
             file_name = location
 
-        action = "created"
+        record_action = "created"
 
         if state is not None:
-            # Entry-point sink suppression: cap confidence and don't clear checkpoint
             from .analysis.vuln_patterns import is_entry_point_function
             is_entry = is_entry_point_function(func_name)
             if is_entry:
                 confidence = min(confidence, 0.2)
                 state.metadata["entry_point_sink_recorded"] = True
             else:
-                # Clear sink checkpoint on successful recording of a real sink
                 state.pending_sink_checkpoint = False
                 state.sink_hypothesis_source = "model_candidate"
-            # Case-insensitive lookup for existing candidate
+
             live = [c for c in state.sink_candidates if c.status != "eliminated"]
             existing = None
             if ranked_path_id:
@@ -758,7 +745,7 @@ class RecordSinkCandidateTool(BaseTool):
                     existing = leaf_matches[0]
 
             if existing is not None:
-                action = "updated"
+                record_action = "updated"
                 if file_name:
                     existing.file, existing.line = file_name, line
                     existing.location = location
@@ -770,17 +757,14 @@ class RecordSinkCandidateTool(BaseTool):
                     existing.category = category
                 existing.reason = evidence
                 if existing.source in {"description", "description_symbol", "harness_chain", "static_navigation", "graph_auto_deepen"}:
-                    # Upgrade noisy regex candidate to LLM-proposed
                     existing.source = "model_candidate"
                     existing.evidence = evidence
                     if location:
                         existing.location = location
                     existing.confidence = max(existing.confidence, confidence)
                 else:
-                    # Update existing candidate — upgrade confidence if higher
                     if confidence > existing.confidence:
                         existing.confidence = confidence
-                    # Append evidence if different
                     if evidence not in existing.evidence:
                         existing.evidence = (
                             existing.evidence + "; " + evidence
@@ -792,9 +776,8 @@ class RecordSinkCandidateTool(BaseTool):
                 existing.status = "candidate"
                 existing.metadata = dict(existing.metadata or {})
                 existing.metadata.update({
-                    "requires_review": False,
-                    "reviewed": True,
-                    "confirmed_via": "record_sink_candidate",
+                    "requires_review": False, "reviewed": True,
+                    "confirmed_via": "sink_tool",
                     "selection_status": "active" if candidate_role != "path_anchor" else "reviewed_anchor",
                     "candidate_role": candidate_role,
                     "ranked_path_id": ranked_path_id or existing.metadata.get("ranked_path_id", ""),
@@ -804,22 +787,13 @@ class RecordSinkCandidateTool(BaseTool):
                 })
             else:
                 state.sink_candidates.append(SinkCandidate(
-                    function=func_name,
-                    location=location,
-                    confidence=confidence,
-                    evidence=evidence,
-                    status="candidate",
-                    source="model_candidate",
-                    file=file_name,
-                    line=line,
-                    callee=callee,
-                    expression=expression,
-                    category=category,
-                    reason=evidence,
+                    function=func_name, location=location, confidence=confidence,
+                    evidence=evidence, status="candidate", source="model_candidate",
+                    file=file_name, line=line, callee=callee, expression=expression,
+                    category=category, reason=evidence,
                     metadata={
-                        "requires_review": False,
-                        "reviewed": True,
-                        "confirmed_via": "record_sink_candidate",
+                        "requires_review": False, "reviewed": True,
+                        "confirmed_via": "sink_tool",
                         "selection_status": "active" if candidate_role != "path_anchor" else "reviewed_anchor",
                         "candidate_role": candidate_role,
                         "ranked_path_id": ranked_path_id,
@@ -834,9 +808,8 @@ class RecordSinkCandidateTool(BaseTool):
             confirmed.status = "candidate"
             confirmed.metadata = dict(confirmed.metadata or {})
             confirmed.metadata.update({
-                "requires_review": False,
-                "reviewed": True,
-                "confirmed_via": "record_sink_candidate",
+                "requires_review": False, "reviewed": True,
+                "confirmed_via": "sink_tool",
                 "selection_status": "active" if candidate_role != "path_anchor" else "reviewed_anchor",
                 "candidate_role": candidate_role,
                 "ranked_path_id": ranked_path_id or confirmed.metadata.get("ranked_path_id", ""),
@@ -845,7 +818,6 @@ class RecordSinkCandidateTool(BaseTool):
                 "needs_downstream_endpoint": candidate_role == "path_anchor",
             })
 
-            # Recalculate active sink if top candidate changed
             state.active_sink_id = state._primary_sink_id()
             selected = confirmed
             if not selected.candidate_id:
@@ -855,37 +827,23 @@ class RecordSinkCandidateTool(BaseTool):
             if candidate_role != "path_anchor":
                 state.active_sink_candidate_id = selected.candidate_id
             state.analysis_status = "TARGET_PROPOSED"
-            # A structured sink candidate is the authoritative trigger for
-            # repository-level analysis.  Do not depend on deployment-specific
-            # environment flags: that caused most remote candidates to receive
-            # no enrichment at all.
             if candidate_role in {"crash_site", "causal_site", "dangerous_primitive", "unknown"}:
                 state.metadata["_pending_sink_analysis"] = selected.candidate_id
 
-            # Cap at 12 candidates
             if len(state.sink_candidates) > 12:
-                # Keep eliminated ones at the end, then trim
                 active = [c for c in state.sink_candidates if c.status != "eliminated"]
                 eliminated = [c for c in state.sink_candidates if c.status == "eliminated"]
                 state.sink_candidates = active[-12:] + eliminated
 
-            _append_exploration_note(
-                state, runtime_context,
-                {
-                    "note_type": "sink_candidate",
-                    "function": func_name,
-                    "confidence": confidence,
-                    "action": action,
-                    "candidate_role": candidate_role,
-                    "ranked_path_id": ranked_path_id,
-                    "evidence": _clip(evidence, 120),
-                },
-            )
+            _append_exploration_note(state, runtime_context, {
+                "note_type": "sink_candidate", "function": func_name,
+                "confidence": confidence, "action": record_action,
+                "candidate_role": candidate_role,
+                "ranked_path_id": ranked_path_id,
+                "evidence": _clip(evidence, 120),
+            })
 
-            # Auto-trigger: trace_value + extract_constraints for the sink.
-            # Only runs when the analysis index is already loaded (avoids slow
-            # cold-index during a tool call). Non-critical enrichment — never
-            # fails the primary tool call.
+            # Auto-trigger analysis enrichment
             if not is_entry and func_name:
                 try:
                     repo = str(getattr(state, "repo_dir", "") or getattr(state, "workspace_root", "") or "")
@@ -895,17 +853,13 @@ class RecordSinkCandidateTool(BaseTool):
                         service = AnalysisService(repo, workspace_root=ws)
                         if service.symbols:
                             trace_result = service.trace_value(
-                                function=func_name,
-                                line=line,
-                                expression=expression or func_name,
-                                direction="backward",
+                                function=func_name, line=line,
+                                expression=expression or func_name, direction="backward",
                             )
                             if trace_result.get("status") not in ("not_found", "unsupported"):
                                 state.metadata["_sink_trace_result"] = trace_result
-
                             constraints_result = service.extract_constraints(
-                                function=func_name,
-                                target_line=line,
+                                function=func_name, target_line=line,
                             )
                             if constraints_result.get("status") != "not_found":
                                 state.metadata["_sink_constraints"] = constraints_result
@@ -913,15 +867,141 @@ class RecordSinkCandidateTool(BaseTool):
                     pass
 
         return {
-            "status": "success",
-            "function": func_name,
-            "confidence": confidence,
-            "action": action,
+            "status": "success", "function": func_name,
+            "confidence": confidence, "action": record_action,
             "candidate_role": candidate_role,
             "ranked_path_id": ranked_path_id,
             "evidence": _clip(evidence, 100),
             "candidate_id": getattr(selected, "candidate_id", "") if state is not None else "",
             "analysis_triggered": state is not None,
+        }
+
+    # ------------------------------------------------------------------
+    # RETIRE — mark a sink as eliminated and auto-rotate
+    # ------------------------------------------------------------------
+
+    def _do_retire(self, args, state, func_name, runtime_context):
+        if state is None:
+            return {"status": "error", "message": "No state available"}
+
+        reason = str(args.get("reason") or "").strip()
+        live = [c for c in state.sink_candidates if c.status != "eliminated"]
+        target = next((c for c in live if c.function.lower() == func_name.lower()), None)
+
+        if target is None:
+            return {"status": "error", "message": f"No active sink candidate found for '{func_name}'"}
+
+        # Eliminate the target
+        target.status = "eliminated"
+        target.evidence = (
+            (target.evidence + f" [retired: {reason}]")
+            if target.evidence else f"Retired: {reason}"
+        )
+        target.metadata = dict(target.metadata or {})
+        target.metadata["retired_reason"] = reason
+        target.metadata["selection_status"] = "rejected"
+
+        # Auto-rotate if the retired sink was active
+        was_active = (state.active_sink_id and
+                      f"{target.function}@{target.location}" == state.active_sink_id)
+        new_active = ""
+        if was_active:
+            remaining = [c for c in state.sink_candidates if c.status != "eliminated"]
+            if remaining:
+                remaining.sort(key=lambda c: -c.confidence)
+                best = remaining[0]
+                state.active_sink_id = f"{best.function}@{best.location}"
+                state.active_sink_candidate_id = best.candidate_id
+                new_active = best.function
+            else:
+                state.active_sink_id = ""
+                state.active_sink_candidate_id = ""
+
+        _append_exploration_note(state, runtime_context, {
+            "note_type": "sink_retired", "function": func_name,
+            "reason": _clip(reason, 120),
+            "was_active": was_active,
+            "new_active": new_active,
+        })
+
+        return {
+            "status": "success", "action": "retired",
+            "function": func_name, "reason": reason,
+            "was_active": was_active,
+            "new_active_sink": new_active,
+        }
+
+    # ------------------------------------------------------------------
+    # UPDATE — modify an existing sink's properties
+    # ------------------------------------------------------------------
+
+    def _do_update(self, args, state, func_name, runtime_context):
+        if state is None:
+            return {"status": "error", "message": "No state available"}
+
+        reason = str(args.get("reason") or "").strip()
+        live = [c for c in state.sink_candidates if c.status != "eliminated"]
+        target = next((c for c in live if c.function.lower() == func_name.lower()), None)
+
+        if target is None:
+            return {"status": "error", "message": f"No active sink candidate found for '{func_name}'"}
+
+        changes = []
+
+        # Confidence — can be raised OR lowered
+        conf = args.get("confidence")
+        if conf is not None:
+            new_conf = max(0.0, min(1.0, float(conf)))
+            old_conf = target.confidence
+            target.confidence = new_conf
+            changes.append(f"confidence: {old_conf:.2f} → {new_conf:.2f}")
+
+        # Optional fields — update if provided
+        for field, arg_key in [
+            ("callee", "callee"), ("expression", "expression"),
+            ("category", "category"),
+        ]:
+            val = str(args.get(arg_key) or "").strip()
+            if val:
+                setattr(target, field, val)
+                changes.append(f"{arg_key}: {val}")
+
+        candidate_role = str(args.get("candidate_role") or "").strip()
+        if candidate_role in {"crash_site", "causal_site", "path_anchor", "dangerous_primitive", "unknown"}:
+            target.metadata = dict(target.metadata or {})
+            target.metadata["candidate_role"] = candidate_role
+            changes.append(f"candidate_role: {candidate_role}")
+
+        evidence = str(args.get("evidence") or "").strip()
+        if evidence:
+            if evidence not in target.evidence:
+                target.evidence = (target.evidence + "; " + evidence) if target.evidence else evidence
+            changes.append(f"evidence appended")
+
+        # Record reason in metadata
+        if reason:
+            target.metadata = dict(target.metadata or {})
+            target.metadata.setdefault("update_history", [])
+            target.metadata["update_history"].append({
+                "reason": _clip(reason, 120),
+                "changes": ", ".join(changes) if changes else "no fields changed",
+            })
+
+        # Recalculate active sink if confidence changed priority
+        if conf is not None:
+            state.active_sink_id = state._primary_sink_id()
+
+        _append_exploration_note(state, runtime_context, {
+            "note_type": "sink_updated", "function": func_name,
+            "reason": _clip(reason, 120),
+            "changes": ", ".join(changes) if changes else "no fields changed",
+        })
+
+        return {
+            "status": "success", "action": "updated",
+            "function": func_name,
+            "confidence": target.confidence,
+            "changes": changes,
         }
 
 
@@ -1327,3 +1407,8 @@ class ConfirmFormatTool(BaseTool):
             )
 
         return result
+
+
+# Backward compat alias
+RecordSinkCandidateTool = SinkTool
+

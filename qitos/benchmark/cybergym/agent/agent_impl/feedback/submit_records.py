@@ -112,6 +112,7 @@ def append_feedback_record(
             storage_path=storage_path,
             assessment=verdict,
             suggested_action=suggested_action,
+            key_insight=str(output.get("key_insight") or "").strip(),
         )
     )
     state.hot_feedback_window = retain_hot_feedback(state.feedback_history, max_items=3)

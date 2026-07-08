@@ -40,7 +40,8 @@ PROBE_RUNTIME_FRONTIER = "probe_runtime_frontier"  # deprecated — replaced by 
 GDB_DEBUG = "gdb_debug"
 RECORD_CHAIN_NODE = "record_chain_node"
 RECORD_GATE = "record_gate"
-RECORD_SINK_CANDIDATE = "record_sink_candidate"
+RECORD_SINK_CANDIDATE = "record_sink_candidate"  # legacy alias
+SINK = "sink"
 CONFIRM_FORMAT = "confirm_format"
 SWITCH_PHASE = "switch_phase"
 ANALYSIS_QUERY_TOOLS = frozenset({
@@ -64,6 +65,7 @@ LEGACY_ALIASES = {
     "HexView": HEX_VIEW,
     "StructProbe": STRUCT_PROBE,
     "CorpusInspect": CORPUS_INSPECT,
+    "record_sink_candidate": SINK,
 }
 
 # ---------------------------------------------------------------------------
@@ -83,7 +85,7 @@ EVIDENCE_TOOLS = frozenset({
 TRACKING_TOOLS = frozenset({
     RECORD_CHAIN_NODE,
     RECORD_GATE,
-    RECORD_SINK_CANDIDATE,
+    SINK,
     CONFIRM_FORMAT,
     SWITCH_PHASE,
 })

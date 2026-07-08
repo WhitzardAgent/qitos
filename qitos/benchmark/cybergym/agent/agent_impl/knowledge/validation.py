@@ -35,6 +35,7 @@ def validate_with_knowledge_pack(
 
     Returns None if no pack is confirmed for this format.
     """
+    return None  # Pack knowledge disabled
     try:
         registry = get_knowledge_registry()
         if registry.is_empty():

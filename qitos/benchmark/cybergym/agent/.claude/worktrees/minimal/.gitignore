@@ -1,0 +1,55 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+*.egg
+dist/
+build/
+.eggs/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+.worktrees/
+
+# CyberGym agent runtime artifacts
+.agent/
+.cybergym/
+render_events.jsonl
+runs/
+
+# Temp files from task execution
+poc_*
+*.tar.gz
+
+# Environment and secrets
+.env
+.env.local
+
+# Test artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+
+# MyPy
+.mypy_cache/
+
+# Vendored qitos build/runtime artifacts (source is tracked)
+qitos/__pycache__/
+qitos/*.egg-info/
+qitos/qitos.egg-info/
+qitos/qitos_zoo/
+qitos/qitos/benchmark/cybergym/agent/runs/
+qitos/qitos/benchmark/cybergym/agent/.agent/
+qitos/qitos/benchmark/cybergym/agent/.cybergym/

@@ -340,12 +340,11 @@ class CyberGymAgent(StaticAnalysisRuntimeMixin, StateInitMixin, TaskAnalysisMixi
     def _store_tui_sections(state: CyberGymState, sections: Dict[str, str]) -> None:
         """Store observation sections in state.metadata for TUI display."""
         tui_map = {
-            "mission": "_tui_mission",
-            "assessment": "_tui_assessment",
-            "vuln_path": "_tui_vuln_path",
-            "conditions": "_tui_conditions",
+            "vulnerability": "_tui_vulnerability",
+            "sink_candidates": "_tui_sink_candidates",
+            "constraint_board": "_tui_constraint_board",
             "experiments": "_tui_experiments",
-            "next_action": "_tui_next_action",
+            "task_memory": "_tui_task_memory",
             "tools": "_tui_tools",
         }
         for src_key, tui_key in tui_map.items():

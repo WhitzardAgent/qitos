@@ -283,10 +283,10 @@ class MemoryMixin:
         else:
             checkpoint_active = getattr(state, "pending_sink_checkpoint", False)
             if checkpoint_active:
-                lines.append("SINK HYPOTHESIS NEEDED — record_sink_candidate() is recommended. "
+                lines.append("SINK HYPOTHESIS NEEDED — sink() is recommended. "
                              "You may proceed with other actions if you have a working hypothesis.")
             else:
-                lines.append("No sink candidates recorded. Call record_sink_candidate() "
+                lines.append("No sink candidates recorded. Call sink(function, location?, evidence?, confidence?) "
                              "when you identify a vulnerable function. REQUIRED before leaving exploration.")
         return "\n".join(lines)
 
@@ -601,7 +601,7 @@ class MemoryMixin:
                         names = [n.function for n in uncovered[:3]]
                         lines.append(
                             f"WARNING: Nodes with no confirmed constraints: {', '.join(names)}. "
-                            "READ their code to discover hidden conditions before constructing PoC."
+                            "read their code to discover hidden conditions before constructing PoC."
                         )
                     lines.append("")
 

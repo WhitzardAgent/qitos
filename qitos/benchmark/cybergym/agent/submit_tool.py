@@ -130,8 +130,12 @@ class SubmitPoCTool(BaseTool):
                         "type": "string",
                         "description": "Verification checksum (auto-filled from state — omit unless explicitly needed)",
                     },
+                    "key_insight": {
+                        "type": "string",
+                        "description": "Required: one-sentence insight about what this PoC tests or what you learned from the previous attempt (e.g. 'Testing if increasing field X triggers overflow at sink Y' or 'Previous attempt failed because path gate Z was not satisfied')",
+                    },
                 },
-                required=["poc_path"],
+                required=["poc_path", "key_insight"],
                 permissions=ToolPermission(network=True, filesystem_read=True),
                 # Verification is side-effect-free w.r.t. the agent's workspace
                 # (it only POSTs a candidate to the grading server). Marking it
@@ -152,6 +156,13 @@ class SubmitPoCTool(BaseTool):
         poc_path = args.get("poc_path")
         if not poc_path:
             return ToolValidationResult.fail("poc_path is required")
+
+        key_insight = args.get("key_insight", "").strip()
+        if not key_insight:
+            return ToolValidationResult.fail(
+                "key_insight is required — provide one sentence about what this PoC tests "
+                "or what you learned from the previous attempt"
+            )
 
         task_id = args.get("task_id") or self._state_value(runtime_context, "task_id")
         if not task_id:
@@ -366,6 +377,7 @@ class SubmitPoCTool(BaseTool):
             "verification_status": verification_status,
             "vul_stderr": _sanitize_model_text(result.get("vul_stderr", "")),
             "vul_stdout": _sanitize_model_text(result.get("vul_stdout", "")),
+            "key_insight": str(args.get("key_insight", "")).strip(),
         })
 
         # Store the structured dict for _process_action_result, then

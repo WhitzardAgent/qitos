@@ -260,6 +260,7 @@ def maybe_upgrade_pack_mode(state: Any) -> bool:
 
     Returns True if pack_mode was upgraded.
     """
+    return False  # Pack knowledge disabled
     current = getattr(state, "pack_mode", {}) or {}
     current_mode = current.get("mode", "unconfirmed")
 
