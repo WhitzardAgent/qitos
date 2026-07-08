@@ -9,6 +9,8 @@ derive_contract_next_action_block() to produce hard blocks in Next Action.
 Priority order (highest = most blocking):
 1. Carrier sanity fail -> repair_carrier
 2. Consistency block -> repair_consistency
+2b. Oracle classifier hard block
+2c. Consecutive NO_CRASH with no GDB diagnosis -> gdb_debug (hard block)
 3. Transcript gap -> complete_transcript
 4. Unresolved field -> localize_field
 5. Same objective repeated miss -> switch_objective
@@ -118,6 +120,45 @@ def derive_feedback_action(
         state.pending_diagnosis = False
     if getattr(state, "pending_reproduction", False):
         state.pending_reproduction = False
+
+    # 2d. Any NO_CRASH without GDB diagnosis: hard-block submit.
+    # After the first no-crash submission with no GDB evidence for the
+    # latest candidate, force gdb_debug before submitting again. This prevents
+    # the agent from blindly re-submitting the same (or similar) PoC without
+    # diagnosing WHY it doesn't trigger.
+    consecutive_misses = int(getattr(state, "consecutive_misses", 0) or 0)
+    if (
+        consecutive_misses >= 1
+        and not getattr(state, "gdb_unavailable", False)
+        and _gdb_available(state)
+    ):
+        candidate_path = _latest_feedback_candidate_path(state)
+        if candidate_path:
+            latest_gdb = _latest_gdb_debug_for_candidate(state, candidate_path)
+            if latest_gdb is None:
+                objective_id = _active_objective_id(state)
+                ranked_path_id = _best_ranked_path_id(state)
+                return {
+                    "action": "gdb_debug",
+                    "reason": (
+                        f"{consecutive_misses} no-crash submission(s) without "
+                        "GDB diagnosis. Call gdb_debug to determine whether the "
+                        "vulnerable path is reached before submitting more variants."
+                    ),
+                    "negative_evidence_kind": "",
+                    "blocks_submit": True,
+                    "target_ids": {
+                        "candidate_path": candidate_path,
+                        "objective_id": objective_id,
+                        "ranked_path_id": ranked_path_id,
+                    },
+                    "prompt_instruction": (
+                        f"Call gdb_debug(poc_path={candidate_path!r}, "
+                        "commands='b <vuln_func>\\nrun\\nbt') to trace execution "
+                        "and determine whether the vulnerable code path is reached. "
+                        "You must diagnose the miss before submitting again."
+                    ),
+                }
 
     # 3. Transcript gap
     fmt = getattr(state, "input_format", None)
@@ -632,21 +673,9 @@ def _runtime_outcome_negative_kind(outcome: str) -> str:
 
 def _soft_action_if_applicable(state: CyberGymState) -> dict[str, Any] | None:
     """Suggest a soft (non-blocking) action if applicable."""
-    # Suggest harness protocol extraction if unknown
-    fmt = getattr(state, "input_format", None)
-    if fmt:
-        consumption = getattr(fmt, "consumption", None)
-        if consumption:
-            scope = str(getattr(consumption, "endpoint_scope", "") or "")
-            if not scope and str(getattr(consumption, "pattern", "") or "") == "unknown":
-                return {
-                    "action": "extract_harness_protocol",
-                    "reason": "Harness consumption model is unresolved",
-                    "negative_evidence_kind": "",
-                    "blocks_submit": False,
-                    "target_ids": {},
-                    "prompt_instruction": "Read the harness main function to determine input consumption pattern.",
-                }
+    # (extract_harness_protocol suggestion removed — harness protocol is
+    #  extracted at init time; the soft suggestion was never acted on and
+    #  just added noise to the observation.)
 
     # Suggest local test mining if we have source but no local tests
     local_refs = list(getattr(state, "local_mining_refs", []) or [])

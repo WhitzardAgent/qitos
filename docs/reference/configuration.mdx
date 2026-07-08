@@ -122,6 +122,7 @@ When a `Task` object is passed to `Engine.run()`, the `Task.budget` values overr
 |----------|----------|-------------|
 | `OPENAI_API_KEY` | Yes (for OpenAI / compatible APIs) | API key sent in the `Authorization` header. Used by `OpenAIModel` and `OpenAICompatibleModel` |
 | `OPENAI_BASE_URL` | Yes (for compatible APIs) | Base URL of the API endpoint. Required by `OpenAICompatibleModel`; optional for `OpenAIModel` (defaults to `https://api.openai.com/v1`) |
+| `QITOS_INFERENCE_KEY` | No | Compatibility fallback for OpenAI-compatible sticky routing. When a model instance does not set `inference_key`, this value is sent as `x-inspire-inference-key` |
 | `QITOS_API_KEY` | No | Alternative API key variable. Recognized by `ModelFactory.from_env()` as a fallback when `OPENAI_API_KEY` is not set |
 | `QITOS_MODEL` | No | Default model identifier. Read by `ModelFactory.from_env()` to select the model when none is specified in code |
 | `AZURE_OPENAI_API_KEY` | Only for Azure | API key for Azure OpenAI. Used by `AzureOpenAIModel` |

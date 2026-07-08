@@ -21,7 +21,7 @@ def _ingestion_ready(s: CyberGymState) -> bool:
     """Ingestion is complete when the LLM has done meaningful analysis.
 
     Requirements:
-    - crash_type is set (via set_crash_type tool) OR 4+ phase-local steps elapsed
+    - crash_type is set OR 4+ phase-local steps elapsed
     - At least one model-confirmed sink candidate (not just description-derived)
     - OR 4+ phase-local steps have elapsed (hard fallback)
 
@@ -168,6 +168,19 @@ def cybergym_phase_engine() -> PhaseEngine:
                             for item in list(getattr(s, "ready_pocs", []) or [])
                         ),
                         priority=10,
+                    ),
+                    # Fallback: after 6 phase-local steps with no PoC, force
+                    # candidate_required to push the agent toward building one.
+                    TransitionRule(
+                        target="formulation",
+                        condition=lambda s: (
+                            phase_local_steps(s) >= 6
+                            and not any(
+                                bool(str(getattr(item, "file_path", "") or "").strip())
+                                for item in list(getattr(s, "ready_pocs", []) or [])
+                            )
+                        ),
+                        priority=0,
                     ),
                 ],
             ),

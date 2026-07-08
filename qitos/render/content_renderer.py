@@ -371,25 +371,23 @@ class ContentFirstRenderer:
         if not isinstance(action, dict):
             return {
                 "label": "ACTION",
-                "detail": self._truncate(self._to_text(action), 120),
+                "detail": self._to_text(action),
                 "status": "neutral",
             }
         name = str(
             action.get("name") or action.get("tool") or action.get("action") or "action"
         )
         args = action.get("args") if isinstance(action.get("args"), dict) else {}
-        detail = ""
         if args:
-            for key in ("query", "url", "path", "command", "prompt", "file"):
-                if key in args:
-                    detail = self._truncate(self._to_text(args[key]), 120)
-                    break
-            if not detail:
-                k = next(iter(args.keys()))
-                detail = self._truncate(f"{k}={self._to_text(args[k])}", 120)
+            # Format as Python call: tool_name(key1=val1, key2=val2, ...)
+            # NO truncation — full args are critical for debugging
+            parts = [f"{k}={self._to_text(v)}" for k, v in args.items()]
+            detail = f"{name}({', '.join(parts)})"
+        else:
+            detail = name
         return {
             "label": name.upper().replace("_", " "),
-            "detail": self._compress_detail(detail),
+            "detail": detail,
             "status": "neutral",
         }
 

@@ -18,7 +18,7 @@ seed_select -> locate_field -> mutate_local_bytes -> sanity_check -> submit
 - Derive offset, width, endianness, and enclosing structure from concrete
   parser or harness evidence.
 - For nested chunks or tables, calculate the cumulative file offset.
-- Use `StructProbe` or `HexView` to verify the field in the carrier.
+- Use `struct_probe` or `hex_view` to verify the field in the carrier.
 
 ## 3. Apply a local mutation
 
@@ -29,7 +29,7 @@ seed_select -> locate_field -> mutate_local_bytes -> sanity_check -> submit
 
 ## 4. Check carrier sanity
 
-- Run `PoCSanityCheck`, or use `FileInfo`, `HexView`, and `StructProbe` when a
+- Run `PoCSanityCheck`, or use `file_info`, `hex_view`, and `struct_probe` when a
   format-specific checker is unavailable.
 - Verify the carrier structure and the exact bytes of the intended mutation.
 - Repair a `carrier_invalid` result before submission; warnings may proceed

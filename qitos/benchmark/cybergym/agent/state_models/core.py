@@ -119,8 +119,6 @@ class CyberGymState(StateSchema):
     poc_attempts: int = 0
     last_error_trace: str = ""
     last_verification_result: Dict[str, Any] = field(default_factory=dict)
-    pending_attempt_record: bool = False
-    pending_reflection: bool = False
     pending_chain_checkpoint: bool = False
     pending_gates_checkpoint: bool = False
     pending_sink_checkpoint: bool = False

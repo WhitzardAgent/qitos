@@ -370,6 +370,7 @@ def test_claude_style_hook_prints_agent_composition() -> None:
 
     class _LLM:
         model_name = "Qwen/Qwen3-8B"
+        inference_key = "cybergym-arvo-3938-testkey"
 
     class _Agent:
         llm = _LLM()
@@ -399,4 +400,5 @@ def test_claude_style_hook_prints_agent_composition() -> None:
     text = hook.console.export_text()
     assert "AGENT COMPOSITION" in text
     assert "Qwen/Qwen3-8B" in text
+    assert "cybergym-arvo-3938-testkey" in text
     assert "web_search" in text

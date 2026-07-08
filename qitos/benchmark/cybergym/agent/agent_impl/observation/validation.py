@@ -39,19 +39,12 @@ from ...tool_names import (
     GLOB,
     BASH,
     WRITE,
-    APPEND,
-    INSERT,
-    REPLACE_LINES,
-    STR_REPLACE,
     EVIDENCE_TOOLS,
     WRITE_TOOLS,
     READ_ONLY_TOOLS,
-    RECORD_HYPOTHESIS,
-    RECORD_REFLECTION,
     RECORD_CHAIN_NODE,
     RECORD_GATE,
     RECORD_SINK_CANDIDATE,
-    ANALYZE_SINK_CANDIDATE,
     ANALYSIS_QUERY_TOOLS,
     CONFIRM_FORMAT,
 )
@@ -178,8 +171,6 @@ class ValidationMixin:
             return "diagnosis_required"
         if getattr(state, "pending_reproduction", False) and not getattr(state, "gdb_unavailable", False):
             return "diagnosis_required"
-        if state.pending_reflection:
-            return "reflection_pending"
         # P43: add a 2-step cooldown after post_submit_miss so the agent
         # actually sees gate-specific repair guidance before the mode
         # switches to candidate_ready.  Without this, writing a new PoC
@@ -357,7 +348,7 @@ class ValidationMixin:
         """Unified validation for read/grep/evidence tool access gating.
 
         Returns a blocking message or empty string to allow.
-        ``tool_label`` is the human-facing name (e.g. "READ", "GREP",
+        ``tool_label`` is the human-facing name (e.g. "read", "grep",
         a specific evidence tool name). ``action_verb`` customises the
         "do not ... before submitting" phrase.
         """
@@ -372,26 +363,26 @@ class ValidationMixin:
         # Chain checkpoint: only allow search + recording tools
         if getattr(state, "pending_chain_checkpoint", False):
             _allowed_during_checkpoint = READ_ONLY_TOOLS | {
-                "FindSymbols", "CallsiteSearch",
+                "find_symbols", "callsite_search",
                 "record_chain_node", "record_gate",
             }
             if tool_label not in _allowed_during_checkpoint:
                 return (
                     "Constraint checkpoint active — record at least one chain node "
                     f"via record_chain_node before {action_verb}. "
-                    "READ/GREP/FindSymbols are still allowed."
+                    "read/grep/find_symbols are still allowed."
                 )
         # Gates checkpoint: only allow search + gate recording tools
         if getattr(state, "pending_gates_checkpoint", False):
             _allowed_during_gates_checkpoint = READ_ONLY_TOOLS | {
-                "FindSymbols", "CallsiteSearch",
+                "find_symbols", "callsite_search",
                 "record_chain_node", "record_gate",
             }
             if tool_label not in _allowed_during_gates_checkpoint:
                 return (
                     "Gates checkpoint active — record at least one path constraint "
                     f"via record_gate before {action_verb}. "
-                    "READ/GREP/FindSymbols are still allowed."
+                    "read/grep/find_symbols are still allowed."
                 )
         if ValidationMixin._ready_poc_paths(state):
             if self._candidate_ready_file_missing(state):
@@ -418,6 +409,17 @@ class ValidationMixin:
             return (
                 "Candidate is ready for submission. Call submit_poc now; "
                 f"do not {action_verb} before submitting."
+            )
+        # Hard-block READ/GREP when candidate_required and no PoC exists.
+        # The agent has been reading long enough — force it to build.
+        if (
+            getattr(state, "candidate_required", False)
+            and tool_label in READ_ONLY_TOOLS
+        ):
+            return (
+                "candidate_required is active — stop reading and build a PoC "
+                f"using BASH/WRITE. {action_verb.capitalize()} is blocked "
+                "until a PoC is submitted or candidate_required clears."
             )
         return ""
 
@@ -581,8 +583,8 @@ class ValidationMixin:
         if not isinstance(state, CyberGymState):
             # P34: fail closed
             return (
-                "Cannot validate BASH command: runtime context unavailable. "
-                "BASH is blocked until the framework provides valid state."
+                "Cannot validate bash command: runtime context unavailable. "
+                "bash is blocked until the framework provides valid state."
             )
         if ValidationMixin._ready_poc_paths(state):
             if not self._candidate_ready_file_missing(state):
@@ -605,12 +607,12 @@ class ValidationMixin:
             return ""
         if self._bash_is_python_source_browse_command(command):
             return (
-                "BASH cannot be used to extract source code with Python. "
-                "Use GREP for search or READ(path, offset=..., limit=...) for exact source ranges."
+                "bash cannot be used to extract source code with Python. "
+                "Use grep for search or read(path, offset=..., limit=...) for exact source ranges."
             )
         if self._bash_is_file_browse_command(command):
             return (
-                "BASH is not the file-reading tool. Use READ(path) when you need file contents."
+                "bash is not the file-reading tool. Use read(path) when you need file contents."
             )
         return ""
 
@@ -656,19 +658,22 @@ class ValidationMixin:
             )
 
     def _candidate_construction_tool_names(self, state: CyberGymState) -> set[str]:
-        if state.pending_reflection:
-            return {RECORD_REFLECTION}
+        # When candidate_required is set and no PoC exists, hard-block
+        # READ/GREP to force the agent to build a PoC instead of reading
+        # more code.
+        if getattr(state, "candidate_required", False) and not ValidationMixin._ready_poc_paths(state):
+            return {
+                BASH,
+                WRITE,
+                SUBMIT_POC,
+                CONFIRM_FORMAT,
+            }
         if ValidationMixin._ready_poc_paths(state):
             if self._candidate_ready_file_missing(state):
                 return {
                     BASH,
                     WRITE,
-                    APPEND,
-                    INSERT,
-                    REPLACE_LINES,
-                    STR_REPLACE,
                     SUBMIT_POC,
-                    RECORD_REFLECTION,
                 }
             # Escape hatch: when consecutive_misses >= 4 or
             # consecutive_submit_errors >= 3, allow investigation tools so
@@ -677,12 +682,10 @@ class ValidationMixin:
             if state.consecutive_misses >= 4 or state.consecutive_submit_errors >= 3:
                 return {
                     *READ_ONLY_TOOLS,
-                    "FindSymbols", "CallsiteSearch",
+                    "find_symbols", "callsite_search",
                     BASH,
                     WRITE,
                     SUBMIT_POC,
-                    RECORD_HYPOTHESIS,
-                    RECORD_REFLECTION,
                     RECORD_CHAIN_NODE,
                     RECORD_GATE,
                 }
@@ -693,32 +696,17 @@ class ValidationMixin:
                 return {
                     BASH,
                     WRITE,
-                    APPEND,
-                    INSERT,
-                    REPLACE_LINES,
-                    STR_REPLACE,
                     SUBMIT_POC,
-                    RECORD_REFLECTION,
                 }
             return self._submit_ready_tool_names()
         names = {
             *READ_ONLY_TOOLS,
             WRITE,
             BASH,
-            RECORD_HYPOTHESIS,
-            RECORD_REFLECTION,
             RECORD_CHAIN_NODE,
             RECORD_GATE,
             RECORD_SINK_CANDIDATE,
         }
-        names.update(
-            {
-                APPEND,
-                INSERT,
-                REPLACE_LINES,
-                STR_REPLACE,
-            }
-        )
         # Only offer submit_poc when there are ready PoCs to submit.
         # Without this guard, the model calls submit_poc() with empty
         # or stale paths and enters a dead loop.
@@ -744,13 +732,7 @@ class ValidationMixin:
             GLOB,
             BASH,
             WRITE,
-            APPEND,
-            INSERT,
-            REPLACE_LINES,
-            STR_REPLACE,
             SUBMIT_POC,
-            RECORD_HYPOTHESIS,
-            RECORD_REFLECTION,
             RECORD_CHAIN_NODE,
             RECORD_GATE,
         }
@@ -770,14 +752,14 @@ class ValidationMixin:
         if state.current_phase in {"ingestion", "exploration", "investigation"}:
             names.add("discover_sink_navigation_leads")
         if getattr(state, "active_sink_candidate_id", ""):
-            names.add(ANALYZE_SINK_CANDIDATE)
+            pass  # sink analysis is auto-triggered by record_sink_candidate
         brief = dict(getattr(state, "latest_sink_analysis_brief", {}) or {})
         for query in brief.get("suggested_queries", []):
             tool_name = str(query.get("tool") or "")
             if tool_name in ANALYSIS_QUERY_TOOLS:
                 names.add(tool_name)
         if brief:
-            names.add("get_analysis_result")
+            pass  # analysis result details available in observation sections
         # confirm_format: available when format is not yet confirmed
         pack_mode = getattr(state, "pack_mode", {}) or {}
         if pack_mode.get("mode", "unconfirmed") != "confirmed":
@@ -809,16 +791,12 @@ class ValidationMixin:
         }
 
     def _should_filter_to_candidate_tools(self, state: CyberGymState) -> bool:
-        if state.pending_reflection:
-            return True
         if ValidationMixin._ready_poc_paths(state):
             return True
         return False
 
     @staticmethod
     def _tool_schema_filter_reason(state: CyberGymState) -> str:
-        if state.pending_reflection:
-            return "reflection_pending"
         if ValidationMixin._ready_poc_paths(state):
             return "candidate_submit_ready"
         return "candidate_required"
@@ -833,7 +811,7 @@ class ValidationMixin:
         short_name: str,
         output: Any,
     ) -> None:
-        normalized_name = str(short_name or "").upper()
+        normalized_name = str(short_name or "")
         readish = {
             *READ_ONLY_TOOLS,
             "read_file",

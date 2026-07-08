@@ -990,11 +990,24 @@ def render_context_contract_slots(state: CyberGymState) -> Dict[str, List[str]]:
             "- Sanitizer: UBSan (undefined behavior detected by "
             "UndefinedBehaviorSanitizer)")
 
-    # Dynamic diagnosis state — run_candidate removed, just clear stale flags
+    # Dynamic diagnosis state — clear stale flags, show gdb_debug hard block
     if getattr(state, "pending_diagnosis", False):
         state.pending_diagnosis = False
     if getattr(state, "pending_reproduction", False):
         state.pending_reproduction = False
+
+    # Show gdb_debug hard block when consecutive NO_CRASH without diagnosis
+    metadata = getattr(state, "metadata", {}) or {}
+    feedback_action = metadata.get(LAST_FEEDBACK_ACTION) or {}
+    if (
+        isinstance(feedback_action, dict)
+        and feedback_action.get("action") == "gdb_debug"
+        and feedback_action.get("blocks_submit")
+    ):
+        slots["assessment"].append(
+            "- Diagnosis required: gdb_debug must be called before next submit "
+            "(consecutive no-crash without GDB diagnosis)"
+        )
 
     # GDB diagnostic budget display
     gdb_count = int(getattr(state, "gdb_call_count", 0) or 0)
@@ -1259,9 +1272,11 @@ def render_context_contract_slots(state: CyberGymState) -> Dict[str, List[str]]:
             slots["experiments"].append(f"- Action runner: {name} → {status}")
 
     last_build = (state.metadata or {}).get("last_poc_build_result") or {}
-    if last_build:
+    # Only show candidate builder when it actually produced something.
+    # Silently skip blocked/skipped — pack is optional, not a blocker.
+    if last_build and last_build.get("status") == "success":
         slots["experiments"].append(
-            f"- Candidate builder: {last_build.get('status', '')} recipe={last_build.get('recipe_id', '')}"
+            f"- Candidate builder: built recipe={last_build.get('recipe_id', '')}"
         )
 
     # === Next Action slot (single required action from derive_contract_next_action_block) ===

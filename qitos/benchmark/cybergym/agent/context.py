@@ -180,7 +180,7 @@ class SnipCompactor:
             and str(
                 getattr(msg, "name", None)
                 or msg.metadata.get("tool_name", "")
-            ).strip().upper() == "READ"
+            ).strip() == "read"
         ]
 
         # Skip the most recent N READ messages
@@ -311,7 +311,7 @@ class SnipCompactor:
                     for f in matching[:5]:
                         parts.append(f"    - {f}")
 
-        parts.append("  [re-READ if original content needed]")
+        parts.append("  [re-read if original content needed]")
         parts.append("[compact:end]")
         return "\n".join(parts)
 
@@ -1356,17 +1356,17 @@ class CyberGymContextHistory(CompactHistory):
             getattr(message, "name", None)
             or message.metadata.get("tool_name")
             or ""
-        ).strip().upper()
+        ).strip()
         line_count = text.count("\n") + 1
-        if tool_name == "READ":
+        if tool_name == "read":
             # Normal-priority (exploratory) READs become snippable much
             # earlier than high-priority (parser/field/seed) READs.
             if priority == "normal":
                 return chars >= 15_000 or line_count >= 300
             return chars >= 40_000 or line_count >= 800
-        if tool_name == "BASH":
+        if tool_name == "bash":
             return chars >= 40_000
-        if tool_name == "SUBMIT_POC":
+        if tool_name == "submit_poc":
             return chars >= 12_000
         return chars >= 40_000
 
@@ -1820,7 +1820,7 @@ class CyberGymContextHistory(CompactHistory):
             "Older interaction segment was compacted into this marker.",
             "Recent turns remain verbatim after this block.",
             f"Complete Raw Evidence Index: `{index_path.as_posix()}` ({evidence_total} entries)",
-            "Use READ on exact relative paths from the index only when original text is needed.",
+            "Use read on exact relative paths from the index only when original text is needed.",
         ]
         if evidence_memory:
             lines.append("Evidence Memory:")
@@ -2122,7 +2122,7 @@ class CyberGymContextHistory(CompactHistory):
                 or original.metadata.get("tool_name")
                 or ""
             ).strip()
-            if tool_name and tool_name.upper() != "READ":
+            if tool_name and tool_name != "read":
                 continue
             try:
                 payload = json.loads(str(original.content or ""))
@@ -2165,7 +2165,7 @@ class CyberGymContextHistory(CompactHistory):
             ranges = list(record.get("ranges") or [])[-cls.SPAN_EVIDENCE_RANGES_PER_PATH :]
             artifacts = list(record.get("artifacts") or [])
             parts = [
-                f"- READ `{source_path}`",
+                f"- read `{source_path}`",
                 f"ranges={', '.join(ranges) if ranges else 'unknown'}",
             ]
             if record.get("total_lines") is not None:

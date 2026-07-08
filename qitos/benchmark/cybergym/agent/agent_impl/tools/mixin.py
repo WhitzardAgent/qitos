@@ -654,9 +654,8 @@ class ToolMixin:
         a callsite in parallel to trace the full input→crash chain.
         Use after FindSymbols to go from "where is this defined?" to
         "how does data reach this function?".
-        For multi-hop caller chains across files, prefer find_callers
-        instead — it uses the structural index and can trace deeper
-        call hierarchies with confidence scores.
+        Semantic callers from the call graph are auto-included in the
+        "semantic_callers" field — no separate tool call needed.
 
         :param symbol: Symbol name to trace.
         :param path: File or directory under the workspace.
@@ -761,6 +760,22 @@ class ToolMixin:
             if len(indirect_callsites) >= 10:
                 break
 
+        # --- AnalysisService find_callers enhancement ---
+        semantic_callers: List[Dict[str, Any]] = []
+        try:
+            _state = (runtime_context or {}).get("state")
+            _repo = str(getattr(_state, "repo_dir", "") or getattr(_state, "workspace_root", "") or "") if _state else ""
+            _ws = str(getattr(_state, "workspace_root", "") or "") if _state else ""
+            if _repo and _ws:
+                from ...analysis.service import AnalysisService
+                _aservice = AnalysisService(_repo, workspace_root=_ws)
+                if _aservice.symbols:
+                    _callers_result = _aservice.find_callers(name, max_depth=5, top_k=10)
+                    if _callers_result.get("status") == "success":
+                        semantic_callers = _callers_result.get("callers", [])
+        except Exception:
+            pass  # Non-critical; text-based callers are already present
+
         payload = {
                 "status": "success",
                 "symbol": name,
@@ -775,6 +790,7 @@ class ToolMixin:
                 "reverse_calls": reverse_calls[:10],
                 "call_chain_hint": call_chain_hint[:5],
                 "indirect_callsites": indirect_callsites[:5],
+                "semantic_callers": semantic_callers[:10],
         }
         self._remember_evidence_matches(
             runtime_context,

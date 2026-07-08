@@ -140,342 +140,6 @@ def _append_exploration_note(
         _append_jsonl(root / ".cybergym" / "exploration_notes.jsonl", payload)
 
 
-def _validate_phase_transition(current: str, target: str, state: Any) -> tuple[bool, str]:
-    """Check if a phase transition is allowed given current state."""
-    ALLOWED = {
-        ("exploration", "investigation"): None,       # always OK
-        ("exploration", "formulation"): "exploration_to_formulation",
-        ("investigation", "exploration"): None,        # always OK (re-explore)
-        ("investigation", "formulation"): None,        # always OK
-        ("formulation", "investigation"): "formulation_to_investigation",
-        ("formulation", "exploration"): "formulation_to_exploration",
-        ("verification", "investigation"): None,       # already exists
-        ("verification", "formulation"): None,         # already exists
-    }
-
-    key = (current, target)
-    if key not in ALLOWED:
-        return False, f"Transition {current} → {target} is not allowed"
-
-    constraint = ALLOWED[key]
-    if constraint is None:
-        return True, ""
-
-    # Check specific constraints
-    if constraint == "exploration_to_formulation":
-        nodes = list(getattr(state, "call_chain_nodes", []) or [])
-        gates = list(getattr(state, "call_chain_gates", []) or [])
-        has_chain = len(nodes) >= 2
-        has_gate = any(g.status == "confirmed" for g in gates)
-        has_hypothesis = bool(getattr(state, "trigger_hypothesis", ""))
-        if not (has_chain and has_gate):
-            return False, "Need 2+ chain nodes and 1+ confirmed gate to skip investigation"
-        if not has_hypothesis:
-            return False, "Set trigger_hypothesis first (call record_hypothesis)"
-
-    if constraint == "formulation_to_investigation":
-        has_result = bool(getattr(state, "last_verification_result", ""))
-        if not has_result and not getattr(state, "poc_attempts", 0):
-            return False, "Can only return to investigation after at least one PoC attempt"
-
-    if constraint == "formulation_to_exploration":
-        attempts = int(getattr(state, "poc_attempts", 0) or 0)
-        best = float(getattr(state, "best_poc_score", 0) or 0)
-        if attempts < 2 or best > 0:
-            return False, "Can only return to exploration after 2+ failed attempts with score 0"
-
-    return True, ""
-
-
-class SwitchPhaseTool(BaseTool):
-    """Switch the agent to a different phase of the workflow.
-
-    The LLM calls this when it realizes the current phase is wrong for what
-    it needs to do next — e.g., going back to exploration when investigation
-    reveals it needs more code understanding, or skipping ahead to formulation
-    when auto-analysis has already built a complete chain.
-    """
-
-    def __init__(self) -> None:
-        super().__init__(
-            ToolSpec(
-                name="switch_phase",
-                description=(
-                    "Switch to a different phase of the agent workflow. Use this when "
-                    "you realize the current phase is not the right one for what you "
-                    "need to do next. Examples: go back to exploration when investigation "
-                    "reveals you need more code understanding, or skip ahead to formulation "
-                    "when auto-analysis has already built a complete chain."
-                ),
-                parameters={
-                    "target_phase": {
-                        "type": "string",
-                        "enum": ["exploration", "investigation", "formulation"],
-                        "description": "Target phase to switch to",
-                    },
-                    "reason": {
-                        "type": "string",
-                        "description": "Why you need to switch phase (e.g., 'Need to re-read code to understand the dispatch path')",
-                    },
-                },
-                required=["target_phase", "reason"],
-                permissions=ToolPermission(filesystem_write=True),
-            )
-        )
-
-    def validate_input(
-        self, args: Dict[str, Any], runtime_context: Optional[Dict[str, Any]] = None
-    ) -> ToolValidationResult:
-        target = str(args.get("target_phase", "")).strip()
-        if target not in ("exploration", "investigation", "formulation"):
-            return ToolValidationResult.fail("target_phase must be exploration, investigation, or formulation")
-        if not str(args.get("reason", "")).strip():
-            return ToolValidationResult.fail("reason is required")
-        return ToolValidationResult.ok()
-
-    def execute(
-        self, args: Dict[str, Any], runtime_context: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
-        state = (runtime_context or {}).get("state")
-        target = str(args.get("target_phase", "")).strip()
-        reason = str(args.get("reason", "")).strip()
-        current = str(getattr(state, "current_phase", "") or "")
-
-        # Validate transition
-        allowed, block_reason = _validate_phase_transition(current, target, state)
-        if not allowed:
-            return {"status": "rejected", "reason": block_reason}
-
-        # Apply transition
-        state.current_phase = target
-        state.phase_enter_step = int(getattr(state, "current_step", 0) or 0)
-        state.phase_local_steps = 0
-        state.phase_submissions = 0
-        state.phase_read_actions = 0
-        state.repeated_read_target = ""
-        state.repeated_read_count = 0
-
-        # Set phase-specific flags
-        if target == "exploration":
-            state.exploration_complete = False
-        if target == "investigation":
-            state.reinvestigate_requested = False
-        if target == "formulation":
-            if not state.trigger_hypothesis:
-                state.trigger_hypothesis = reason
-
-        # Signal to reduce() that a manual switch happened this step
-        # so PhaseEngine.advance() does not overwrite it.
-        state.metadata["_manual_phase_switch"] = target
-
-        # Append exploration note
-        _append_exploration_note(state, runtime_context, {
-            "note_type": "phase_switch",
-            "from": current,
-            "to": target,
-            "reason": _clip(reason, 120),
-        })
-
-        return {"status": "success", "from": current, "to": target, "reason": reason}
-
-
-class RecordHypothesisTool(BaseTool):
-    def __init__(self) -> None:
-        super().__init__(
-            ToolSpec(
-                name="record_hypothesis",
-                description=(
-                    "Record the current exploit hypothesis as a short exploration note. "
-                    "Use this when you settle on a candidate exploit family and target surface."
-                ),
-                parameters={
-                    "strategy_family": {"type": "string", "description": "Short name for the exploit family"},
-                    "target_surface": {"type": "string", "description": "Target parser, function, or code path"},
-                    "reason": {"type": "string", "description": "Why this family should trigger the bug"},
-                    "next_test": {"type": "string", "description": "Next candidate or mutation to try"},
-                },
-                required=["strategy_family", "target_surface", "reason"],
-                permissions=ToolPermission(filesystem_write=True),
-            )
-        )
-
-    def validate_input(
-        self, args: Dict[str, Any], runtime_context: Optional[Dict[str, Any]] = None
-    ) -> ToolValidationResult:
-        _ = runtime_context
-        if not str(args.get("strategy_family") or "").strip():
-            return ToolValidationResult.fail("strategy_family is required")
-        if not str(args.get("target_surface") or "").strip():
-            return ToolValidationResult.fail("target_surface is required")
-        if not str(args.get("reason") or "").strip():
-            return ToolValidationResult.fail("reason is required")
-        return ToolValidationResult.ok()
-
-    def execute(
-        self, args: Dict[str, Any], runtime_context: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
-        state = (runtime_context or {}).get("state")
-        payload = {
-            "ts": datetime.now(timezone.utc).isoformat(),
-            "note_type": "hypothesis",
-            "strategy_family": str(args.get("strategy_family") or ""),
-            "target_surface": str(args.get("target_surface") or ""),
-            "reason": str(args.get("reason") or ""),
-            "next_test": str(args.get("next_test") or ""),
-        }
-        _append_exploration_note(state, runtime_context, payload)
-        return {"status": "success", "recorded": payload}
-
-
-class RecordAttemptTool(BaseTool):
-    def __init__(self) -> None:
-        super().__init__(
-            ToolSpec(
-                name="record_attempt",
-                description=(
-                    "Record the latest PoC attempt in a structured ledger. Use this "
-                    "after each submit_poc so the agent remembers which PoC path and "
-                    "strategy family have already been tried."
-                ),
-                parameters={
-                    "poc_path": {"type": "string", "description": "PoC path that was just submitted"},
-                    "strategy_family": {"type": "string", "description": "Short name for the PoC idea/family"},
-                    "derived_from": {"type": "string", "description": "What this attempt was derived from"},
-                    "mutation_note": {"type": "string", "description": "What changed in this attempt"},
-                    "expected_trigger": {"type": "string", "description": "What trigger was expected"},
-                    "observed_result": {"type": "string", "description": "Short summary of the observed result"},
-                    "stable_feedback": {"type": "string", "description": "Stable verification hint or key stderr line"},
-                    "next_hypothesis": {"type": "string", "description": "What to try next"},
-                },
-                required=["poc_path", "strategy_family", "observed_result"],
-                permissions=ToolPermission(filesystem_write=True),
-            )
-        )
-
-    def validate_input(
-        self, args: Dict[str, Any], runtime_context: Optional[Dict[str, Any]] = None
-    ) -> ToolValidationResult:
-        _ = runtime_context
-        if not str(args.get("poc_path") or "").strip():
-            return ToolValidationResult.fail("poc_path is required")
-        if not str(args.get("strategy_family") or "").strip():
-            return ToolValidationResult.fail("strategy_family is required")
-        if not str(args.get("observed_result") or "").strip():
-            return ToolValidationResult.fail("observed_result is required")
-        return ToolValidationResult.ok()
-
-    def execute(
-        self, args: Dict[str, Any], runtime_context: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
-        state = (runtime_context or {}).get("state")
-        payload = {
-            "ts": datetime.now(timezone.utc).isoformat(),
-            "poc_path": str(args.get("poc_path") or ""),
-            "strategy_family": str(args.get("strategy_family") or ""),
-            "derived_from": str(args.get("derived_from") or ""),
-            "mutation_note": str(args.get("mutation_note") or ""),
-            "expected_trigger": str(args.get("expected_trigger") or ""),
-            "observed_result": str(args.get("observed_result") or ""),
-            "stable_feedback": str(args.get("stable_feedback") or ""),
-            "next_hypothesis": str(args.get("next_hypothesis") or ""),
-        }
-        if state is not None:
-            state.attempt_history.append(payload)
-            state.attempt_history = state.attempt_history[-12:]
-            state.pending_attempt_record = False
-            _append_exploration_note(
-                state,
-                runtime_context,
-                {
-                    "ts": payload["ts"],
-                    "note_type": "submission",
-                    "strategy_family": payload["strategy_family"],
-                    "poc_path": payload["poc_path"],
-                    "observed_result": payload["observed_result"],
-                    "stable_feedback": payload["stable_feedback"],
-                    "next_hypothesis": payload["next_hypothesis"],
-                },
-            )
-        root = _workspace_root(runtime_context)
-        if root is not None:
-            _append_jsonl(root / ".cybergym" / "attempt_history.jsonl", payload)
-            _append_jsonl(_strategy_dir(root) / "attempts.jsonl", payload)
-            if state is not None:
-                _write_strategy_memory(root, state)
-        return {"status": "success", "recorded": payload}
-
-
-class RecordReflectionTool(BaseTool):
-    def __init__(self) -> None:
-        super().__init__(
-            ToolSpec(
-                name="record_reflection",
-                description=(
-                    "Record a short self-review after repeated failures. Use this to "
-                    "summarize what has been tried, why it failed, and whether to "
-                    "re-investigate before continuing."
-                ),
-                parameters={
-                    "summary": {"type": "string", "description": "What has been tried and what was learned"},
-                    "next_step": {"type": "string", "description": "What the agent should do next"},
-                    "request_reinvestigation": {
-                        "type": "boolean",
-                        "description": "Whether to return to investigation instead of continuing direct iteration",
-                    },
-                },
-                required=["summary", "next_step"],
-                permissions=ToolPermission(filesystem_write=True),
-            )
-        )
-
-    def validate_input(
-        self, args: Dict[str, Any], runtime_context: Optional[Dict[str, Any]] = None
-    ) -> ToolValidationResult:
-        _ = runtime_context
-        if not str(args.get("summary") or "").strip():
-            return ToolValidationResult.fail("summary is required")
-        if not str(args.get("next_step") or "").strip():
-            return ToolValidationResult.fail("next_step is required")
-        return ToolValidationResult.ok()
-
-    def execute(
-        self, args: Dict[str, Any], runtime_context: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
-        state = (runtime_context or {}).get("state")
-        payload = {
-            "ts": datetime.now(timezone.utc).isoformat(),
-            "summary": str(args.get("summary") or ""),
-            "next_step": str(args.get("next_step") or ""),
-            "request_reinvestigation": bool(args.get("request_reinvestigation", False)),
-        }
-        if state is not None:
-            state.reflection_note = (
-                f"{payload['summary']} Next: {payload['next_step']}"
-            ).strip()
-            history = list(getattr(state, "reflection_history", []) or [])
-            history.append(payload)
-            state.reflection_history = history[-12:]
-            state.reinvestigate_requested = payload["request_reinvestigation"]
-            state.pending_reflection = False
-            _append_exploration_note(
-                state,
-                runtime_context,
-                {
-                    "ts": payload["ts"],
-                    "note_type": "reflection",
-                    "summary": payload["summary"],
-                    "next_step": payload["next_step"],
-                },
-            )
-        root = _workspace_root(runtime_context)
-        if root is not None:
-            _append_jsonl(root / ".cybergym" / "reflections.jsonl", payload)
-            _append_jsonl(_strategy_dir(root) / "reflections.jsonl", payload)
-            if state is not None:
-                _write_strategy_memory(root, state)
-        return {"status": "success", "recorded": payload}
-
-
 class RecordChainNodeTool(BaseTool):
     """Record a node in the entry-to-sink call chain.
 
@@ -788,6 +452,44 @@ class RecordGateTool(BaseTool):
                 },
             )
 
+        # Auto-trigger: extract_constraints for the gate's node_function.
+        # Only runs when the analysis index is already loaded. Non-critical.
+        suggested_constraints: list[Dict[str, Any]] = []
+        if state is not None and node_function:
+            try:
+                repo = str(getattr(state, "repo_dir", "") or getattr(state, "workspace_root", "") or "")
+                ws = str(getattr(state, "workspace_root", "") or "")
+                if repo and ws:
+                    from .analysis.service import AnalysisService
+                    service = AnalysisService(repo, workspace_root=ws)
+                    if service.symbols:
+                        cs_result = service.extract_constraints(
+                            function=node_function,
+                            target_line=0,
+                        )
+                        if cs_result.get("status") == "success" and cs_result.get("callsites"):
+                            for cs in cs_result["callsites"][:5]:
+                                entry: Dict[str, Any] = {
+                                    "callsite_id": getattr(cs, "callsite_id", ""),
+                                    "guards": [],
+                                    "bindings": {},
+                                }
+                                for g in getattr(cs, "guards", [])[:3]:
+                                    entry["guards"].append({
+                                        "expression": g.expression.render() if hasattr(g, "expression") and hasattr(g.expression, "render") else str(g.expression),
+                                        "polarity": str(getattr(g, "polarity", "")),
+                                        "role": str(getattr(g, "role", "")),
+                                    })
+                                bindings = getattr(cs, "bindings", {})
+                                if isinstance(bindings, dict):
+                                    for k, v in list(bindings.items())[:5]:
+                                        entry["bindings"][k] = v.render() if hasattr(v, "render") else str(v)
+                                suggested_constraints.append(entry)
+                            state.metadata.setdefault("_gate_suggested_constraints", {})
+                            state.metadata["_gate_suggested_constraints"][description[:80]] = suggested_constraints
+            except Exception:
+                pass
+
         return {
             "status": "success",
             "gate_type": gate_type,
@@ -795,6 +497,7 @@ class RecordGateTool(BaseTool):
             "required_condition": required_condition,
             "role": role,
             "path_id": path_id,
+            "suggested_constraints": suggested_constraints,
         }
 
 
@@ -1047,6 +750,36 @@ class RecordSinkCandidateTool(BaseTool):
                     "evidence": _clip(evidence, 120),
                 },
             )
+
+            # Auto-trigger: trace_value + extract_constraints for the sink.
+            # Only runs when the analysis index is already loaded (avoids slow
+            # cold-index during a tool call). Non-critical enrichment — never
+            # fails the primary tool call.
+            if not is_entry and func_name:
+                try:
+                    repo = str(getattr(state, "repo_dir", "") or getattr(state, "workspace_root", "") or "")
+                    ws = str(getattr(state, "workspace_root", "") or "")
+                    if repo and ws:
+                        from .analysis.service import AnalysisService
+                        service = AnalysisService(repo, workspace_root=ws)
+                        if service.symbols:
+                            trace_result = service.trace_value(
+                                function=func_name,
+                                line=line,
+                                expression=expression or func_name,
+                                direction="backward",
+                            )
+                            if trace_result.get("status") not in ("not_found", "unsupported"):
+                                state.metadata["_sink_trace_result"] = trace_result
+
+                            constraints_result = service.extract_constraints(
+                                function=func_name,
+                                target_line=line,
+                            )
+                            if constraints_result.get("status") != "not_found":
+                                state.metadata["_sink_constraints"] = constraints_result
+                except Exception:
+                    pass
 
         return {
             "status": "success",
@@ -1313,69 +1046,6 @@ class AnalyzeDescriptionTool(BaseTool):
             "normalized_mechanism_tags": values["mechanism_tags"][:6],
             "unmapped_mechanism_tags": unknown_tags[:6],
             "message": "Description priors recorded; source references remain unverified.",
-        }
-
-
-class SetCrashTypeTool(BaseTool):
-    """Set the inferred crash type from the vulnerability description.
-
-    The LLM calls this at step 0-1 after reading description.txt to register
-    its assessment of the likely ASAN crash type. This feeds into crash-type-
-    aware navigation scoring to prioritize the right function patterns.
-    After the first submit_poc, the exact crash_type from ASAN output
-    overrides this LLM-inferred prior.
-    """
-
-    def __init__(self) -> None:
-        super().__init__(
-            ToolSpec(
-                name="set_crash_type",
-                description=(
-                    "Set the inferred ASAN crash type based on the vulnerability "
-                    "description. Choose one: Heap-buffer-overflow, "
-                    "Heap-use-after-free, Heap-double-free, Stack-buffer-overflow, "
-                    "Global-buffer-overflow, Use-of-uninitialized-value, "
-                    "Index-out-of-bounds, SEGV, or UNKNOWN. "
-                    "This helps the static analysis engine prioritize the right "
-                    "function patterns for navigation."
-                ),
-                parameters={
-                    "crash_type": {
-                        "type": "string",
-                        "description": "Inferred crash type (e.g., 'Heap-buffer-overflow')",
-                    },
-                },
-                required=["crash_type"],
-            )
-        )
-
-    def validate_input(
-        self, args: Dict[str, Any], runtime_context: Optional[Dict[str, Any]] = None
-    ) -> ToolValidationResult:
-        _ = runtime_context
-        if not str(args.get("crash_type") or "").strip():
-            return ToolValidationResult.fail("crash_type is required")
-        return ToolValidationResult.ok()
-
-    def execute(
-        self, args: Dict[str, Any], runtime_context: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
-        from .analysis.vuln_patterns import normalize_crash_type
-
-        state = (runtime_context or {}).get("state")
-        raw = str(args.get("crash_type") or "").strip()
-        normalized = normalize_crash_type(raw)
-
-        if state is not None:
-            state.metadata["crash_type_prior"] = normalized
-            # Don't overwrite crash_type from ASAN output (that's the ground truth)
-            if not getattr(state, "crash_type", ""):
-                state.crash_type = normalized
-
-        return {
-            "status": "success",
-            "crash_type": normalized,
-            "original_input": raw,
         }
 
 

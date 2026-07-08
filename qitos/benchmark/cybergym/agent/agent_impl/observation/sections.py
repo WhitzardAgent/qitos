@@ -134,6 +134,19 @@ class SectionMixin:
                 brief_text = str(evidence_brief[c.candidate_id] or "").strip()
                 if brief_text:
                     confirmed_items.append(f"  evidence: {brief_text[:120]}")
+            # Show auto-triggered trace/constraints if available
+            state_meta = dict(getattr(state, "metadata", {}) or {})
+            sink_trace = state_meta.get("_sink_trace_result")
+            if isinstance(sink_trace, dict) and sink_trace.get("steps"):
+                origin = str(sink_trace.get("origin") or "")[:60]
+                steps_summary = " -> ".join(
+                    s.get("target", "?") for s in sink_trace["steps"][:4]
+                )
+                confirmed_items.append(f"  trace: {steps_summary} (origin={origin})")
+            sink_constraints = state_meta.get("_sink_constraints")
+            if isinstance(sink_constraints, dict) and sink_constraints.get("callsites"):
+                n_cs = len(sink_constraints["callsites"])
+                confirmed_items.append(f"  constraints: {n_cs} callsite(s) with guards")
         # Harness
         if getattr(state, "harness_entry_confirmed", False):
             harness_candidates = list(getattr(state, "harness_candidates", []) or [])
@@ -794,22 +807,13 @@ class SectionMixin:
 
         lines = ["## Experiments"]
 
-        # --- Fix A: Hard contract slots (feedback action, negative evidence, sanity first) ---
-        from ..core.runtime_context_contract import render_context_contract_slots
-        contract = render_context_contract_slots(state)
-        experiment_slots = contract.get("experiments", [])
-        if experiment_slots:
-            lines.extend(experiment_slots)
-            lines.append("")
-
-        # Attempt count and consecutive misses
+        # --- PoC table FIRST — the most important summary ---
         consecutive = int(getattr(state, "consecutive_misses", 0) or 0)
         if consecutive > 0:
             lines.append(f"({poc_attempts} attempts, {consecutive} consecutive no-crash)")
         else:
             lines.append(f"({poc_attempts} attempts)")
 
-        # Render feedback as a table
         runtime_records = [
             item for item in list((state.metadata or {}).get("runtime_evidence", []) or [])
             if isinstance(item, dict)
@@ -862,6 +866,14 @@ class SectionMixin:
                 runtime_seen = "yes" if _has_runtime_evidence_for_path(poc_path) else "no"
                 lines.append(f"| {i} | {poc_name}{size_match} | {result} | {family} | {runtime_seen} | {insight} |")
 
+        # --- THEN: feedback, runtime evidence, and diagnostics ---
+        from ..core.runtime_context_contract import render_context_contract_slots
+        contract = render_context_contract_slots(state)
+        experiment_slots = contract.get("experiments", [])
+        if experiment_slots:
+            lines.append("")
+            lines.extend(experiment_slots)
+
         # Pattern analysis if consecutive misses >= 3
         if consecutive >= 3:
             lines.append("")
@@ -902,8 +914,6 @@ class SectionMixin:
             lines.append("")
             lines.append(f"**Crash stack**: {crash_stack}")
 
-        # Experiment snippets are now in hard contract slots (Fix A)
-
         return "\n".join(lines)
 
     @staticmethod
@@ -925,10 +935,9 @@ class SectionMixin:
             return "\n".join(lines)
 
         # Check for special states first
-        if getattr(state, "pending_reflection", False):
-            lines.append("**Required**: `record_reflection(summary, next_step)`")
-            lines.append("- Do not submit PoCs or read code before recording a reflection.")
-            return "\n".join(lines)
+        if state.metadata.get("needs_reflection_nudge"):
+            lines.append("**Hint**: Multiple similar failures detected. Consider reflecting on the pattern before continuing.")
+            # Don't return — let the agent continue with all tools available
 
         if getattr(state, "pending_sink_checkpoint", False):
             lines.append("**CHECKPOINT**: record_sink_candidate required before proceeding")
@@ -1186,12 +1195,6 @@ class SectionMixin:
         phase = str(getattr(state, "current_phase", "ingestion") or "ingestion")
 
         # Checkpoint overrides take priority
-        if getattr(state, "pending_reflection", False):
-            return [
-                "- `record_reflection(summary, next_step, request_reinvestigation?)` — record one concise reflection now.",
-                "- Do not call `READ`, `GREP`, `BASH`, edit tools, or `submit_poc` before `record_reflection`.",
-            ]
-
         if getattr(state, "pending_sink_checkpoint", False):
             return [
                 "- `record_sink_candidate(function, evidence, location?, confidence?)` — STRONGLY RECOMMENDED before proceeding.",
@@ -1206,7 +1209,7 @@ class SectionMixin:
                 ready_paths.append(item.file_path)
         if ready_paths:
             lines = [f"- `submit_poc(poc_path)` — submit now: {', '.join(f'`{p}`' for p in ready_paths[:3])}"]
-            lines.append("- `record_reflection` only if explicitly required.")
+            lines.append("- Consider reflecting on failure patterns if flagged by Current State.")
             return lines
 
         # Phase-specific tool sets
@@ -1214,7 +1217,6 @@ class SectionMixin:
             return [
                 "- `analyze_description(...)` — record structured priors from description.txt",
                 "- `READ` / `RepoMap` / `FindSymbols` — verify description refs and harness entry",
-                "- `set_crash_type(crash_type)` — legacy fallback only; submit_poc feedback overrides it",
             ]
         elif phase == "exploration":
             return [
@@ -1245,7 +1247,7 @@ class SectionMixin:
                 "- `READ` / `GREP` — analyze verification feedback",
                 "- `BASH` / `WRITE` — revise PoC",
                 "- `submit_poc` — resubmit revised PoC",
-                "- `record_reflection` — capture learnings from failed attempts",
+                "- Reflect on failure patterns to guide next PoC revision",
             ]
         else:
             return [

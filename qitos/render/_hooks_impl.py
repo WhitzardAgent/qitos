@@ -1021,12 +1021,17 @@ class ClaudeStyleHook(RenderStreamHook):
             ("memory", memory_name),
             ("history", history_name),
             ("base_model", model_name),
+        ]
+        inference_task_id = self._inference_task_id(engine)
+        if inference_task_id:
+            rows.append(("task_id", inference_task_id))
+        rows.extend([
             ("protocol", protocol_name),
             ("prompt", prompt_name),
             ("context", self._context_row(engine)),
             ("planning", planning_name),
             ("tools", f"{tools_desc} ({len(tools)})"),
-        ]
+        ])
         # Multi-agent info
         agent_registry = getattr(engine, "agent_registry", None)
         if agent_registry is not None and hasattr(agent_registry, "list_available"):
@@ -1076,6 +1081,20 @@ class ClaudeStyleHook(RenderStreamHook):
             if isinstance(value, str) and value.strip():
                 return value.strip()
         return llm.__class__.__name__
+
+    def _inference_task_id(self, engine: "Engine") -> str:
+        llm = getattr(getattr(engine, "agent", None), "llm", None)
+        if llm is None:
+            return ""
+        value = getattr(llm, "inference_key", None)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        metadata = dict(getattr(llm, "qitos_harness_metadata", {}) or {})
+        for key in ("inference_task_id", "inference_key"):
+            value = metadata.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return ""
 
     def _planning_name(self, engine: "Engine") -> str:
         search = getattr(engine, "search", None)

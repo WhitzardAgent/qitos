@@ -856,8 +856,8 @@ class MemoryMixin:
             lines.append(f"- Phase Local Steps: `{state.phase_local_steps}`")
         if getattr(state, "mode_local_steps", 0):
             lines.append(f"- Mode Local Steps: `{state.mode_local_steps}`")
-        if state.pending_reflection:
-            lines.append("- Required Action: `record_reflection`")
+        if state.metadata.get("needs_reflection_nudge"):
+            lines.append("- **Hint**: Multiple similar failures — consider reflecting on the pattern")
         if state.discriminant_failed:
             lines.append("- **DISCRIMINANT FAILED**: Fixed binary also crashes — reduce overflow magnitude")
         elif state.best_poc_score == 1 and not state.is_verified():

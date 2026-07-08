@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import shlex
@@ -13,7 +14,7 @@ from typing import Any, Optional
 from qitos.core.tool import BaseTool, ToolPermission, ToolSpec, ToolValidationResult
 
 from ...tool_names import GDB_DEBUG, PROBE_RUNTIME_FRONTIER, RUN_CANDIDATE
-from ..core.metadata_keys import INVOCATION_PROFILE, STAGED_BINARY_CAPABILITY
+from ..core.metadata_keys import INVOCATION_PROFILE, RUNTIME_EVIDENCE, STAGED_BINARY_CAPABILITY
 from ..runtime.candidate_runner import run_candidate_once
 from ..runtime.gdb_frontier import DEFAULT_PROBE_ROLES, run_gdb_frontier_probe
 from ..runtime.runtime_artifacts import tail_text  # used by ProbeRuntimeFrontierTool
@@ -27,6 +28,38 @@ _UBSAN_OPTIONS = "print_stacktrace=1:symbolize=1"
 _ASLR_WARNING_RE = re.compile(
     r"^warning:\s*Error disabling address space randomization", re.MULTILINE
 )
+# Workspace binary search (fallback when /out is empty — ported from reference)
+_BINARY_SEARCH_ROOTS = ("/workspace/repo-vul", "/workspace")
+_BINARY_NAME_PATTERNS = ("arvo", "*_fuzzer", "fuzz_*", "harness", "vulnerable", "a.out")
+
+
+def _content_hash_of_file(path: Path) -> str:
+    """Fast blake2s hash of the first 4KB of a file for dedup."""
+    try:
+        data = path.read_bytes()[:4096]
+    except OSError:
+        data = b""
+    return hashlib.blake2s(data).hexdigest()
+
+
+def _autodetect_workspace_binary(env_runner: Any) -> str:
+    """Fallback for non-staged runs: search workspace for a built binary.
+
+    Ported from the reference implementation's _autodetect_workspace_binary().
+    """
+    name_pattern = " -o ".join(f"-name '{p}'" for p in _BINARY_NAME_PATTERNS)
+    for root in _BINARY_SEARCH_ROOTS:
+        try:
+            rc, out = env_runner.cmd.run(
+                f"find {shlex.quote(root)} -maxdepth 5 -type f -executable "
+                f"\\( {name_pattern} \\) 2>/dev/null | head -1",
+                timeout=15,
+            )
+            if rc == 0 and out.strip():
+                return out.strip().splitlines()[0].strip()
+        except Exception:
+            continue
+    return ""
 
 
 def _maybe_rediscover_from_container(state, runtime_context) -> None:
@@ -331,9 +364,17 @@ class GdbDebugTool(BaseTool):
         if not commands:
             commands = list(_DEFAULT_GDB_COMMANDS)
 
-        # Dedup check: if the same commands were already run for this PoC,
-        # return cached output instead of re-running GDB
+        # Resolve PoC file early (needed for content hash before dedup)
+        workspace_root = str(getattr(state, "workspace_root", "") or ".")
+        poc_file = _resolve_candidate(poc_path, workspace_root)
+        content_hash = _content_hash_of_file(poc_file)
+
+        # Dedup check: if the same commands were already run for this PoC with
+        # the same content, return cached output instead of re-running GDB.
+        # Uses (poc_path, content_hash, commands_key) so that rewriting the
+        # PoC file with different content busts the cache.
         commands_key = "|".join(str(c) for c in commands)
+        dedup_key = (poc_path, content_hash, commands_key)
         evidence_list = metadata.get(RUNTIME_EVIDENCE, []) if isinstance(metadata, dict) else []
         if isinstance(evidence_list, list):
             for rec in reversed(evidence_list[-6:]):
@@ -342,10 +383,9 @@ class GdbDebugTool(BaseTool):
                 if rec.get("source_kind") != "gdb_debug":
                     continue
                 recorded_path = str(rec.get("poc_path") or "").strip()
-                if recorded_path != poc_path:
-                    continue
+                recorded_hash = str(rec.get("poc_content_hash") or "")
                 recorded_cmds = "|".join(str(c) for c in (rec.get("commands") or []))
-                if recorded_cmds == commands_key:
+                if (recorded_path, recorded_hash, recorded_cmds) == dedup_key:
                     cached_output = str(rec.get("output") or rec.get("output_snippet") or "")
                     return {
                         "status": "success",
@@ -361,41 +401,64 @@ class GdbDebugTool(BaseTool):
                         "inconclusive": False,
                         "elapsed_ms": 0,
                         "objective_id": str(args.get("objective_id") or ""),
+                        "poc_content_hash": content_hash,
                     }
 
-        # Resolve binary path: explicit > invocation profile > capability > /out fallback
+        # Resolve binary path: explicit > invocation profile > /out staged > workspace fallback
         binary_path = str(args.get("binary_path") or "").strip()
         if not binary_path and isinstance(profile, dict):
             binary_path = str(profile.get("binary_path") or "")
         # When rediscovery_pending, capability/profile are unavailable but the
         # binary lives at /out inside the container.  If env_runner is present
         # we can discover the actual binary name from the container.
+        env_runner = (runtime_context or {}).get("env")
         if not binary_path and metadata.get("_need_container_rediscovery"):
-            env_runner = (runtime_context or {}).get("env")
             if env_runner is not None and hasattr(env_runner, "cmd"):
                 try:
-                    rc, out = env_runner.cmd.run("ls /out/", timeout=5)
+                    rc, out = env_runner.cmd.run(
+                        "find /out -maxdepth 1 -type f -executable 2>/dev/null | sort",
+                        timeout=5,
+                    )
                     if rc == 0 and out.strip():
-                        # Pick the first executable-looking name
-                        for line in out.strip().splitlines():
-                            name = line.strip()
-                            if name and not name.startswith("."):
-                                binary_path = f"/out/{name}"
-                                break
+                        out_bins = [line.strip() for line in out.strip().splitlines() if line.strip()]
+                        if len(out_bins) == 1:
+                            binary_path = out_bins[0]
+                        elif len(out_bins) > 1:
+                            # Multiple binaries: ask model to specify (reference pattern)
+                            return {
+                                "status": "error",
+                                "error": (
+                                    "Multiple staged targets in /out: "
+                                    + ", ".join(out_bins[:8])
+                                    + ". Pass binary_path=/out/<name> to choose one."
+                                ),
+                                "poc_path": poc_path,
+                                "objective_id": str(args.get("objective_id") or ""),
+                            }
                 except Exception:
                     pass
+        # Workspace binary fallback when /out is empty (ported from reference)
+        if not binary_path and env_runner is not None and hasattr(env_runner, "cmd"):
+            binary_path = _autodetect_workspace_binary(env_runner)
 
-        # Resolve input mode: LOCK to invocation profile to prevent execution
-        # mismatch with run_candidate (which always uses the profile mode).
-        # Model override is ignored when the profile has a resolved mode.
+        # Resolve input mode: prefer model override, warn if it conflicts
+        # with the invocation profile (which run_candidate uses).
         input_mode = str(args.get("input_mode") or "")
         profile_mode = str(profile.get("mode") or "") if isinstance(profile, dict) else ""
-        if profile_mode in ("argv_file", "stdin"):
-            # Profile is resolved — lock to it, ignore model override
+        profile_resolved = profile_mode in ("argv_file", "stdin")
+        if not input_mode:
+            # Model did not specify — use profile or default
             input_mode = "stdin" if profile_mode == "stdin" else "arg"
-        elif not input_mode:
-            # No profile mode and no explicit — default to "arg"
-            input_mode = "arg"
+        elif profile_resolved:
+            # Model specified a mode — use it, but warn if it conflicts
+            profile_arg = "stdin" if profile_mode == "stdin" else "arg"
+            if input_mode != profile_arg:
+                metadata["_input_mode_override_warning"] = (
+                    f"Model chose input_mode={input_mode} but invocation profile "
+                    f"resolved to {profile_arg}. Using model's choice; "
+                    f"run_candidate uses profile mode."
+                )
+        # else: no profile resolved, model's choice (or default "arg") stands
 
         try:
             timeout = int(args.get("timeout") or 30)
@@ -404,9 +467,6 @@ class GdbDebugTool(BaseTool):
         timeout = max(1, min(timeout, 300))
 
         objective_id = str(args.get("objective_id") or "") or None
-
-        workspace_root = str(getattr(state, "workspace_root", "") or ".")
-        poc_file = _resolve_candidate(poc_path, workspace_root)
 
         if not binary_path or not poc_file.exists():
             _settle_reproduction(state, latch=True)
@@ -421,10 +481,11 @@ class GdbDebugTool(BaseTool):
         library_path = str(profile.get("library_path") or "") if isinstance(profile, dict) else ""
 
         start = time.monotonic()
+        gdb_command = ""
         try:
             env_runner = (runtime_context or {}).get("env")
             if env_runner is not None and hasattr(env_runner, "cmd"):
-                output, stderr, rc = _run_gdb_env(
+                output, stderr, rc, gdb_command = _run_gdb_env(
                     env_runner=env_runner,
                     binary_path=binary_path,
                     poc_path=_candidate_display_path(poc_file, workspace_root),
@@ -434,7 +495,7 @@ class GdbDebugTool(BaseTool):
                     library_path=library_path,
                 )
             else:
-                output, stderr, rc = _run_gdb_local(
+                output, stderr, rc, gdb_command = _run_gdb_local(
                     binary_path=binary_path,
                     poc_path=poc_file,
                     commands=commands,
@@ -471,17 +532,16 @@ class GdbDebugTool(BaseTool):
         elif "Timer expired" in combined or "Interrupted" in combined:
             timed_out = True
 
-        # D4 fix: Empty GDB output is inconclusive, not success
-        inconclusive = False
-        if not combined.strip() and not timed_out:
-            inconclusive = True
-            # Do NOT clear pending_diagnosis for inconclusive results
-            # _settle_reproduction will NOT be called
-        else:
-            # Successful execution — clear the reproduction checkpoint
-            _settle_reproduction(state, latch=False)
+        # Empty GDB output is inconclusive, not success — but still settle
+        # the reproduction checkpoint since the environment is functional
+        # (empty output is not a fatal error; model can retry with different commands).
+        inconclusive = not combined.strip() and not timed_out
 
-        return {
+        # Settle the reproduction checkpoint for both success and inconclusive.
+        # Only the error paths (binary not found, exception) latch gdb_unavailable.
+        _settle_reproduction(state, latch=False)
+
+        result = {
             "status": "success",
             "poc_path": poc_path,
             "binary_path": binary_path,
@@ -495,7 +555,16 @@ class GdbDebugTool(BaseTool):
             "inconclusive": inconclusive,
             "elapsed_ms": elapsed_ms,
             "objective_id": objective_id or "",
+            "gdb_command": gdb_command,
+            "ld_library_path": library_path,
+            "poc_content_hash": content_hash,
         }
+        # Inject input mode override warning if present
+        override_warning = metadata.get("_input_mode_override_warning")
+        if override_warning:
+            result["input_mode_override_warning"] = override_warning
+            metadata.pop("_input_mode_override_warning", None)
+        return result
 
 
 # ---------------------------------------------------------------------------
@@ -586,7 +655,7 @@ def _run_gdb_local(
     input_mode: str,
     timeout_seconds: int,
     library_path: str,
-) -> tuple[str, str]:
+) -> tuple[str, str, int, str]:
     """Run GDB locally (host-side execution)."""
     gdb_bin = "gdb"
     # Check for gdb-multiarch first (ARM/SH targets)
@@ -632,7 +701,7 @@ def _run_gdb_local(
     stderr = _ASLR_WARNING_RE.sub("", stderr).strip()
     # Only return stderr when there was a non-zero exit
     stderr_filtered = stderr if completed.returncode not in (0, None) else ""
-    return stdout, stderr_filtered, completed.returncode
+    return stdout, stderr_filtered, completed.returncode, shell_cmd
 
 
 def _run_gdb_env(
@@ -644,7 +713,7 @@ def _run_gdb_env(
     input_mode: str,
     timeout_seconds: int,
     library_path: str,
-) -> tuple[str, str]:
+) -> tuple[str, str, Any, str]:
     """Run GDB inside the task container via env_runner.cmd.run."""
     # Locate gdb binary inside container
     probe = env_runner.cmd.run("command -v gdb || command -v gdb-multiarch", timeout=10)
@@ -666,7 +735,7 @@ def _run_gdb_env(
     # Filter harmless ASLR warning from stderr
     stderr = _ASLR_WARNING_RE.sub("", stderr).strip()
     stderr_filtered = stderr if rc not in (0, None) else ""
-    return stdout, stderr_filtered, rc
+    return stdout, stderr_filtered, rc, shell_cmd
 
 
 def _tail_gdb_output(text: str, limit: int) -> tuple[str, bool]:
@@ -817,8 +886,15 @@ def _resolve_candidate(candidate_path: str, workspace_root: str) -> Path:
     resolved = path.resolve()
     try:
         resolved.relative_to(root)
-    except ValueError as exc:
-        raise ValueError("candidate_path must stay inside workspace") from exc
+    except ValueError:
+        # Absolute container path (e.g. /workspace/pocs/poc.pdf) won't be
+        # relative_to host workspace_root.  Try stripping known prefixes.
+        if raw.is_absolute():
+            rel = str(raw).lstrip("/").removeprefix("workspace/")
+            alt = root / rel
+            if alt.resolve().is_file():
+                return alt.resolve()
+        raise ValueError("candidate_path must stay inside workspace") from None
     return resolved
 
 

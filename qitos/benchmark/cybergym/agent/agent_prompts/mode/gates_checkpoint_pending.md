@@ -13,4 +13,4 @@ bounds_gate (numeric ranges for OOB), value_gate (specific trigger values).
 Gate roles: reachability (path to next node), trigger (vulnerability activation),
 hazard (conservative warning), dataflow (parameter binding).
 When confirming a suggested constraint, copy its role and path_id into record_gate.
-After recording a gate, you may continue with READ/GREP/FIND_SYMBOLS.
+After recording a gate, you may continue with read/grep/find_symbols.

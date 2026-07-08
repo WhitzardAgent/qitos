@@ -629,8 +629,7 @@ def detect_harness_entry(agent: Any, state: CyberGymState, short_name: str, outp
     """Record a harness read without confusing discovery with verification."""
     from ..core.fact_extraction import append_capped_fact
 
-    normalized_name = str(short_name or "").upper()
-    if normalized_name not in (agent.READ_TOOL, agent.FIND_SYMBOLS_TOOL.upper()):
+    if short_name not in (agent.READ_TOOL, agent.FIND_SYMBOLS_TOOL):
         return
     content = ""
     if isinstance(output, dict):

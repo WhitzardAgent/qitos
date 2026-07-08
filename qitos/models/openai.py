@@ -7,6 +7,7 @@ Supports environment variable configuration: OPENAI_API_KEY, OPENAI_BASE_URL
 
 import json
 import os
+import time
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, AsyncIterator, Dict, Iterator, List, Optional, cast
@@ -23,30 +24,60 @@ from .base import Model, ModelStreamChunk
 
 
 GLM_TOKENIZER_ENV_VARS = ("QITOS_GLM_TOKENIZER_PATH", "GLM_TOKENIZER_PATH")
+OPENAI_COMPATIBLE_DEFAULT_TIMEOUT = 120
+OPENAI_COMPATIBLE_RETRY_ATTEMPTS = 3
 
 
-def _make_openai_client(api_key: str, base_url: str, timeout: Any) -> Any:
+def _inference_key_headers(inference_key: Optional[str] = None) -> Dict[str, str]:
+    key = str(inference_key or os.environ.get("QITOS_INFERENCE_KEY") or "").strip()
+    if not key:
+        return {}
+    return {"x-inspire-inference-key": key}
+
+
+def _make_openai_client(
+    api_key: str,
+    base_url: str,
+    timeout: Any,
+    inference_key: Optional[str] = None,
+) -> Any:
     """Create an OpenAI client with optional inference-key sticky routing.
 
-    If the environment variable ``QITOS_INFERENCE_KEY`` is set, its value is
-    sent as the ``x-inspire-inference-key`` header on every request.  This
-    tells the upstream load balancer to route all requests that share the same
-    key to the same backend node, which improves KV-cache hit rates and reduces
-    latency jitter for a single task.
+    Instance-level ``inference_key`` values take precedence over the
+    ``QITOS_INFERENCE_KEY`` environment fallback.
     """
     import openai
 
-    inference_key = os.environ.get("QITOS_INFERENCE_KEY")
-    if inference_key:
+    headers = _inference_key_headers(inference_key)
+    if headers:
         return openai.OpenAI(
             api_key=api_key,
             base_url=base_url,
             timeout=timeout,
-            default_headers={"x-inspire-inference-key": inference_key},
+            default_headers=headers,
         )
     return openai.OpenAI(
         api_key=api_key, base_url=base_url, timeout=timeout,
     )
+
+
+def _make_async_openai_client(
+    api_key: str,
+    base_url: str,
+    timeout: Any,
+    inference_key: Optional[str] = None,
+) -> Any:
+    import openai
+
+    kwargs: Dict[str, Any] = {
+        "api_key": api_key,
+        "base_url": base_url,
+        "timeout": timeout,
+    }
+    headers = _inference_key_headers(inference_key)
+    if headers:
+        kwargs["default_headers"] = headers
+    return openai.AsyncOpenAI(**kwargs)
 
 
 def _relocate_chat_template_kwargs(kwargs: Dict[str, Any]) -> Dict[str, Any]:
@@ -221,6 +252,7 @@ class OpenAIModel(Model):
         timeout: int = 60,
         context_window: Optional[int] = None,
         default_request_kwargs: Optional[Dict[str, Any]] = None,
+        inference_key: Optional[str] = None,
     ):
         """
         Initialize OpenAI model
@@ -235,6 +267,7 @@ class OpenAIModel(Model):
             timeout: Request timeout (seconds)
             context_window: Total model context window
             default_request_kwargs: Extra kwargs merged into every API call
+            inference_key: Sticky-routing key sent as x-inspire-inference-key
         """
         super().__init__(
             model=model,
@@ -250,6 +283,7 @@ class OpenAIModel(Model):
         )
         self.timeout = timeout
         self.default_request_kwargs = default_request_kwargs or {}
+        self.inference_key = str(inference_key or "").strip()
 
         if not self.api_key:
             raise ValueError(
@@ -270,7 +304,7 @@ class OpenAIModel(Model):
 
         try:
             client = _make_openai_client(
-                self.api_key, self.base_url, self.timeout
+                self.api_key, self.base_url, self.timeout, self.inference_key
             )
 
             response = self._chat_completion(client, messages, **kwargs)
@@ -323,7 +357,7 @@ class OpenAIModel(Model):
 
         self._last_usage = None
         client = _make_openai_client(
-            self.api_key, self.base_url, self.timeout
+            self.api_key, self.base_url, self.timeout, self.inference_key
         )
         return self._chat_completion(client, messages, **kwargs)
 
@@ -334,7 +368,7 @@ class OpenAIModel(Model):
         self._last_usage = None
         try:
             client = _make_openai_client(
-                self.api_key, self.base_url, self.timeout
+                self.api_key, self.base_url, self.timeout, self.inference_key
             )
             response = client.chat.completions.create(
                 model=self.model,
@@ -504,9 +538,10 @@ class OpenAICompatibleModel(Model):
         system_prompt: Optional[str] = None,
         temperature: float = 0.7,
         max_tokens: int = 2048,
-        timeout: int = 60,
+        timeout: int = OPENAI_COMPATIBLE_DEFAULT_TIMEOUT,
         context_window: Optional[int] = None,
         default_request_kwargs: Optional[Dict[str, Any]] = None,
+        inference_key: Optional[str] = None,
     ):
         """
         Initialize compatible model
@@ -522,6 +557,7 @@ class OpenAICompatibleModel(Model):
             context_window: Total model context window
             default_request_kwargs: Extra kwargs merged into every API call
                 (e.g. {"chat_template_kwargs": {"thinking": True}})
+            inference_key: Sticky-routing key sent as x-inspire-inference-key
         """
         super().__init__(
             model=model,
@@ -535,6 +571,7 @@ class OpenAICompatibleModel(Model):
         self.base_url = base_url or os.getenv("OPENAI_BASE_URL", "")
         self.timeout = timeout
         self.default_request_kwargs = default_request_kwargs or {}
+        self.inference_key = str(inference_key or "").strip()
 
         if not self.base_url:
             raise ValueError(
@@ -592,10 +629,13 @@ class OpenAICompatibleModel(Model):
 
         try:
             client = _make_openai_client(
-                self.api_key, self.base_url, self.timeout
+                self.api_key, self.base_url, self.timeout, self.inference_key
             )
 
-            response = self._chat_completion(client, messages, **kwargs)
+            response = self._with_transient_retries(
+                lambda: self._chat_completion(client, messages, **kwargs),
+                openai.APIError,
+            )
             return self._parse_response(response)
 
         except openai.APIError as e:
@@ -696,9 +736,42 @@ class OpenAICompatibleModel(Model):
 
         self._last_usage = None
         client = _make_openai_client(
-            self.api_key, self.base_url, self.timeout
+            self.api_key, self.base_url, self.timeout, self.inference_key
         )
-        return self._chat_completion(client, messages, **kwargs)
+        return self._with_transient_retries(
+            lambda: self._chat_completion(client, messages, **kwargs),
+            openai.APIError,
+        )
+
+    def _with_transient_retries(self, call: Any, api_error_type: Any) -> Any:
+        last_exc: Optional[Exception] = None
+        for attempt in range(OPENAI_COMPATIBLE_RETRY_ATTEMPTS):
+            try:
+                return call()
+            except api_error_type as exc:
+                last_exc = exc
+                if attempt >= OPENAI_COMPATIBLE_RETRY_ATTEMPTS - 1:
+                    raise
+                if not self._is_transient_api_error(exc):
+                    raise
+                time.sleep(min(2 ** attempt, 4))
+        if last_exc is not None:
+            raise last_exc
+        raise RuntimeError("OpenAI-compatible retry loop exited without a result")
+
+    def _is_transient_api_error(self, exc: Exception) -> bool:
+        text = str(exc).lower()
+        return any(
+            marker in text
+            for marker in (
+                "timeout",
+                "time out",
+                "temporarily",
+                "try again",
+                "rate limit",
+                "connection",
+            )
+        )
 
     def _usage_from_response(self, response: Any) -> Optional[Dict[str, Any]]:
         usage = getattr(response, "usage", None)
@@ -726,7 +799,7 @@ class OpenAICompatibleModel(Model):
         self._last_usage = None
         try:
             client = _make_openai_client(
-                self.api_key, self.base_url, self.timeout
+                self.api_key, self.base_url, self.timeout, self.inference_key
             )
             # Build stream options — request usage in final chunk
             # Not all OpenAI-compatible APIs support this, so we wrap it
@@ -937,8 +1010,8 @@ class AsyncOpenAICompatibleModel(OpenAICompatibleModel):
         import openai
 
         try:
-            client = openai.AsyncOpenAI(
-                api_key=self.api_key, base_url=self.base_url, timeout=self.timeout
+            client = _make_async_openai_client(
+                self.api_key, self.base_url, self.timeout, self.inference_key
             )
             response = await self._achat_completion(client, messages, **kwargs)
             return self._parse_response(response)
@@ -965,8 +1038,8 @@ class AsyncOpenAICompatibleModel(OpenAICompatibleModel):
         import openai
 
         self._last_usage = None
-        client = openai.AsyncOpenAI(
-            api_key=self.api_key, base_url=self.base_url, timeout=self.timeout
+        client = _make_async_openai_client(
+            self.api_key, self.base_url, self.timeout, self.inference_key
         )
         return await self._achat_completion(client, messages, **kwargs)
 
@@ -976,8 +1049,8 @@ class AsyncOpenAICompatibleModel(OpenAICompatibleModel):
 
         self._last_usage = None
         try:
-            client = openai.AsyncOpenAI(
-                api_key=self.api_key, base_url=self.base_url, timeout=self.timeout
+            client = _make_async_openai_client(
+                self.api_key, self.base_url, self.timeout, self.inference_key
             )
             response = await client.chat.completions.create(
                 model=self.model,
@@ -1025,8 +1098,8 @@ class AsyncOpenAIModel(OpenAIModel):
         import openai
 
         try:
-            client = openai.AsyncOpenAI(
-                api_key=self.api_key, base_url=self.base_url, timeout=self.timeout
+            client = _make_async_openai_client(
+                self.api_key, self.base_url, self.timeout, self.inference_key
             )
             response = await self._achat_completion(client, messages, **kwargs)
             return self._parse_response(response)
@@ -1053,8 +1126,8 @@ class AsyncOpenAIModel(OpenAIModel):
         import openai
 
         self._last_usage = None
-        client = openai.AsyncOpenAI(
-            api_key=self.api_key, base_url=self.base_url, timeout=self.timeout
+        client = _make_async_openai_client(
+            self.api_key, self.base_url, self.timeout, self.inference_key
         )
         return await self._achat_completion(client, messages, **kwargs)
 
@@ -1064,8 +1137,8 @@ class AsyncOpenAIModel(OpenAIModel):
 
         self._last_usage = None
         try:
-            client = openai.AsyncOpenAI(
-                api_key=self.api_key, base_url=self.base_url, timeout=self.timeout
+            client = _make_async_openai_client(
+                self.api_key, self.base_url, self.timeout, self.inference_key
             )
             response = await client.chat.completions.create(
                 model=self.model,

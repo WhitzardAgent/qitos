@@ -658,7 +658,6 @@ class StaticAnalysisRuntimeMixin:
                     "status": "partial",
                     "gaps": [{
                         "id": "analysis_error", "reason": f"{type(exc).__name__}: {exc}",
-                        "next_query": {"tool": "analyze_sink_candidate", "arguments": {"candidate_id": candidate_id}},
                     }],
                     "unresolved": [],
                 }

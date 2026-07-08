@@ -18,13 +18,13 @@ Capture:
 Do not call a description-derived function a confirmed sink. It is only a
 navigation prior until verified by code or `submit_poc` feedback.
 
-`set_crash_type(...)` is a legacy fallback only. The strongest crash-type source
+The strongest crash-type source
 is always `submit_poc`; a description crash type is only a prior.
 
 ### Step 2: Read verified anchors first
 
 After analysis service verification, prefer `Current Assessment > Likely`
-verified refs over broad text search. READ the top verified ref or selected
+verified refs over broad text search. read the top verified ref or selected
 harness file and decide whether the code is:
 
 - `crash_site`;

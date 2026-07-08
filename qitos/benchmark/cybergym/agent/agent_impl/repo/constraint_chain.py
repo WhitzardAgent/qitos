@@ -19,8 +19,7 @@ from ..core.fact_extraction import (
 
 def update_read_coverage(agent: Any, state: CyberGymState, short_name: str, output: Any) -> None:
     """Track which file/line ranges have been READ to avoid re-reading."""
-    normalized_name = str(short_name or "").upper()
-    if normalized_name != agent.READ_TOOL or not isinstance(output, dict):
+    if short_name != agent.READ_TOOL or not isinstance(output, dict):
         return
     path = str(output.get("path") or "").strip()
     if not path:
@@ -87,7 +86,7 @@ def confirm_constraints_from_read(state: CyberGymState, output: Any) -> None:
             if len(seg) > 4
         ):
             gate.status = "confirmed"
-            gate.evidence = f"Confirmed by READ {read_path}"
+            gate.evidence = f"Confirmed by read {read_path}"
 
 
 # ---------------------------------------------------------------------------
@@ -303,7 +302,7 @@ def extract_path_constraints_from_read(state: CyberGymState, output: Any) -> Non
                 description=desc,
                 required_condition=cand.required_condition,
                 status="inferred",
-                evidence=f"READ {read_path}:{target_line}" if target_line else f"READ {read_path}",
+                evidence=f"read {read_path}:{target_line}" if target_line else f"read {read_path}",
                 repair_hint="",
                 role=cand.role,
                 path_id=cand.path_id,
@@ -436,13 +435,13 @@ def infer_chain_from_search(
         return
 
     # Extract the relevant result list based on tool type
-    if short_name in ("FindSymbols", "find_symbols"):
+    if short_name == "find_symbols":
         results = output.get("results") or []
         eligible = [
             r for r in results[:5]
             if str(r.get("kind", "") or "").lower() in ("function", "definition")
         ]
-    elif short_name in ("CallsiteSearch", "callsite_search"):
+    elif short_name == "callsite_search":
         # definitions field contains function definition hits
         eligible = (output.get("definitions") or [])[:5]
     else:
@@ -609,7 +608,7 @@ def update_chain_from_read(state: CyberGymState, output: Any) -> None:
                 role=role,
                 description=f"Function {func_name} in {read_path}",
                 status="inferred",
-                evidence=f"READ {read_path}",
+                evidence=f"read {read_path}",
                 order=max_order + 1,
             ))
             existing_locs.add(key)
@@ -625,8 +624,7 @@ def update_chain_from_read(state: CyberGymState, output: Any) -> None:
 # ---------------------------------------------------------------------------
 
 def capture_read_fact(agent: Any, state: CyberGymState, short_name: str, output: Any) -> None:
-    normalized_name = str(short_name or "").upper()
-    if normalized_name != agent.READ_TOOL or not isinstance(output, dict):
+    if short_name != agent.READ_TOOL or not isinstance(output, dict):
         return
     path = str(output.get("path") or "").strip()
     content = str(output.get("content") or "")

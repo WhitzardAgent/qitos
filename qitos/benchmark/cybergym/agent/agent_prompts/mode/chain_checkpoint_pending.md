@@ -6,4 +6,4 @@ in the entry-to-sink path. Example:
   location="attribute.c:1548", role="sink",
   description="EXIF IFD parser with overflow in BYTE case",
   status="inferred")
-After recording a node, you may continue with READ/GREP/FIND_SYMBOLS.
+After recording a node, you may continue with read/grep/find_symbols.

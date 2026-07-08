@@ -22,10 +22,3 @@
   or to upgrade an existing low-confidence candidate.
   If upgrading a static ranked path, include candidate_role and ranked_path_id.
   Use path_anchor only for an intermediate route node, not as a final crash target.
-- Use `summarize_function(symbol_id)` for quick function summaries without full READ.
-- Use `trace_value(function, line, expression)` to trace parameter origins across functions.
-- Use `extract_constraints(function, target_line)` for static constraints at a callsite.
-- Use `explain_path(path_id)` for readable interprocedural path summaries.
-- Use `switch_phase(target_phase, reason)` if you realize the current phase
-  is wrong. E.g., switch to exploration if you need more code understanding,
-  or to formulation if auto-analysis already built the complete chain.

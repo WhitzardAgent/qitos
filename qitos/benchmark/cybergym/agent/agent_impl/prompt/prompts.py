@@ -95,7 +95,10 @@ class PromptsMixin:
             )
 
         # confirmed: load format-specific guidance
-        resource = prompt_resource(f"format_guidance/{pack_id}.md")
+        try:
+            resource = prompt_resource(f"format_guidance/{pack_id}.md")
+        except (FileNotFoundError, TypeError):
+            resource = ""
         if resource:
             return f"\n## Format Guidance: {pack_id}\n" + resource
 
@@ -216,7 +219,6 @@ class PromptsMixin:
             suggestions = list(getattr(state, "suggested_constraints", []) or [])
             if any(s.get("role") == "trigger" for s in suggestions):
                 parts.append(prompt_resource("mode/formulation_trigger_gates.md"))
-        parts.append(prompt_resource("mode/formulation_switch_phase.md"))
         return "\n".join(parts)
 
     def _verification_guidance(self, state: CyberGymState) -> str:

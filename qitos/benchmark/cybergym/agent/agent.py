@@ -53,14 +53,7 @@ from .tool_names import (
     CORPUS_INSPECT as CORPUS_INSPECT_TOOL,
     WRITE as WRITE_TOOL,
     BASH as BASH_TOOL,
-    APPEND as APPEND_TOOL,
-    INSERT as INSERT_TOOL,
-    REPLACE_LINES as REPLACE_LINES_TOOL,
-    STR_REPLACE as STR_REPLACE_TOOL,
     SUBMIT_POC as SUBMIT_POC_TOOL,
-    RECORD_HYPOTHESIS as RECORD_HYPOTHESIS_TOOL,
-    RECORD_ATTEMPT as RECORD_ATTEMPT_TOOL,
-    RECORD_REFLECTION as RECORD_REFLECTION_TOOL,
 )
 from .agent_impl.core.constants import (
     CYBERGYM_HISTORY_MAX_TOKENS, CYBERGYM_HISTORY_WARNING_RATIO,
@@ -107,14 +100,7 @@ class CyberGymAgent(StaticAnalysisRuntimeMixin, StateInitMixin, TaskAnalysisMixi
     CORPUS_INSPECT_TOOL = CORPUS_INSPECT_TOOL
     WRITE_TOOL = WRITE_TOOL
     BASH_TOOL = BASH_TOOL
-    APPEND_TOOL = APPEND_TOOL
-    INSERT_TOOL = INSERT_TOOL
-    REPLACE_LINES_TOOL = REPLACE_LINES_TOOL
-    STR_REPLACE_TOOL = STR_REPLACE_TOOL
     SUBMIT_POC_TOOL = SUBMIT_POC_TOOL
-    RECORD_HYPOTHESIS_TOOL = RECORD_HYPOTHESIS_TOOL
-    RECORD_ATTEMPT_TOOL = RECORD_ATTEMPT_TOOL
-    RECORD_REFLECTION_TOOL = RECORD_REFLECTION_TOOL
 
     def __init__(
         self,
@@ -695,12 +681,11 @@ class CyberGymAgent(StaticAnalysisRuntimeMixin, StateInitMixin, TaskAnalysisMixi
             or getattr(result, "name", "")
         )
         short_name = str(name).rsplit(".", 1)[-1]
-        normalized_name = short_name.upper()
         output = result.output
         output_str = result.text
 
         # Auto-resolve harness when agent READs a harness candidate file
-        if normalized_name == "READ" and not getattr(state, "harness_entry_confirmed", False):
+        if short_name == self.READ_TOOL and not getattr(state, "harness_entry_confirmed", False):
             self._auto_resolve_harness_on_read(state, output_str or "")
 
         # Recover the original structured dict when the tool method returned
@@ -741,7 +726,7 @@ class CyberGymAgent(StaticAnalysisRuntimeMixin, StateInitMixin, TaskAnalysisMixi
         self._detect_harness_entry(state, short_name, output)
         self._update_read_coverage(state, short_name, output)
         # Mark high-value READ results for compaction priority
-        if normalized_name == self.READ_TOOL and isinstance(output, dict) and hasattr(result, "metadata"):
+        if short_name == self.READ_TOOL and isinstance(output, dict) and hasattr(result, "metadata"):
             read_path = str(output.get("path") or "").strip()
             evidence = state.durable_project_memory or {}
             high_value_paths = set()

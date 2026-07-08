@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import sys
+import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -12,6 +14,14 @@ from typing import Any, Dict, Optional
 DEFAULT_MAX_TOKENS = 8192
 GLM_DEFAULT_MAX_TOKENS = 20000
 DEFAULT_API_TIMEOUT = 360  # standard benchmark timeout: GLM responses can be long (max_tokens 20000); a short timeout cuts legit generations
+
+
+def build_inference_task_id(benchmark_task_id: str) -> str:
+    """Build a run-unique sticky-routing key for CyberGym LLM requests."""
+    slug = re.sub(r"[^A-Za-z0-9]+", "-", str(benchmark_task_id or "task")).strip("-")
+    if not slug:
+        slug = "task"
+    return f"cybergym-{slug}-{uuid.uuid4().hex[:12]}"
 
 
 def infer_family_id(model: str) -> str | None:
@@ -90,6 +100,7 @@ def _create_llm(model: str, llm_config: Optional[Dict[str, Any]] = None):
         temperature=llm_config.get("temperature", 0.7),
         max_tokens=llm_config.get("max_tokens", default_max_tokens_for_model(model)),
         timeout=llm_config.get("timeout", DEFAULT_API_TIMEOUT),
+        inference_key=llm_config.get("inference_key"),
     )
 
     return llm
@@ -121,6 +132,8 @@ def run_task(
     adapter = CyberGymAdapter(server_url=server_url)
     task = adapter.from_task_dir(str(task_path), task_id=task_id, max_steps=max_steps)
     ws = workspace_root or task.inputs.get("task_root") or str(task_path)
+    inference_task_id = build_inference_task_id(task.id)
+    llm_config["inference_key"] = inference_task_id
 
     # Build the agent (Engine auto-detects parser/protocol from harness metadata)
     agent = build_agent(
@@ -165,6 +178,7 @@ def run_task(
     print(f"[CyberGym] Workspace: {ws}")
     print(f"[CyberGym] Server: {server_url}")
     print(f"[CyberGym] Model: {model}")
+    print(f"[CyberGym] Inference task_id: {inference_task_id}")
 
     # Run the agent -- Engine auto-detects protocol/parser from llm harness metadata
     result = agent.run(

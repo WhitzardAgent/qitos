@@ -106,6 +106,19 @@ def advance_phase(agent: Any, state: CyberGymState, step: int) -> tuple[str, str
         state.repeated_read_count = 0
     else:
         state.phase_local_steps = phase_local_steps(state)
+
+    # Formulation step-budget: force candidate_required after 6 steps
+    # with no PoC, preventing the agent from reading code indefinitely.
+    if (
+        new_phase == "formulation"
+        and state.phase_local_steps >= 6
+        and not any(
+            bool(str(getattr(item, "file_path", "") or "").strip())
+            for item in list(getattr(state, "ready_pocs", []) or [])
+        )
+    ):
+        state.candidate_required = True
+
     agent._update_control_mode(state, int(step))
     return old_phase, new_phase
 
@@ -178,7 +191,7 @@ def apply_investigation_checkpoints(state: CyberGymState) -> None:
             and phase_local_steps(state) >= 4
             and not state.pending_reminder):
         state.pending_reminder = (
-            "No chain nodes recorded yet. Use FindSymbols to find the "
+            "No chain nodes recorded yet. Use find_symbols to find the "
             "vulnerable function, then record_chain_node to add it to the "
             "chain, or record_gate to add a path constraint."
         )
@@ -213,7 +226,6 @@ def apply_sink_rotation(agent: Any, state: CyberGymState) -> None:
 def apply_consecutive_miss_nudge(state: CyberGymState) -> None:
     """Add reinvestigation nudge after 4+ consecutive misses."""
     if (state.consecutive_misses >= 4
-            and not state.pending_reflection
             and not state.pending_reminder):
         state.pending_reminder = (
             f"{state.consecutive_misses} consecutive no-crash submissions. "

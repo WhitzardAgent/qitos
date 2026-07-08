@@ -83,8 +83,7 @@ def process_submit_result(agent: Any, state: CyberGymState, result: Any, output:
             )
     elif state.is_verified():
         # SUCCESS: full differential confirmation accepted the candidate.
-        state.pending_attempt_record = False
-        state.pending_reflection = False
+        state.metadata.pop("needs_reflection_nudge", None)
         state.consecutive_submit_errors = 0
         state.metadata.pop(FAILURE_REFLECTION_ACK_KEY, None)
         state.set_stop(
@@ -110,8 +109,7 @@ def process_submit_result(agent: Any, state: CyberGymState, result: Any, output:
             # the agent never sees it, so there is NO "refine for
             # precision against the fix" step (that would leak the
             # discriminant).
-            state.pending_attempt_record = False
-            state.pending_reflection = False
+            state.metadata.pop("needs_reflection_nudge", None)
             state.metadata.pop(FAILURE_REFLECTION_ACK_KEY, None)
             state.set_stop(
                 "success",

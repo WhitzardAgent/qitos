@@ -18,7 +18,7 @@
 - `candidate_triggered` means keep the exploit family and refine only if needed.
 - `too_broad` means narrow the same candidate family.
 - `no_trigger` is ambiguous. Classify it against objective, transcript, carrier, consistency, and oracle kind before changing path. It does NOT automatically mean path_not_reached.
-- After a miss: `READ(match_id=...)` on the crash path → `BASH` to fix the candidate → `submit_poc` again. This is the feedback loop.
+- After a miss: `read(match_id=...)` on the crash path → `bash` to fix the candidate → `submit_poc` again. This is the feedback loop.
 - **Negative evidence**: When Experiments shows repeated no-trigger evidence for the same family (3+), replan the mutation strategy or rotate to a different candidate. Do not submit more blind variants.
 - **Replan vs. submit**: If Next Action says "Replan recommended", prioritize revising the mutation offset/value or rotating candidates before submitting the ready PoC.
 - **Next Action priority**: A hard blocker (consistency, transcript gap, objective field, oracle context) overrides a ready PoC. Do not submit until the blocker is resolved.

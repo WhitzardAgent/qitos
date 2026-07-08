@@ -113,6 +113,7 @@ def handle_gdb_debug_result(agent: Any, state: CyberGymState, result: Any, outpu
         "evidence_id": evidence_id,
         "source_kind": "gdb_debug",
         "poc_path": output.get("poc_path", ""),
+        "poc_content_hash": output.get("poc_content_hash", ""),
         "binary_path": output.get("binary_path", ""),
         "input_mode": output.get("input_mode", ""),
         "commands": list(output.get("commands") or []),
@@ -183,6 +184,7 @@ def handle_gdb_debug_result(agent: Any, state: CyberGymState, result: Any, outpu
 # ---------------------------------------------------------------------------
 
 @register_handler("WRITE")
+@register_handler("write")
 @register_handler("write_file")
 @register_handler("create")
 def handle_write_result(agent: Any, state: CyberGymState, result: Any, output: Any) -> None:
@@ -201,6 +203,7 @@ def handle_write_result(agent: Any, state: CyberGymState, result: Any, output: A
 # ---------------------------------------------------------------------------
 
 @register_handler("BASH")
+@register_handler("bash")
 @register_handler("run_command")
 @register_handler("bash_v2")
 def handle_bash_result(agent: Any, state: CyberGymState, result: Any, output: Any) -> None:
@@ -219,19 +222,7 @@ def handle_bash_result(agent: Any, state: CyberGymState, result: Any, output: An
                 agent._register_direct_candidates(state, bash_paths)
 
 
-# ---------------------------------------------------------------------------
-# Record attempt / reflection handlers
-# ---------------------------------------------------------------------------
 
-@register_handler("record_attempt")
-def handle_record_attempt(agent: Any, state: CyberGymState, result: Any, output: Any) -> None:
-    state.pending_attempt_record = False
-
-
-@register_handler("record_reflection")
-def handle_record_reflection(agent: Any, state: CyberGymState, result: Any, output: Any) -> None:
-    state.pending_reflection_record = False
-    agent._mark_failure_signature_reflected(state)
 
 
 # ---------------------------------------------------------------------------
@@ -274,6 +265,7 @@ def _handle_chain_or_gate(state: CyberGymState, short_name: str, output: Any) ->
 # ---------------------------------------------------------------------------
 
 @register_handler("READ")
+@register_handler("read")
 @register_handler("read_file")
 @register_handler("view")
 @register_handler("file_read_v2")

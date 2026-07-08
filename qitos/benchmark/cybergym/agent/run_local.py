@@ -84,13 +84,15 @@ def run_local(
     # ------------------------------------------------------------------
     # 2. Create the LLM (Engine auto-detects protocol/parser from harness metadata)
     # ------------------------------------------------------------------
-    from cybergym_agent.cli import _create_llm
+    from cybergym_agent.cli import _create_llm, build_inference_task_id
 
     llm_config: Dict[str, Any] = {}
     if api_key:
         llm_config["api_key"] = api_key
     if base_url:
         llm_config["base_url"] = base_url
+    inference_task_id = build_inference_task_id(qitos_task.id)
+    llm_config["inference_key"] = inference_task_id
 
     llm = _create_llm(model, llm_config=llm_config)
 
@@ -144,6 +146,7 @@ def run_local(
     print(f"[CyberGym Local] Difficulty: {difficulty}")
     print(f"[CyberGym Local] Max steps: {max_steps}")
     print(f"[CyberGym Local] Repo dir: {qitos_task.inputs.get('repo_dir', 'N/A')}")
+    print(f"[CyberGym Local] Inference task_id: {inference_task_id}")
 
     # Engine auto-detects protocol/parser from llm.qitos_harness_metadata
     result = agent.run(

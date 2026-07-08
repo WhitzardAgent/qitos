@@ -39,7 +39,7 @@ def build_candidate_from_recipe(state: CyberGymState) -> dict[str, Any]:
 
     if not recipe or not recipe.get("recipe_id"):
         return {
-            "status": "blocked",
+            "status": "skipped",
             "candidate_path": "",
             "recipe_id": "",
             "applied_mutations": [],
@@ -49,13 +49,28 @@ def build_candidate_from_recipe(state: CyberGymState) -> dict[str, Any]:
 
     open_gaps = recipe.get("open_gaps", [])
     if open_gaps:
+        # Only hard-block on needs_seed (cannot construct input at all).
+        # needs_format and needs_field_localization are optional —
+        # the agent can still build a PoC without pack guidance.
+        hard_gaps = [g for g in open_gaps if "needs_seed" in str(g)]
+        if hard_gaps:
+            return {
+                "status": "blocked",
+                "candidate_path": "",
+                "recipe_id": recipe.get("recipe_id", ""),
+                "applied_mutations": [],
+                "blocked_operations": [],
+                "reason": f"recipe has hard gap(s): {', '.join(str(g)[:60] for g in hard_gaps[:3])}",
+            }
+        # Soft gaps: skip the recipe pipeline silently, let the agent
+        # build the PoC using normal tools (BASH/WRITE).
         return {
-            "status": "blocked",
+            "status": "skipped",
             "candidate_path": "",
             "recipe_id": recipe.get("recipe_id", ""),
             "applied_mutations": [],
             "blocked_operations": [],
-            "reason": f"recipe has {len(open_gaps)} open gap(s): {', '.join(str(g)[:60] for g in open_gaps[:3])}",
+            "reason": f"recipe has optional gap(s), falling back to agent construction",
         }
 
     carrier = recipe.get("carrier", {}) or {}

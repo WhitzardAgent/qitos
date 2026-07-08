@@ -101,6 +101,7 @@ class TraceWriter:
             "agent_topology": self.metadata.get("agent_topology"),
             "agent_name": self.metadata.get("agent_name"),
             "handoff_count": self.metadata.get("handoff_count"),
+            "inference_task_id": self.metadata.get("inference_task_id"),
         }
         with open(self.manifest_path, "w", encoding="utf-8") as f:
             json.dump(_redact_dict(payload), f, ensure_ascii=False, indent=2)

@@ -8,7 +8,7 @@ from typing import Any
 from qitos.core.tool_registry import ToolRegistry
 
 from ...submit_tool import SubmitPoCTool
-from ...tracking_tools import AnalyzeDescriptionTool, RecordHypothesisTool, RecordReflectionTool, RecordChainNodeTool, RecordGateTool, RecordSinkCandidateTool, RecordAttemptTool, SwitchPhaseTool, SetCrashTypeTool, ConfirmFormatTool
+from ...tracking_tools import AnalyzeDescriptionTool, RecordChainNodeTool, RecordGateTool, RecordSinkCandidateTool, ConfirmFormatTool
 from ...analysis.tools import analysis_tools
 from .dynamic_execution import GdbDebugTool, ProbeRuntimeFrontierTool, RunCandidateTool
 
@@ -54,10 +54,6 @@ def build_tool_registry(agent: Any, *, llm: Any, shell_timeout: int, server_url:
         tool_registry.register(agent.CorpusInspect)
         tool_registry.register(agent.WRITE)
         tool_registry.register(agent.BASH)
-        tool_registry.register(coding.append_file, name=agent.APPEND_TOOL)
-        tool_registry.register(coding.insert, name=agent.INSERT_TOOL)
-        tool_registry.register(coding.replace_lines, name=agent.REPLACE_LINES_TOOL)
-        tool_registry.register(coding.str_replace, name=agent.STR_REPLACE_TOOL)
     except ImportError:
         pass
 
@@ -68,16 +64,11 @@ def build_tool_registry(agent: Any, *, llm: Any, shell_timeout: int, server_url:
     tool_registry.register(GdbDebugTool())
     # ProbeRuntimeFrontierTool is deprecated — keeping for backward-compat
     # tool_registry.register(ProbeRuntimeFrontierTool())
-    tool_registry.register(RecordHypothesisTool())
-    tool_registry.register(RecordReflectionTool())
     tool_registry.register(RecordChainNodeTool())
     tool_registry.register(RecordGateTool())
     tool_registry.register(RecordSinkCandidateTool())
     tool_registry.register(AnalyzeDescriptionTool())
-    tool_registry.register(SetCrashTypeTool())
     tool_registry.register(ConfirmFormatTool())
-    tool_registry.register(RecordAttemptTool())
-    tool_registry.register(SwitchPhaseTool())
     for analysis_tool in analysis_tools():
         tool_registry.register(analysis_tool)
 

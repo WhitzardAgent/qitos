@@ -203,7 +203,7 @@ def render_READ(payload: Dict[str, Any]) -> str:
         hdr_params: Dict[str, Any] = {"match_id": match_id}
         if radius is not None:
             hdr_params["radius"] = int(radius)
-        result_parts = [_call_header("READ", **hdr_params)]
+        result_parts = [_call_header("read", **hdr_params)]
     else:
         hdr_params = {}
         if path:
@@ -212,7 +212,7 @@ def render_READ(payload: Dict[str, Any]) -> str:
             hdr_params["offset"] = offset
         if limit:
             hdr_params["limit"] = limit
-        result_parts = [_call_header("READ", **hdr_params)]
+        result_parts = [_call_header("read", **hdr_params)]
 
     # Line range summary after header
     range_str = f"lines {start_line}-{end_line}"
@@ -275,7 +275,7 @@ def render_GREP(payload: Dict[str, Any]) -> str:
         hdr_params["glob"] = glob_filter
     if output_mode and output_mode != "files_with_matches":
         hdr_params["output_mode"] = output_mode
-    result_parts = [_call_header("GREP", **hdr_params)]
+    result_parts = [_call_header("grep", **hdr_params)]
 
     # Result summary after header
     file_str = f" in {file_count} file{'s' if file_count != 1 else ''}" if file_count else ""
@@ -327,7 +327,7 @@ def render_GLOB(payload: Dict[str, Any]) -> str:
     hdr_params: Dict[str, Any] = {"pattern": pattern}
     if glob_path:
         hdr_params["path"] = glob_path
-    result_parts = [_call_header("GLOB", **hdr_params)]
+    result_parts = [_call_header("glob", **hdr_params)]
     result_parts.append(f"  {result_count} result{'s' if result_count != 1 else ''}")
 
     # Determine max path width for alignment
@@ -400,7 +400,7 @@ def render_FindSymbols(payload: Dict[str, Any]) -> str:
     fs_path = str(payload.get("path") or "")
     if fs_path:
         hdr_params["path"] = fs_path
-    result_parts = [_call_header("FindSymbols", **hdr_params)]
+    result_parts = [_call_header("find_symbols", **hdr_params)]
     result_parts.append(f"  {result_count} hit{'s' if result_count != 1 else ''}{filter_str}")
 
     # Summary line from index
@@ -523,7 +523,7 @@ def render_CallsiteSearch(payload: Dict[str, Any]) -> str:
     cs_path = str(payload.get("path") or "")
     if cs_path:
         hdr_params["path"] = cs_path
-    result_parts = [_call_header("CallsiteSearch", **hdr_params)]
+    result_parts = [_call_header("callsite_search", **hdr_params)]
     result_parts.append(f"  {def_count} def{'s' if def_count != 1 else ''}, {call_count} callsite{'s' if call_count != 1 else ''}")
 
     # -- Definitions: where the symbol is implemented --
@@ -621,7 +621,7 @@ def render_RepoMap(payload: Dict[str, Any]) -> str:
     build_files = payload.get("build_files") or []
     corpus_dirs = payload.get("corpus_dirs") or []
 
-    result_parts = [_call_header("RepoMap", path=path) if path else _call_header("RepoMap")]
+    result_parts = [_call_header("repo_map", path=path) if path else _call_header("repo_map")]
 
     # Layout
     if top_level:
@@ -728,7 +728,7 @@ def render_FileInfo(payload: Dict[str, Any]) -> str:
     printable = payload.get("printable_ratio")
     entropy = payload.get("entropy")
 
-    result_parts = [_call_header("FileInfo", path=path)]
+    result_parts = [_call_header("file_info", path=path)]
 
     # Size + type
     parts = []
@@ -774,7 +774,7 @@ def render_HexView(payload: Dict[str, Any]) -> str:
     if file_size > 0:
         size_info += f" of {_format_size(file_size)}"
 
-    result_parts = [_call_header("HexView", path=path, offset=offset, length=length)]
+    result_parts = [_call_header("hex_view", path=path, offset=offset, length=length)]
     result_parts.append(f"  {size_info}")
 
     if content:
@@ -802,7 +802,7 @@ def render_StructProbe(payload: Dict[str, Any]) -> str:
     endian = str(payload.get("endian") or "little")
     fields = payload.get("fields") or []
 
-    result_parts = [_call_header("StructProbe", path=path, offset=offset, endian=endian)]
+    result_parts = [_call_header("struct_probe", path=path, offset=offset, endian=endian)]
 
     for field in fields:
         name = str(field.get("name") or "field")
@@ -839,7 +839,7 @@ def render_CorpusInspect(payload: Dict[str, Any]) -> str:
     path = str(payload.get("path") or "")
     corpus_dirs = payload.get("corpus_dirs") or []
 
-    result_parts = [_call_header("CorpusInspect", path=path) if path else _call_header("CorpusInspect")]
+    result_parts = [_call_header("corpus_inspect", path=path) if path else _call_header("corpus_inspect")]
     result_parts.append(f"  {len(corpus_dirs)} corpus dir{'s' if len(corpus_dirs) != 1 else ''}")
 
     for d in corpus_dirs[:10]:
@@ -873,10 +873,10 @@ def render_WRITE(payload: Dict[str, Any]) -> str:
     message = str(payload.get("message") or "")
 
     if size is not None:
-        return _call_header("WRITE", path=path) + f"\n  {_format_size(int(size))} written"
+        return _call_header("write", path=path) + f"\n  {_format_size(int(size))} written"
     if message:
-        return _call_header("WRITE", path=path) + f"\n  {message}"
-    return _call_header("WRITE", path=path) + "\n  done"
+        return _call_header("write", path=path) + f"\n  {message}"
+    return _call_header("write", path=path) + "\n  done"
 
 
 def render_BASH(payload: Dict[str, Any]) -> str:
@@ -891,7 +891,7 @@ def render_BASH(payload: Dict[str, Any]) -> str:
     stderr = str(payload.get("stderr") or "")
     message = str(payload.get("message") or "")
 
-    result_parts = [_call_header("BASH", command=command)]
+    result_parts = [_call_header("bash", command=command)]
 
     # Exit code
     if returncode is not None:
@@ -1006,24 +1006,29 @@ def render_record_gate(payload: Dict[str, Any]) -> str:
 # ---------------------------------------------------------------------------
 
 _RENDERERS = {
+    "read": render_READ,
     "READ": render_READ,
+    "grep": render_GREP,
     "GREP": render_GREP,
+    "glob": render_GLOB,
     "GLOB": render_GLOB,
-    "FIND_SYMBOLS": render_FindSymbols,
+    "find_symbols": render_FindSymbols,
     "FindSymbols": render_FindSymbols,
-    "CALLSITE_SEARCH": render_CallsiteSearch,
+    "callsite_search": render_CallsiteSearch,
     "CallsiteSearch": render_CallsiteSearch,
-    "REPO_MAP": render_RepoMap,
+    "repo_map": render_RepoMap,
     "RepoMap": render_RepoMap,
-    "FILE_INFO": render_FileInfo,
+    "file_info": render_FileInfo,
     "FileInfo": render_FileInfo,
-    "HEX_VIEW": render_HexView,
+    "hex_view": render_HexView,
     "HexView": render_HexView,
-    "STRUCT_PROBE": render_StructProbe,
+    "struct_probe": render_StructProbe,
     "StructProbe": render_StructProbe,
-    "CORPUS_INSPECT": render_CorpusInspect,
+    "corpus_inspect": render_CorpusInspect,
     "CorpusInspect": render_CorpusInspect,
+    "write": render_WRITE,
     "WRITE": render_WRITE,
+    "bash": render_BASH,
     "BASH": render_BASH,
     "submit_poc": render_submit_poc,
     "record_chain_node": render_record_chain_node,

@@ -73,4 +73,4 @@ Before submitting, verify:
 3. Table directory / chunk offsets point within the file.
 4. The mutation target field is at the correct offset and width.
 5. If using a seed, the delta is localized to the target field (check with
-   `PoCSanityCheck` or `HexView`).
+   `PoCSanityCheck` or `hex_view`).

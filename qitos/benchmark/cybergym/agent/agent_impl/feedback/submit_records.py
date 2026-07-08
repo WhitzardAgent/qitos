@@ -358,7 +358,7 @@ def update_failure_counters(
     if state.is_verified():
         state.repeated_failure_signature = ""
         state.repeated_failure_count = 0
-        state.pending_reflection = False
+        state.metadata.pop("needs_reflection_nudge", None)
         return
 
     hints = extract_verification_hints(result)
@@ -381,7 +381,7 @@ def update_failure_counters(
         and not agent._failure_reflection_acknowledged(state)
         and not agent._failure_reflection_on_cooldown(state)
     ):
-        state.pending_reflection = True
+        state.metadata["needs_reflection_nudge"] = True
     if state.repeated_failure_count >= 3:
         agent._maybe_set_loop_reminder(state, f"repeated-failure:{signature}")
 

@@ -356,6 +356,11 @@ class FeedbackMixin:
         return verification_observation_lines(self, state)
 
     @staticmethod
+    def _no_trigger_diagnostic_lines(state: CyberGymState) -> List[str]:
+        from .feedback_effect import no_trigger_diagnostic_lines
+        return no_trigger_diagnostic_lines(state)
+
+    @staticmethod
     def _hot_feedback_lines(state: CyberGymState, *, window: Optional[List] = None) -> List[str]:
         items = window if window is not None else state.hot_feedback_window
         lines: List[str] = []

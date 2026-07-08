@@ -384,11 +384,18 @@ class SubmitPoCTool(BaseTool):
         poc_file = Path(poc_path)
         if poc_file.is_absolute():
             return poc_file
+        # Prefer state.workspace_root (host-resolved path) — consistent with
+        # _resolve_candidate in dynamic_execution.py and _resolve_candidate_path
+        # in validation.py.  Fall back to env.workspace_root for backward compat.
         workspace = None
         if runtime_context:
-            env = runtime_context.get("env")
-            if env and hasattr(env, "workspace_root"):
-                workspace = env.workspace_root
+            state = runtime_context.get("state")
+            if state and hasattr(state, "workspace_root"):
+                workspace = getattr(state, "workspace_root", None)
+            if not workspace:
+                env = runtime_context.get("env")
+                if env and hasattr(env, "workspace_root"):
+                    workspace = env.workspace_root
         if workspace:
             return Path(workspace) / poc_path
         return poc_file

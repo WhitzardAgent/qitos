@@ -43,11 +43,11 @@ class ObservationMixin(MemoryMixin, SectionMixin):
                 if output.get("status") == "error":
                     return f"- submit_poc: result=submission_error"
                 return f"- submit_poc: result=submitted vul_exit={vul_exit}"
-            if name.upper() == "BASH":
+            if name == "bash":
                 rc = output.get("returncode")
                 command = str(output.get("command") or "")
-                return f"- BASH: rc={rc} {command}".rstrip()
-            if name in ("FindSymbols", "CALLSITE_SEARCH"):
+                return f"- bash: rc={rc} {command}".rstrip()
+            if name in ("find_symbols", "callsite_search"):
                 query = str(output.get("query") or output.get("symbol") or "")
                 count = output.get("result_count") or output.get("callsite_count") or 0
                 results = output.get("results", [])
@@ -60,7 +60,7 @@ class ObservationMixin(MemoryMixin, SectionMixin):
                     preview_lines.append(f"{kind}:{path_r}:{ln} {sig}")
                 preview = " | ".join(preview_lines)
                 return f"- {name}: query={query} count={count} top=[{preview}]"
-            if name == "READ":
+            if name == "read":
                 path_r = str(output.get("path") or "")
                 offset_r = output.get("offset", 0) or 0
                 total = output.get("total_lines", 0)
@@ -71,23 +71,23 @@ class ObservationMixin(MemoryMixin, SectionMixin):
                 if total:
                     range_str += f"/{total}"
                 more_str = " [TRUNCATED]" if has_more else ""
-                return f"- READ: {path_r} {range_str}{more_str}"
-            if name == "GREP":
+                return f"- read: {path_r} {range_str}{more_str}"
+            if name == "grep":
                 pattern = str(output.get("pattern") or "")
                 mode = str(output.get("mode") or "")
                 count = output.get("match_count") or output.get("file_count") or 0
                 if mode == "files_with_matches":
                     filenames = output.get("filenames", [])
                     files_preview = ", ".join(filenames)
-                    return f"- GREP: pattern={pattern} mode=files count={count} files=[{files_preview}]"
+                    return f"- grep: pattern={pattern} mode=files count={count} files=[{files_preview}]"
                 else:
-                    return f"- GREP: pattern={pattern} mode={mode} count={count}"
-            if name in ("GLOB", "CORPUS_INSPECT", "FILEINFO"):
+                    return f"- grep: pattern={pattern} mode={mode} count={count}"
+            if name in ("glob", "corpus_inspect", "file_info"):
                 count = output.get("result_count") or output.get("file_count") or 0
-                if name == "FILEINFO":
+                if name == "file_info":
                     path_f = str(output.get("path") or "")
                     detail = f" type={output.get('file_type', '')}"
-                    return f"- FILEINFO: {path_f}{detail}"
+                    return f"- file_info: {path_f}{detail}"
                 return f"- {name}: count={count}"
             path = str(output.get("path") or "").strip()
             if status and path:
@@ -195,8 +195,8 @@ class ObservationMixin(MemoryMixin, SectionMixin):
                 "(Heap-buffer-overflow, Heap-use-after-free, Heap-double-free, "
                 "Stack-buffer-overflow, Global-buffer-overflow, "
                 "Use-of-uninitialized-value, Index-out-of-bounds, SEGV, or UNKNOWN)\n"
-                "   **Call `set_crash_type(crash_type=\"<your choice>\")` NOW.** "
-                "You cannot leave ingestion until this is set.\n\n"
+                "   **Infer the crash type now and remember it for later analysis.** "
+                "This feeds into crash-type-aware navigation scoring.\n\n"
                 "2. **Expected dangerous operations**: Based on the crash type, what operations "
                 "should you look for in the code?\n"
                 "   - For UAF: free/delete/realloc → then access without null-check\n"
@@ -602,8 +602,8 @@ class ObservationMixin(MemoryMixin, SectionMixin):
         return lines
 
     def _current_objective(self, state: CyberGymState) -> str:
-        if state.pending_reflection:
-            return "Call `record_reflection`, then decide whether to branch to a new PoC family."
+        if getattr(state, "pending_reflection", False):
+            return "Consider reflecting on the failure pattern before continuing. Decide whether to branch to a new PoC family."
         ready_paths = self._candidate_ready_submit_paths(state, include_active=True)
         if ready_paths:
             if self._candidate_ready_file_missing(state):
@@ -654,17 +654,10 @@ class ObservationMixin(MemoryMixin, SectionMixin):
         from ...tool_names import (
             EVIDENCE_TOOLS, READ_ONLY_TOOLS,
             SUBMIT_POC as SUBMIT_POC_TOOL,
-            RECORD_REFLECTION as RECORD_REFLECTION_TOOL,
-            RECORD_HYPOTHESIS as RECORD_HYPOTHESIS_TOOL,
             RECORD_CHAIN_NODE as RECORD_CHAIN_NODE_TOOL,
             RECORD_GATE as RECORD_GATE_TOOL,
         )
 
-        if state.pending_reflection:
-            return [
-                "- `record_reflection(summary, next_step, request_reinvestigation?)`; record one concise reflection now.",
-                "- Do not call `READ`, `GREP`, `BASH`, edit tools, or `submit_poc` before `record_reflection`.",
-            ]
         if getattr(state, "pending_sink_checkpoint", False):
             conf = float(getattr(state, "task_spec_confidence", 0.5) or 0.5)
             nudge_lines = [
@@ -723,14 +716,12 @@ class ObservationMixin(MemoryMixin, SectionMixin):
                 return [
                     f"- `{self.BASH_TOOL}(command)`; create or regenerate missing ready PoC file(s): {', '.join(missing[:3])}.",
                     f"- `{self.WRITE_TOOL}(path, content)`",
-                    f"- `{self.APPEND_TOOL}` / `{self.INSERT_TOOL}` / `{self.REPLACE_LINES_TOOL}` / `{self.STR_REPLACE_TOOL}`",
                     "- `submit_poc(poc_path)` after the candidate file exists.",
-                    "- `record_reflection` only if explicitly required by Current State.",
+                    "- Consider reflecting on the failure pattern if explicitly flagged by Current State.",
                 ]
             chunks = self._render_candidate_path_chunks(ready_paths)
             lines = [
                 f"- `submit_poc(poc_path)` only; call it once for every path in the complete ready PoC list.",
-                "- `record_reflection` only if explicitly required by Current State.",
             ]
             if chunks:
                 lines.append(
@@ -762,24 +753,11 @@ class ObservationMixin(MemoryMixin, SectionMixin):
                 lines.append(f"- `{self.BASH_TOOL}(command)`; search/generate only when it directly unblocks the candidate.")
             if self.WRITE_TOOL in names:
                 lines.append(f"- `{self.WRITE_TOOL}(path, content)`")
-            edit_names = [
-                name
-                for name in (
-                    self.APPEND_TOOL,
-                    self.INSERT_TOOL,
-                    self.REPLACE_LINES_TOOL,
-                    self.STR_REPLACE_TOOL,
-                )
-                if name in names
-            ]
-            if edit_names:
-                lines.append("- `" + "` / `".join(edit_names) + "`")
             if SUBMIT_POC_TOOL in names:
                 lines.append("- `submit_poc(poc_path)`")
             tracking = [
                 name
                 for name in (
-                    RECORD_REFLECTION_TOOL, RECORD_HYPOTHESIS_TOOL,
                     RECORD_CHAIN_NODE_TOOL, RECORD_GATE_TOOL,
                 )
                 if name in names
@@ -795,13 +773,11 @@ class ObservationMixin(MemoryMixin, SectionMixin):
             f"- `{self.CORPUS_INSPECT_TOOL}(path?)` / `{self.FILE_INFO_TOOL}(path)` / `{self.HEX_VIEW_TOOL}(path, offset?, length?)` / `{self.STRUCT_PROBE_TOOL}(path, offset?, formats?, endian?)` — inspect seeds before constructing candidates",
             f"- `{self.BASH_TOOL}(command)` — write candidates with Python; use toolbox for format-specific mutation",
             f"- `{self.WRITE_TOOL}(path, content)` — text candidates only; prefer BASH for binary",
-            f"- `{self.APPEND_TOOL}` / `{self.INSERT_TOOL}` / `{self.REPLACE_LINES_TOOL}` / `{self.STR_REPLACE_TOOL}`",
             "- `submit_poc(poc_path)`; submit every distinct ready PoC in one step when multiple PoCs are ready.",
-            "- `record_reflection` / `record_hypothesis`",
+            "- `record_chain_node` / `record_gate` / `record_sink_candidate`",
             "- `record_chain_node(function, location, role, description, status)` — record each function in the entry-to-sink chain",
             "- `record_gate(node_function, gate_type, description, required_condition, status)` — record each constraint the PoC must satisfy",
             "- `record_sink_candidate(function, evidence, location?, confidence?)` — propose a sink candidate after reading code",
-            "- `switch_phase(target_phase, reason)` — switch to a different phase when the current one is wrong (e.g., back to exploration for more code reading)",
             "- Parallel read-only calls are allowed; keep batches to at most `4` tools.",
         ]
         return lines

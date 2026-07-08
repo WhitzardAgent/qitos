@@ -18,16 +18,16 @@ the system will not transition to the next phase.
 ### Step-by-step Exploration Protocol
 
 **Step 1: Confirm the harness entry**
-- If Harness Resolution shows a selected harness, READ its source file.
-- Otherwise, GREP for `LLVMFuzzerTestOneInput` in repo-vul/.
+- If Harness Resolution shows a selected harness, read its source file.
+- Otherwise, grep for `LLVMFuzzerTestOneInput` in repo-vul/.
 - After reading the harness body, record_chain_node with role="entry".
 
 **Step 2: Trace the call chain from entry**
 - From the harness entry, identify which functions it calls.
-- Use `CallsiteSearch` on each called function to trace deeper.
-- Use `FindSymbols` to locate function definitions.
-- Prefer high-role `[static lead ...]` GREP hits and follow them with
-  `READ(match_id=...)`. A `wrapper`/`path_anchor` annotation means continue to
+- Use `callsite_search` on each called function to trace deeper.
+- Use `find_symbols` to locate function definitions.
+- Prefer high-role `[static lead ...]` grep hits and follow them with
+  `read(match_id=...)`. A `wrapper`/`path_anchor` annotation means continue to
   the suggested downstream node; it is not a final sink verdict.
 - For each function in the chain, record_chain_node with appropriate role.
 
@@ -42,8 +42,8 @@ the system will not transition to the next phase.
   `ranked_path_id` and set `candidate_role` to the endpoint role you verified.
   Use `path_anchor` only for an intermediate route node; then keep tracing to a
   downstream crash_site / causal_site / dangerous_primitive.
-- READ the most promising verified ref or ranked candidate first.
-- Use `FindSymbols`/`CallsiteSearch` for named functions. Use GREP only as a
+- read the most promising verified ref or ranked candidate first.
+- Use `find_symbols`/`callsite_search` for named functions. Use grep only as a
   fallback when verified refs and symbol lookup do not cover the described code.
 - Example: `record_sink_candidate(function="ProcessExifTag", evidence="unchecked memcpy with user-controlled size", location="attribute.c:1880", confidence=0.7, candidate_role="crash_site", ranked_path_id="vpath_...")`
 - If a listed Sink Candidate with "low" confidence matches the real sink,
@@ -52,10 +52,8 @@ the system will not transition to the next phase.
   `record_chain_node(function="...", location="...", role="sink", description="...")`.
 
 ### Using Interprocedural Analysis
-- When you call `record_sink_candidate`, the system automatically runs `analyze_sink_candidate`
+- When you call `record_sink_candidate`, the system automatically runs interprocedural analysis
   to find entry-to-sink paths and extract constraints. Results appear in Vulnerability Path and Required Conditions.
-- Use `find_paths_to_target(target)` to manually discover call chains reaching a function.
-- Use `find_callers(symbol)` to trace who calls a suspicious function — faster than repeated CallsiteSearch.
 
 **Step 4: Extract constraints (gates)**
 - For each chain node, identify conditions that gate the path.
@@ -63,30 +61,30 @@ the system will not transition to the next phase.
 - If suggested_constraints appear, confirm relevant ones via `record_gate`.
 
 **Step 5: Understand input format**
-- If corpus files exist, use `HexView`/`StructProbe` on a seed file.
+- If corpus files exist, use `hex_view`/`struct_probe` on a seed file.
 - Verify magic bytes and structure. Record format_gate for required headers.
 
 ### vNext navigation
 If Current Assessment shows local mining refs or harness protocol refs, inspect those exact files before broad search.
-If Required Conditions already has active objective/mapping, do not restart from broad GREP — resolve the specific unresolved field instead.
+If Required Conditions already has active objective/mapping, do not restart from broad grep — resolve the specific unresolved field instead.
 
 ### Vague description strategy
 If the description is vague (low task_spec_confidence):
 - Use verified refs, harness first-hop consumers, and analysis-service leads to
   build a diverse candidate set.
 - Explore more than one candidate family when evidence is weak, but keep each
-  READ targeted and stop after classifying the code role.
-- Use broad GREP only after source-backed leads fail to cover the likely area.
+  read targeted and stop after classifying the code role.
+- Use broad grep only after source-backed leads fail to cover the likely area.
 - Even with vague descriptions, you MUST still call `record_sink_candidate` for
   your best source-backed guess — you can upgrade or replace it later.
 
 ### Rich description strategy
 If the description is specific (high task_spec_confidence ≥ 0.6):
 - The description likely names the vulnerable function or a close caller.
-- READ the named function immediately, then check its callees
+- read the named function immediately, then check its callees
 - The actual sink is typically a LEAF callee — record it with `record_sink_candidate`
 - You should have a sink candidate recorded within 1-2 steps
-- Do not spend time on broad GREP searches when verified refs or symbols point
+- Do not spend time on broad grep searches when verified refs or symbols point
   to the described function.
 
 ### Description anchoring warning
@@ -96,14 +94,12 @@ where the actual crash occurs. The sink is typically the **LEAF function** (no f
 that directly processes untrusted input.
 
 After identifying a function named in the description:
-1. Check its callees using the code context shown in Current Assessment or by a targeted READ
-2. If any callee is marked `(leaf)` or ⚠, READ that callee's source
+1. Check its callees using the code context shown in Current Assessment or by a targeted read
+2. If any callee is marked `(leaf)` or ⚠, read that callee's source
 3. The leaf callee is more likely the actual sink than the described function
 4. Record the leaf callee as your sink candidate, not just the described function
 
 If the graph warns that a description-derived candidate is stale, trust the graph over the description.
 
 ### Switching phases
-If you realize the current phase is wrong for what you need to do:
-- `switch_phase(target_phase="investigation", reason="...")` — advance when you have chain + gates + sink
-- `switch_phase(target_phase="formulation", reason="...")` — skip investigation when auto-analysis already built a complete chain (requires 2+ nodes + 1+ confirmed gate + trigger_hypothesis)
+Phase transitions are automatic based on your progress. Keep recording chain nodes, gates, and sink candidates — the system will advance when the criteria are met.

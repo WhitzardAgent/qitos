@@ -34,6 +34,7 @@ How to update:
 ### Fixed
 
 - Fixed `DelegateTool` context delivery so the optional tool-call `context` object is passed into the child agent via `Engine.run(..., context=...)`.
+- Fixed CyberGym OpenAI-compatible model routing so each agent run gets a unique sticky inference key instead of relying on process-global routing state.
 - Fixed OpenAI-compatible tool schema generation for postponed or string annotations so CyberGym tools no longer emit invalid JSON Schema types.
 - Fixed CyberGym batch trace/result/render redaction so API keys and auth token markers are scrubbed before persisted artifacts are written.
 - Fixed CyberGym PoC generation runs so benchmark-local Bash commands can run without interactive command review while the default coding toolset review guard remains intact.

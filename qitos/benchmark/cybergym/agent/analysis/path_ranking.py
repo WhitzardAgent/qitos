@@ -862,12 +862,11 @@ class PathRankingService:
             gaps.append({
                 "id": "target_resolution_required", "reason": target_resolution.get("reason"),
                 "candidate_symbol_ids": target_resolution.get("candidate_symbol_ids", []),
-                "next_query": {"tool": "resolve_callsite_candidates", "arguments": {"callsite_id": target_resolution.get("callsite_id", "")}},
             })
         elif not paths:
-            gaps.append({"id": "caller_path_required", "reason": "no_verified_entry_to_target_path", "next_query": {"tool": "find_callers", "arguments": {"symbol": target.symbol_id}}})
+            gaps.append({"id": "caller_path_required", "reason": "no_verified_entry_to_target_path"})
         if target and sink_result.get("status") == "partial" and sink_result.get("reason"):
-            gaps.append({"id": "sink_semantics_partial", "reason": sink_result.get("reason"), "next_query": {"tool": "summarize_function", "arguments": {"symbol_id": target.symbol_id}}})
+            gaps.append({"id": "sink_semantics_partial", "reason": sink_result.get("reason")})
         version_key = candidate.candidate_id
         previous = svc.store.get("brief_latest", version_key) or {}; version = int(previous.get("version", 0)) + 1
         full_id = f"analysis_{candidate.candidate_id}_v{version}"; brief_id = f"brief_{candidate.candidate_id}_v{version}"
@@ -913,9 +912,7 @@ class PathRankingService:
                     chain_details.append({"function": sid, "file": "", "line": 0})
             return {"path_id": p["path_id"], "chain": [d["function"] for d in chain_details], "chain_details": chain_details, "confidence": p["score"]}
         path_briefs = [_path_brief(p) for p in paths[:svc.config.automatic_top_paths]]
-        suggested = ([{"tool": "get_path_details", "arguments": {"path_id": paths[0]["path_id"]}}] if paths else []) + ([{"tool": "trace_value", "arguments": {"function": target.symbol_id, "line": candidate.line, "expression": provenance[0]["expression"]}}] if target and provenance else [])
-        if alternatives:
-            suggested.append({"tool": "expand_candidate_neighborhood", "arguments": {"candidate_id": candidate.candidate_id, "depth": 3, "limit": 10}})
+        suggested: list[dict[str, Any]] = []
         brief_mappings = [
             item for item in input_mappings
             if item.get("status") in {"confirmed", "inferred"}

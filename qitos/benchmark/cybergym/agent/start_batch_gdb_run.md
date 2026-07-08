@@ -39,7 +39,7 @@
 
 模型 key 使用 `9ugaKOuuVsR/luU1QFEoEpm+KOvDHt+m+A/pdbNrgvo=`。grading key 使用 `cybergym-030a0cd7-5908-4862-8ab9-91f2bfc7b56d`；两者不能混用。grading server 与 agent 侧的 `CYBERGYM_API_KEY` 必须完全一致。
 
-## 3. 更新并同步 v14
+## 3. 更新并同步代码
 
 ```bash
 SSH_KEY=/Users/morinop/Desktop/traj_analyzer/pgroup_rsa
@@ -365,8 +365,88 @@ find "$LOCAL_TRACE" -name tui.log -size +0 -print | wc -l
 ```bash
 for group in \
   v14-gdb-v1-luke v14-gdb-v2-vader v14-gdb-v3-rey v14-gdb-v4-leia \
-  v14-gdb-v5-yoda v14-gdb-others-a v14-gdb-others-b v14-gdb-others-c; do
+  v14-gdb-v5-yoda v14-gdb-others-a v14-gdb-v5-yoda v14-gdb-others-b v14-gdb-others-c; do
   ssh -i "$SSH_KEY" "$HOST" "tmux kill-session -t 'jcy-$group' 2>/dev/null || true"
 done
+```
+
+## 12. 踩坑记录与关键注意事项
+
+### 12.1 BASE_URL 必须带 `/v1` 后缀
+
+qitos 的 OpenAI client **不会**自动在 `BASE_URL` 后拼接 `/v1`。launch.sh 模板里 `BASE_URL` 必须以 `/v1` 结尾：
+
+```bash
+# 正确
+BASE_URL="https://o89mbdpaameoceb5jogodkgegdj95hpe.openapi-qb-ai.sii.edu.cn/v1"
+
+# 错误 — 会导致 openai.NotFoundError: 404
+BASE_URL="https://o89mbdpaameoceb5jogodkgegdj95hpe.openapi-qb-ai.sii.edu.cn"
+```
+
+文档第 2 节和第 6 节中的 endpoint 占位符已经包含 `/v1`，sed 替换时务必保留。如果用 sed 替换 `BASE_URL` 行，URL 中的 `/` 不会干扰 `|` 分隔符。
+
+### 12.2 LLM_API_KEY vs LLM_KEY — 模板只使用 LLM_KEY
+
+launch.sh 模板使用的变量名是 `LLM_KEY` 和 `GRADING_KEY`，**不是** `LLM_API_KEY` 或 `API_KEY`。关键传递路径：
+
+```bash
+LLM_KEY="..."                          # 赋值
+export OPENAI_API_KEY="${LLM_KEY}"      # 传给 OpenAI client
+export CYBERGYM_CLAUDE_AUTH_TOKEN="${LLM_KEY}"  # 传给 agent
+--api-key "${LLM_KEY}"                 # 传给 batch 命令
+```
+
+修改 key 时只改 `LLM_KEY` 行即可。注意 `+` 号在 sed 里需要转义或用 Python 替换。
+
+### 12.3 旧 traces 目录必须清理
+
+如果某组之前跑过（不管成功还是失败），`traces/` 下会有旧数据。launch.sh 使用 `--resume`，会跳过已有 trace 的任务。如果旧 trace 全是 `unrecoverable_error`，agent 不会重试，等于白跑。
+
+**每次重启前必须清理**：
+
+```bash
+for g in <groups...>; do
+  ssh -i "$SSH_KEY" "$HOST" "rm -rf /data/pxd-team/workspace/jcy/cyber-agent/runs/$g/traces"
+done
+```
+
+### 12.4 Step 6 sed 替换的正确做法
+
+文档第 6 节的 sed 命令在**远端 bash** 里执行（`ssh ... bash -s`），变量在远端展开。这意味着：
+
+1. `endpoint` 变量中的 `/` **不会**影响 `s|^...|...|` 分隔符（`|` 和 `/` 不冲突）
+2. `${group}` 在双引号 heredoc 中正确展开
+3. `${RUN_ROOT}` 需要转义：`\\\${RUN_ROOT}` 或 `\\\${OUT_DIR}`
+
+如果从本地 zsh 执行，`${!groups[@]}` 等 bash 数组语法不兼容。**必须把整个循环放在远端 bash heredoc 里执行**，参照文档第 6 节的 `REMOTE` heredoc 格式。
+
+### 12.5 端口分配
+
+8 组的端口是 **6441–6448 连续**，没有跳过。`port=$((6441 + i))` 即 v1-luke=6441, v2-vader=6442, v3-rey=6443, ...
+
+### 12.6 版本命名规范
+
+组名前缀应反映当前 agent 版本，例如 `v16-gdb-*`、`v17-gdb-*`。TRACE_PREFIX 中也应包含版本 tag，例如 `qitos_v16-new_v16-gdb-v1-luke_glm-51`。
+
+启动时确定 tag，所有 8 组保持一致，便于后续筛选和分析。
+
+## 13. 定时监控（每 30 分钟）
+
+使用 `monitor_149.sh`（见运维手册 §6），参数为批次前缀：
+
+```bash
+bash /Users/morinop/Desktop/traj_analyzer/cybergym_workspace/monitor_149.sh v16-gdb
+```
+
+脚本会自动：
+1. 统计 poc.db 成绩（solved/rejected/fix_pending，按 §6.2 判定规则）
+2. 统计 tui.log 进展（crash/timeout/running，VUL TRIGGERED / stop=budget_time）
+3. 同步 tui.log 到本地（按 prefix 隔离目录，远端 sed 去空行）
+
+Claude Code 定时任务：
+
+```
+CronCreate: 7,37 * * * * 检查 149 上实验进展：bash .../monitor_149.sh v16-gdb
 ```
 
