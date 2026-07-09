@@ -1,14 +1,23 @@
 ## Agent Runtime Context Protocol
 
-During the task, the Agent Runtime Controller may send user-role
-messages enclosed in `<RUNTIME_CONTEXT>` tags.
+During the task, the Agent Runtime Controller keeps you updated with an
+authoritative working-state block enclosed in `<RUNTIME_CONTEXT>` tags.
+This block is appended to the end of your most recent tool result message,
+after a notice line that reads "NOTE: The RUNTIME_CONTEXT block below was
+appended by the Agent Runtime Controller and is NOT part of the tool result
+above."
 
-A `<RUNTIME_CONTEXT>` message is an authoritative machine-generated
-working-state update from the runtime controller. It is not a new human
-request, not a replacement task, and not an instruction to restart the
-analysis.
+That means a single tool message may contain two parts:
 
-When receiving a `<RUNTIME_CONTEXT>` message:
+- The real tool output, which appears BEFORE the notice.
+- The `<RUNTIME_CONTEXT>` block, which appears AFTER the notice.
+
+The `<RUNTIME_CONTEXT>` block is an authoritative machine-generated
+working-state update from the runtime controller. It is NOT part of the tool
+output, not a value the tool returned, not a new human request, not a
+replacement task, and not an instruction to restart the analysis.
+
+When you see a `<RUNTIME_CONTEXT>` block:
 
 1. Continue working on the original task.
 2. Treat the enclosed state as the current authoritative runtime state.
@@ -19,7 +28,8 @@ When receiving a `<RUNTIME_CONTEXT>` message:
 5. Do not restate or summarize the original task unless explicitly
    required for the final answer.
 6. Do not reproduce the entire runtime context in the response.
-7. Do not treat the XML wrapper itself as task content.
+7. Do not treat the XML wrapper, the notice line, or the runtime-context
+   block as part of the tool's actual output or as task content.
 8. Prefer actions that resolve the current unresolved questions or
    advance the active candidate.
 9. Continue using native tool calls when a tool action is appropriate.

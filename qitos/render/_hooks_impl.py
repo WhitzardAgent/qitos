@@ -617,6 +617,37 @@ class ClaudeStyleHook(RenderStreamHook):
                             if not stripped:
                                 continue
                             self._rail("bright_blue", f"[bright_blue]{stripped}[/bright_blue]")
+                    # Optionally surface the RUNTIME_CONTEXT exactly as it was
+                    # folded into the last tool result (merge_tool delivery), so
+                    # the tui.log shows what the model actually receives. Opt-in
+                    # via env var because the block is large (~1.5-3 KB/step).
+                    import os as _os
+                    if _os.environ.get(
+                        "CYBERGYM_TUI_SHOW_RUNTIME_CONTEXT", ""
+                    ).strip().lower() in {"1", "true", "yes", "on"}:
+                        from rich.markup import escape as _esc
+                        _msgs = event.payload.get("messages") or []
+                        _rc_text = ""
+                        _target_id = None
+                        for _m in reversed(_msgs):
+                            if isinstance(_m, dict) and _m.get("role") == "tool":
+                                _c = _m.get("content")
+                                if isinstance(_c, str):
+                                    _mk = _c.find("<RUNTIME_CONTEXT")
+                                    if _mk == -1:
+                                        _mk = _c.find("[NOTE:")
+                                    if _mk != -1:
+                                        _rc_text = _c[_mk:]
+                                        _target_id = _m.get("tool_call_id")
+                                break
+                        if _rc_text:
+                            self._rail(
+                                "bright_green",
+                                f"[bold bright_green]── Runtime Context "
+                                f"(folded into tool {_target_id}) ──[/bold bright_green]",
+                            )
+                            for _line in _rc_text.strip().splitlines():
+                                self._rail("gray70", f"[dim]{_esc(_line)}[/dim]")
                     self._state_steps.add(event.step_id)
                 return
             if event.step_id in self._thought_steps:

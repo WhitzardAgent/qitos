@@ -65,6 +65,17 @@ def _wrap_runtime_context(content: str) -> str:
     )
 
 
+# Notice prepended to a runtime-state block when it is folded into a tool
+# result message (merge_tool delivery). Makes explicit that the block is NOT
+# part of the tool's actual output, only an out-of-band runtime-state update.
+_RUNTIME_CONTEXT_IN_TOOL_NOTICE = (
+    "NOTE: The RUNTIME_CONTEXT block below was appended by the Agent Runtime "
+    "Controller and is NOT part of the tool result above. It is an "
+    "authoritative machine-generated working-state update — treat it as your "
+    "current working state, not as tool output."
+)
+
+
 class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
     def __init__(self, engine: _EngineProtocol):
         self.engine = engine
@@ -326,7 +337,27 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
             observation=observation,
             record=record,
         )
-        messages.append(current_user)
+        # Observation delivery mode. "merge_tool" (default) folds the
+        # runtime-state update into the last tool result so the conversation
+        # ends on a `tool` message (native OpenAI/GLM tool-call shape); GLM-style
+        # chat templates then do not re-open a <think> block every step. The
+        # folded block is explicitly marked as NOT part of the tool output.
+        # "user" keeps the legacy trailing user turn. Step 0 (initial task) and
+        # multimodal turns always fall back to a user message.
+        observation_delivery = os.environ.get(
+            "CYBERGYM_OBSERVATION_DELIVERY", "merge_tool"
+        ).strip().lower()
+        merged_into_tool = False
+        if (
+            observation_delivery == "merge_tool"
+            and record.step_id > 0
+            and isinstance(current_user.get("content"), str)
+        ):
+            merged_into_tool = self._merge_runtime_context_into_last_tool(
+                messages, str(current_user.get("content") or "")
+            )
+        if not merged_into_tool:
+            messages.append(current_user)
         prepared_full = content_to_text(current_user.get("content"))
         self._write_assembled_messages_sidecar(state, record.step_id, messages)
         record.prompt_metadata = dict(prompt_metadata)
@@ -354,12 +385,17 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
                 "prompt": dict(record.prompt_metadata),
             },
         )
-        history_content = str(prepared)
-        if record.step_id > 0:
-            history_content = _wrap_runtime_context(history_content)
-        engine._history_append(
-            "user", history_content, record.step_id, metadata={"source": "engine"}
-        )
+        # When the runtime-state update was folded into the last tool message
+        # (merge_tool mode), do NOT persist it as a standalone user turn: it is
+        # re-injected fresh into the trailing tool result every step, so keeping
+        # history as a pure task + tool-call chain avoids duplicated/stale state.
+        if not merged_into_tool:
+            history_content = str(prepared)
+            if record.step_id > 0:
+                history_content = _wrap_runtime_context(history_content)
+            engine._history_append(
+                "user", history_content, record.step_id, metadata={"source": "engine"}
+            )
         request_options = self._build_model_request_options(
             prompt_bundle=prompt_bundle,
             protocol=protocol,
@@ -1726,6 +1762,36 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
             if not isinstance(step_marker, int) or step_marker >= earliest_step:
                 trimmed.append(message)
         return trimmed
+
+    def _merge_runtime_context_into_last_tool(
+        self, messages: List[Dict[str, Any]], runtime_text: str
+    ) -> bool:
+        """Fold a runtime-state update into the last tool result message.
+
+        Appends ``runtime_text`` (already wrapped in ``<RUNTIME_CONTEXT>``) to
+        the content of the most recent ``tool`` message, preceded by a notice
+        that it is not part of the tool output. This keeps the conversation
+        ending on a ``tool`` message — the native OpenAI/GLM tool-call shape —
+        instead of injecting a trailing user turn each step.
+
+        Returns True when a tool message was found and updated; False when the
+        conversation has no tool message yet (caller falls back to a user turn
+        so runtime state is never dropped).
+        """
+        runtime_text = str(runtime_text or "").strip()
+        if not runtime_text:
+            return False
+        for idx in range(len(messages) - 1, -1, -1):
+            msg = messages[idx]
+            if not isinstance(msg, dict) or msg.get("role") != "tool":
+                continue
+            base = content_to_text(msg.get("content"))
+            merged = f"{base}\n\n[{_RUNTIME_CONTEXT_IN_TOOL_NOTICE}]\n{runtime_text}"
+            updated = dict(msg)
+            updated["content"] = merged
+            messages[idx] = updated
+            return True
+        return False
 
     def _ensure_chain_consistency(
         self, messages: List[Dict[str, Any]]
