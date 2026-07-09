@@ -18,34 +18,55 @@ def phase_local_steps(state: CyberGymState) -> int:
 
 
 def _ingestion_ready(s: CyberGymState) -> bool:
-    """P40: ingestion should not be a no-op. Require at least:
-    - bug_type has been classified (even if empty string = 'attempted')
-    - OR at least one code artifact identified from the description
-    - OR 2+ phase-local steps have elapsed (fallback)
+    """Ingestion is complete when the LLM has done meaningful analysis.
+
+    Requirements:
+    - crash_type is set (via set_crash_type tool) OR 4+ phase-local steps elapsed
+    - At least one model-confirmed sink candidate (not just description-derived)
+    - OR 4+ phase-local steps have elapsed (hard fallback)
+
+    Pre-populated description/harness_chain candidates do NOT count as evidence
+    of LLM analysis — they are created deterministically during init_state().
     """
-    # bug_type is set by _classify_bug_type even when no pattern matches
-    # (it returns ""), but the metadata flag tells us classification was
-    # attempted.  If bug_type is non-empty, that's a strong signal.
-    if getattr(s, "bug_type", "") or getattr(s, "metadata", {}).get("_bug_type_classified"):
+    phase_steps = phase_local_steps(s)
+
+    # Hard fallback: allow transition after 4 steps regardless
+    if phase_steps >= 4:
         return True
-    # Source files or symbols extracted from the description
-    if getattr(s, "source_files_mentioned", None) or getattr(s, "symbols_mentioned", None):
-        return True
-    return False
+
+    # crash_type must be set (not UNSET, not empty)
+    crash_prior = bool((s.metadata or {}).get("crash_type_prior"))
+    crash_set = crash_prior or bool(str(getattr(s, "crash_type", "") or "").strip())
+
+    # At least one NON-description-derived sink candidate
+    # (description/harness_chain sources are pre-populated by init_state,
+    #  not evidence the LLM actually analyzed the code)
+    provisional_sources = {"description", "harness_chain"}
+    model_sinks = [
+        c for c in list(getattr(s, "sink_candidates", []) or [])
+        if c.source not in provisional_sources
+        and c.status != "eliminated"
+        and c.status != "provisional"
+        and not bool((c.metadata or {}).get("requires_review"))
+    ]
+    sink_confirmed = len(model_sinks) > 0
+
+    # Require crash_type + at least one model-confirmed sink
+    return crash_set and sink_confirmed
 
 
 def _exploration_step_limit(s: CyberGymState) -> int:
     """Dynamic step limit based on description informativeness.
 
-    Minimum is 8 (up from 5) to ensure enough steps for callee
-    exploration after identifying an initial sink candidate.
+    Reduced from 8/10/12 to 6/8/10 — sink hypothesis allows earlier
+    PoC attempts, and dynamic feedback replaces prolonged static analysis.
     """
     conf = float(getattr(s, "task_spec_confidence", 0.5) or 0.5)
     if conf >= 0.6:
-        return 8  # description is rich, but still need callee tracing
+        return 6  # rich description, quick transition
     elif conf < 0.4:
-        return 12  # description is vague, need more steps to mine
-    return 10
+        return 10  # vague description, still faster
+    return 8
 
 
 def cybergym_phase_engine() -> PhaseEngine:
@@ -54,7 +75,7 @@ def cybergym_phase_engine() -> PhaseEngine:
         phases=[
             PhaseSpec(
                 name="ingestion",
-                max_steps=3,
+                max_steps=5,
                 transitions=[
                     # P40: require structured analysis, not just description existence
                     TransitionRule(
@@ -88,6 +109,14 @@ def cybergym_phase_engine() -> PhaseEngine:
                 name="investigation",
                 max_steps=None,
                 transitions=[
+                    # V12: any confirmed sink allows early transition to formulation.
+                    # Sink is a hypothesis — dynamic feedback from PoC attempts is
+                    # more valuable than completing full constraint analysis.
+                    TransitionRule(
+                        target="formulation",
+                        condition=lambda s: bool(s.confirmed_sink_candidates()),
+                        priority=15,
+                    ),
                     # P41: primary transition requires EITHER confirmed chain
                     # gates OR legacy constraint progress OR trigger_hypothesis.
                     # The chain-gate check ensures the agent has understood the
@@ -117,11 +146,12 @@ def cybergym_phase_engine() -> PhaseEngine:
                         ),
                         priority=10,
                     ),
-                    # Fallback: force transition after 15 steps (was 10, raised
-                    # to give more time for constraint discovery and checkpoint).
+                    # Fallback: force transition after 8 steps.
+                    # V12: lowered from 15 — early PoC attempts with dynamic
+                    # feedback are more valuable than prolonged static analysis.
                     TransitionRule(
                         target="formulation",
-                        condition=lambda s: phase_local_steps(s) >= 15,
+                        condition=lambda s: phase_local_steps(s) >= 8,
                         priority=0,
                     ),
                 ],

@@ -32,3 +32,23 @@ The content inside `<RUNTIME_CONTEXT>` may include Markdown headings,
 tables, code blocks, paths, symbols, constraints, and evidence. Parse
 that content as structured working memory while preserving the literal
 technical details it contains.
+
+The model-facing brief uses a fixed six-section shape:
+
+1. Mission
+2. Current Assessment
+3. Vulnerability Path
+4. Required Conditions
+5. Experiments
+6. Next Action
+
+Do not invent extra state sections. In particular:
+
+- `[source: description prior]` is only a hypothesis extracted from the task text.
+- `[source: analysis service]` is a source-backed navigation lead, not proof of a sink.
+- `[source: code reading]` means the model or tools inspected code.
+- `[source: submit_poc]` is the highest-priority oracle and overrides priors.
+- Unresolved hints are not negative evidence; they do not mean a function is absent or unreachable.
+
+Next Action is intentionally narrow: follow its single blocker, concrete target,
+and stop condition unless submit feedback or newly read code clearly invalidates it.

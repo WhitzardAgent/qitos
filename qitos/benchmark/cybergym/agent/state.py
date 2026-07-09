@@ -11,6 +11,34 @@ from .family_runtime import CandidateRecord, FamilyRecord, FeedbackRecord, Failu
 
 
 @dataclass
+class HarnessConsumptionEvidence:
+    """One source-backed observation about how the harness consumes input."""
+
+    kind: str
+    expression: str
+    file: str = ""
+    line: int = 0
+    confidence: float = 0.0
+
+
+@dataclass
+class HarnessConsumptionModel:
+    """Structured model of how selected harness input is consumed."""
+
+    pattern: str = "unknown"
+    patterns: List[str] = field(default_factory=list)
+    data_parameter: str = ""
+    size_parameter: str = ""
+    first_hops: List[str] = field(default_factory=list)
+    selector_expression: str = ""
+    magic_bytes: str = ""
+    temp_file_api: str = ""
+    first_hop_resolution: Dict[str, int] = field(default_factory=dict)
+    evidence: List[HarnessConsumptionEvidence] = field(default_factory=list)
+    status: str = "unresolved"
+
+
+@dataclass
 class InputFormatModel:
     """Structured model of what the harness expects as input.
 
@@ -29,6 +57,7 @@ class InputFormatModel:
     confirmed: bool = False        # confirmed from source code vs inferred
     field_provenance: Dict[str, str] = field(default_factory=dict)
     field_confidence: Dict[str, float] = field(default_factory=dict)
+    consumption: HarnessConsumptionModel = field(default_factory=HarnessConsumptionModel)
 
 
 @dataclass
@@ -66,6 +95,50 @@ class HarnessSignal:
     source: str = ""
     evidence: str = ""
     confidence: float = 0.0
+
+
+@dataclass
+class DescriptionAnalysis:
+    """LLM-authored interpretation of the task description.
+
+    Every field is a navigation prior until it is verified against source code.
+    """
+
+    vuln_type: str = ""
+    crash_type_hint: str = ""
+    access_mode: str = "unknown"
+    memory_region: str = "unknown"
+    mechanism_tags: List[str] = field(default_factory=list)
+    described_operations: List[str] = field(default_factory=list)
+    described_state_transitions: List[str] = field(default_factory=list)
+    numeric_facts: List[str] = field(default_factory=list)
+    suspect_functions: List[str] = field(default_factory=list)
+    suspect_files: List[str] = field(default_factory=list)
+    suspect_modules: List[str] = field(default_factory=list)
+    suspect_params: List[str] = field(default_factory=list)
+    trigger_conditions: List[str] = field(default_factory=list)
+    search_hints: List[str] = field(default_factory=list)
+    status: str = "pending"
+    created_step: int = 0
+    last_relevant_step: int = 0
+
+
+@dataclass
+class VerifiedCodeRef:
+    """One source-backed match for a description-derived query."""
+
+    query: str
+    ref_id: str = ""
+    symbol_id: str = ""
+    symbol: str = ""
+    file: str = ""
+    line: int = 0
+    match_kind: str = ""
+    confidence: float = 0.0
+    evidence: str = ""
+    status: str = "verified"
+    created_step: int = 0
+    last_relevant_step: int = 0
 
 
 @dataclass
@@ -149,6 +222,7 @@ class ChainGate:
     path_id: str = ""
     source_span: Dict[str, Any] = field(default_factory=dict)
     sink_id: str = ""    # Links gate to a specific SinkCandidate; empty = unassigned
+    input_mapping_id: str = ""
 
 
 @dataclass
@@ -193,6 +267,9 @@ class CyberGymState(StateSchema):
     source_files_mentioned: List[str] = field(default_factory=list)
     symbols_mentioned: List[str] = field(default_factory=list)
     task_spec_confidence: float = 0.0
+    description_analysis: DescriptionAnalysis = field(default_factory=DescriptionAnalysis)
+    verified_search_refs: List[VerifiedCodeRef] = field(default_factory=list)
+    unresolved_search_hints: List[str] = field(default_factory=list)
 
     # Harness info (populated during ingestion from submit.sh)
     harness_info: str = ""  # binary path and arguments from submit.sh
@@ -206,6 +283,7 @@ class CyberGymState(StateSchema):
     search_anchors: List[str] = field(default_factory=list)
     exploration_complete: bool = False  # set True when agent has enough understanding
     active_sink_id: str = ""  # Currently targeted sink candidate
+    sink_hypothesis_source: str = ""  # "model_candidate", "auto_promoted", "asan_feedback"
     latest_sink_analysis_brief: Dict[str, Any] = field(default_factory=dict)
     active_sink_candidate_id: str = ""
     latest_brief_id: str = ""
@@ -222,6 +300,10 @@ class CyberGymState(StateSchema):
     injected_read_analysis_fingerprint: str = ""
     injected_index_fingerprint: str = ""
     sink_search_leads: List[Dict[str, Any]] = field(default_factory=list)
+    reachable_function_candidates: List[Dict[str, Any]] = field(default_factory=list)
+    ranked_vulnerability_paths: List[Dict[str, Any]] = field(default_factory=list)
+    ranked_paths_graph_id: str = ""
+    ranked_paths_status: str = ""
     latest_sink_search_brief: Dict[str, Any] = field(default_factory=dict)
     latest_sink_search_brief_id: str = ""
     sink_search_fingerprint: str = ""
@@ -247,6 +329,11 @@ class CyberGymState(StateSchema):
     pending_chain_checkpoint: bool = False
     pending_gates_checkpoint: bool = False
     pending_sink_checkpoint: bool = False
+    # Reproduction checkpoint: after a NO_TRIGGER in dynamic-analysis mode, force
+    # gdb_debug on the failing PoC before submit reopens. gdb_unavailable latches
+    # the checkpoint off (fall back to static analysis) if gdb can't run here.
+    pending_reproduction: bool = False
+    gdb_unavailable: bool = False
     last_recorded_poc_id: str = ""  # DEPRECATED: unused, kept for serialization compat
     last_submitted_poc_path: str = ""
     last_submitted_poc_hash: str = ""
@@ -262,9 +349,10 @@ class CyberGymState(StateSchema):
     phase_submissions: int = 0  # submit_poc count in current phase (resets on phase transition)
     crash_type: str = ""  # parsed from sanitizer output (e.g., heap-buffer-overflow)
     crash_location: str = ""  # parsed from sanitizer output (file:line)
+    crash_stack: str = ""  # ASAN/MSAN/UBSAN stack summary (top function names)
 
     # Phase tracking
-    current_phase: str = "ingestion"  # ingestion | investigation | formulation | verification
+    current_phase: str = "ingestion"  # ingestion | exploration | investigation | formulation | verification
     phase_enter_step: int = 0
     phase_local_steps: int = 0
     control_mode: str = "orienting"
@@ -312,6 +400,7 @@ class CyberGymState(StateSchema):
     suggested_constraints: List[Dict[str, Any]] = field(default_factory=list)
     constraint_paths: List[Dict[str, Any]] = field(default_factory=list)
     constraint_diagnostics: List[Dict[str, Any]] = field(default_factory=list)
+    active_input_mappings: List[Dict[str, Any]] = field(default_factory=list)
     gate_board_last_changed_step: int = 0
     gate_evidence_brief: Dict[str, str] = field(default_factory=dict)
     runtime_stage: str = "bootstrap"
@@ -359,11 +448,35 @@ class CyberGymState(StateSchema):
         self.hot_feedback_window = self._normalize_record_list(self.hot_feedback_window, FeedbackRecord)
         self.failure_history = self._normalize_record_list(self.failure_history, FailureRecord)
         self.harness_signals = self._normalize_record_list(self.harness_signals, HarnessSignal)
+        if isinstance(self.description_analysis, dict):
+            self.description_analysis = DescriptionAnalysis(**self.description_analysis)
+        self.verified_search_refs = self._normalize_record_list(
+            list(self.verified_search_refs or [])[:24], VerifiedCodeRef,
+        )
+        self.unresolved_search_hints = [
+            str(item) for item in list(self.unresolved_search_hints or [])[:24] if str(item).strip()
+        ]
+        self.ranked_vulnerability_paths = [
+            item for item in list(self.ranked_vulnerability_paths or [])[:5]
+            if isinstance(item, dict)
+        ]
+        self.active_input_mappings = [
+            item for item in list(self.active_input_mappings or [])[:8]
+            if isinstance(item, dict)
+        ]
         self.harness_candidates = self._normalize_record_list(self.harness_candidates, HarnessCandidate)
         if isinstance(self.harness_resolution, dict):
             self.harness_resolution = HarnessResolution(**self.harness_resolution)
         if isinstance(self.input_format, dict):
             self.input_format = InputFormatModel(**self.input_format)
+        if isinstance(getattr(self.input_format, "consumption", None), dict):
+            self.input_format.consumption = HarnessConsumptionModel(
+                **self.input_format.consumption
+            )
+        self.input_format.consumption.evidence = self._normalize_record_list(
+            list(getattr(self.input_format.consumption, "evidence", []) or [])[:12],
+            HarnessConsumptionEvidence,
+        )
         # The legacy boolean is a compatibility projection, never an
         # independent source of truth.
         self.harness_entry_confirmed = (
@@ -447,16 +560,21 @@ class CyberGymState(StateSchema):
         return f"{best.function}@{best.location}"
 
     def confirmed_sink_candidates(self) -> List[SinkCandidate]:
+        from .analysis.vuln_patterns import is_entry_point_function
         provisional_sources = {
-            "static_navigation", "description", "description_symbol",
-            "harness_chain", "graph_auto_deepen",
+            "static_navigation", "description", "harness_chain",
+            "graph_auto_deepen",
         }
         return [
             candidate for candidate in self.sink_candidates
             if candidate.status != "eliminated"
             and candidate.status != "provisional"
             and candidate.source not in provisional_sources
+            # Also check original_source from auto-promotion to prevent
+            # noise candidates that were promoted from provisional sources
+            and str((candidate.metadata or {}).get("original_source") or candidate.source or "") not in provisional_sources
             and not bool((candidate.metadata or {}).get("requires_review"))
+            and not is_entry_point_function(candidate.function)
         ]
 
     def navigation_candidates(self) -> List[SinkCandidate]:

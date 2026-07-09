@@ -33,11 +33,11 @@ the system will not transition to the next phase.
   for the function you believe is the vulnerability sink.
 - This is NOT optional — exploration cannot complete without at least one recorded
   sink candidate.
-- Check the Sink Candidates list first — these are auto-detected from the description.
-- GREP for each candidate function to find its definition.
-- READ the most promising candidate to confirm it matches the vulnerability.
-- If no auto-detected candidates match, use description keywords to GREP the repo
-  for functions containing bug-relevant patterns (memcpy, buffer, size checks, etc.).
+- Check Current Assessment > Likely for verified refs and analysis-service leads.
+  These are source-backed navigation leads, not confirmed sinks.
+- READ the most promising verified ref or ranked candidate first.
+- Use `FindSymbols`/`CallsiteSearch` for named functions. Use GREP only as a
+  fallback when verified refs and symbol lookup do not cover the described code.
 - Example: `record_sink_candidate(function="ProcessExifTag", evidence="unchecked memcpy with user-controlled size", location="attribute.c:1880", confidence=0.7)`
 - If a listed Sink Candidate with "low" confidence matches the real sink,
   call `record_sink_candidate` with the same function name and higher confidence to upgrade it.
@@ -46,7 +46,7 @@ the system will not transition to the next phase.
 
 ### Using Interprocedural Analysis
 - When you call `record_sink_candidate`, the system automatically runs `analyze_sink_candidate`
-  to find entry-to-sink paths and extract constraints. Results appear in "Interprocedural Analysis".
+  to find entry-to-sink paths and extract constraints. Results appear in Vulnerability Path and Required Conditions.
 - Use `find_paths_to_target(target)` to manually discover call chains reaching a function.
 - Use `find_callers(symbol)` to trace who calls a suspicious function — faster than repeated CallsiteSearch.
 
@@ -61,20 +61,22 @@ the system will not transition to the next phase.
 
 ### Vague description strategy
 If the description is vague (low task_spec_confidence):
-- Start with broad GREP searches using keywords from the description
-- Explore ALL sink candidates, not just the top one
-- Build multiple potential trigger hypotheses before committing
-- The more candidates you investigate, the more likely you find the real sink
-- Even with vague descriptions, you MUST still call `record_sink_candidate` for your
-  best guess — you can always upgrade or replace it later
+- Use verified refs, harness first-hop consumers, and analysis-service leads to
+  build a diverse candidate set.
+- Explore more than one candidate family when evidence is weak, but keep each
+  READ targeted and stop after classifying the code role.
+- Use broad GREP only after source-backed leads fail to cover the likely area.
+- Even with vague descriptions, you MUST still call `record_sink_candidate` for
+  your best source-backed guess — you can upgrade or replace it later.
 
 ### Rich description strategy
 If the description is specific (high task_spec_confidence ≥ 0.6):
-- The description likely names the vulnerable function or a close caller
+- The description likely names the vulnerable function or a close caller.
 - READ the named function immediately, then check its callees
 - The actual sink is typically a LEAF callee — record it with `record_sink_candidate`
 - You should have a sink candidate recorded within 1-2 steps
-- Don't spend time on broad GREP searches — go directly to the described function
+- Do not spend time on broad GREP searches when verified refs or symbols point
+  to the described function.
 
 ### Description anchoring warning
 **The vulnerability description often names a CALLER of the actual sink, not the sink itself.**
@@ -83,7 +85,7 @@ where the actual crash occurs. The sink is typically the **LEAF function** (no f
 that directly processes untrusted input.
 
 After identifying a function named in the description:
-1. Check its callees using the `<code_index_context>` callees list
+1. Check its callees using the code context shown in Current Assessment or by a targeted READ
 2. If any callee is marked `(leaf)` or ⚠, READ that callee's source
 3. The leaf callee is more likely the actual sink than the described function
 4. Record the leaf callee as your sink candidate, not just the described function

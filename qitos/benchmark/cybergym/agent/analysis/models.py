@@ -171,6 +171,46 @@ class AnalysisPath:
 
 
 @dataclass
+class RankedVulnerabilityPath:
+    """Compact ranked path from harness entry to a candidate endpoint."""
+
+    path_id: str
+    symbol_ids: list[str]
+    endpoint_symbol_id: str
+    endpoint_signal_id: str
+    endpoint_role: str
+    candidate_family: str
+    score: float
+    score_breakdown: dict[str, float]
+    resolution_status: str
+    description_ref_ids: list[str] = field(default_factory=list)
+    graph_distance_hint: int | None = None
+    gaps: list[dict[str, Any]] = field(default_factory=list)
+    generation_channels: list[str] = field(default_factory=list)
+    chain: list[dict[str, Any]] = field(default_factory=list)
+    endpoint: dict[str, Any] = field(default_factory=dict)
+    next_read: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class InputByteMapping:
+    mapping_id: str
+    sink_argument: str
+    sink_expression: str
+    source_parameter: str = ""
+    offset_expression: str = ""
+    offset: int | None = None
+    width: int | None = None
+    endianness: str = "unknown"
+    transform: str = ""
+    constraint: str = ""
+    status: str = "unresolved"
+    confidence: float = 0.0
+    evidence: list[SourceLocation] = field(default_factory=list)
+    gaps: list[dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass
 class SinkCandidateInput:
     candidate_id: str
     repository_id: str
@@ -207,3 +247,4 @@ class SinkAnalysisBrief:
     trigger_conditions: list[dict[str, Any]] = field(default_factory=list)
     gaps: list[dict[str, Any]] = field(default_factory=list)
     alternatives: list[dict[str, Any]] = field(default_factory=list)
+    input_mappings: list[dict[str, Any]] = field(default_factory=list)

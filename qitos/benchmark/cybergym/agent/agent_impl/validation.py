@@ -30,6 +30,8 @@ from .constants import (
 )
 from ..tool_names import (
     SUBMIT_POC,
+    GDB_DEBUG,
+    RUN,
     READ,
     GREP,
     GLOB,
@@ -168,6 +170,8 @@ class ValidationMixin:
 
     @staticmethod
     def _derive_control_mode(state: CyberGymState) -> str:
+        if getattr(state, "pending_reproduction", False):
+            return "reproduce_required"
         if getattr(state, "pending_chain_checkpoint", False):
             return "chain_checkpoint_pending"
         if getattr(state, "pending_gates_checkpoint", False):
@@ -631,6 +635,10 @@ class ValidationMixin:
             )
 
     def _candidate_construction_tool_names(self, state: CyberGymState) -> set[str]:
+        # Reproduction checkpoint: force gdb_debug on the failing PoC before
+        # anything else (checked ahead of reflection). See ADR-0002.
+        if getattr(state, "pending_reproduction", False):
+            return {GDB_DEBUG}
         if state.pending_reflection:
             return {RECORD_REFLECTION}
         if ValidationMixin._ready_poc_paths(state):
@@ -654,6 +662,8 @@ class ValidationMixin:
                     *READ_ONLY_TOOLS,
                     "FindSymbols", "CallsiteSearch",
                     BASH,
+                    GDB_DEBUG,
+                    RUN,
                     WRITE,
                     SUBMIT_POC,
                     RECORD_HYPOTHESIS,
@@ -667,6 +677,8 @@ class ValidationMixin:
             if current_mode == "post_submit_miss":
                 return {
                     BASH,
+                    GDB_DEBUG,
+                    RUN,
                     WRITE,
                     APPEND,
                     INSERT,
@@ -680,6 +692,8 @@ class ValidationMixin:
             *READ_ONLY_TOOLS,
             WRITE,
             BASH,
+            GDB_DEBUG,
+            RUN,
             RECORD_HYPOTHESIS,
             RECORD_REFLECTION,
             RECORD_CHAIN_NODE,
@@ -709,6 +723,8 @@ class ValidationMixin:
             GREP,
             GLOB,
             BASH,
+            GDB_DEBUG,
+            RUN,
             WRITE,
             APPEND,
             INSERT,
@@ -730,6 +746,10 @@ class ValidationMixin:
         if advanced_context:
             names.update(EVIDENCE_TOOLS)
         names.add(RECORD_SINK_CANDIDATE)
+        desc_analysis = getattr(state, "description_analysis", None)
+        desc_status = str(getattr(desc_analysis, "status", "") or "pending")
+        if state.current_phase in {"ingestion", "exploration", "investigation"} and desc_status in {"", "pending", "recorded"}:
+            names.add("analyze_description")
         if state.current_phase in {"ingestion", "exploration", "investigation"}:
             names.add("discover_sink_navigation_leads")
         if getattr(state, "active_sink_candidate_id", ""):
@@ -751,6 +771,8 @@ class ValidationMixin:
         }
 
     def _should_filter_to_candidate_tools(self, state: CyberGymState) -> bool:
+        if getattr(state, "pending_reproduction", False):
+            return True
         if state.pending_reflection:
             return True
         if ValidationMixin._ready_poc_paths(state):

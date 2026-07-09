@@ -211,17 +211,6 @@ def _generate_sink_candidates(state: CyberGymState) -> None:
                 ))
                 seen.add(sym)
 
-    # 3. symbols_mentioned that look like function identifiers
-    for sym in (state.symbols_mentioned or [])[:8]:
-        if sym not in seen and re.match(r'^[a-z_][a-z0-9_]*$', sym):
-            state.sink_candidates.append(SinkCandidate(
-                function=sym, confidence=0.3,
-                status="provisional", source="description_symbol",
-                metadata={"requires_review": True, "description_derived": True},
-                evidence="Extracted symbol from description"
-            ))
-            seen.add(sym)
-
     if state.sink_candidates:
         import hashlib
         for candidate in state.sink_candidates:

@@ -39,12 +39,15 @@ CORPUS_INSPECT = "CorpusInspect"
 # ---------------------------------------------------------------------------
 
 SUBMIT_POC = "submit_poc"
+GDB_DEBUG = "gdb_debug"
+RUN = "run"
 RECORD_HYPOTHESIS = "record_hypothesis"
 RECORD_ATTEMPT = "record_attempt"
 RECORD_REFLECTION = "record_reflection"
 RECORD_CHAIN_NODE = "record_chain_node"
 RECORD_GATE = "record_gate"
 RECORD_SINK_CANDIDATE = "record_sink_candidate"
+SET_CRASH_TYPE = "set_crash_type"
 SWITCH_PHASE = "switch_phase"
 ANALYZE_SINK_CANDIDATE = "analyze_sink_candidate"
 ANALYSIS_QUERY_TOOLS = frozenset({
@@ -53,6 +56,7 @@ ANALYSIS_QUERY_TOOLS = frozenset({
     "index_repository", "find_callers", "find_paths_to_target", "summarize_function",
     "extract_constraints", "trace_value", "get_path_details", "explain_path",
     "resolve_callsite_candidates", "get_analysis_result",
+    "reachable_functions_from_entry",
 })
 
 # ---------------------------------------------------------------------------
@@ -83,6 +87,7 @@ TRACKING_TOOLS = frozenset({
     RECORD_CHAIN_NODE,
     RECORD_GATE,
     RECORD_SINK_CANDIDATE,
+    SET_CRASH_TYPE,
     SWITCH_PHASE,
 })
 

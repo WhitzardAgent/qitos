@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "offline_dataset": {
+    "tasks": 1507,
+    "tasks_json_sha256": "9cea452cc1e1a3703e0f60c2dfc8642430aab9f50433f976581509de58c7048f",
+    "error_files": 1507,
+    "error_glob": "data/**/error.txt",
+    "runtime_use_forbidden": true
+  },
+  "project_split": {
+    "algorithm": "sha256(project_name)[:8] modulo 100",
+    "train_range": "0-59",
+    "dev_range": "60-79",
+    "test_range": "80-99",
+    "train_tasks": 647,
+    "dev_tasks": 476,
+    "test_tasks": 384,
+    "train_projects": 95,
+    "dev_projects": 53,
+    "test_projects": 40
+  },
+  "remote_exploration_manifest": {
+    "path": "scripts/v7_exp_vague_100.txt",
+    "tasks": 100,
+    "sha256": "01febfdd3accd8efd4e8bd53835250ffc80bee455e065c6afe8b1f24b9c303ba"
+  },
+  "v12_observed_baseline": {
+    "traces": 83,
+    "completed": 61,
+    "crashes": 46,
+    "completed_crash_rate": 0.754098,
+    "sink_evaluated": 82,
+    "sink_covered": 34,
+    "sink_coverage": 0.414634,
+    "submitted_no_trigger_timeouts": 14
+  },
+  "release_gates": {
+    "minimum_exact_sink_recall_at_5": 0.60,
+    "target_exact_sink_recall_at_5": [0.68, 0.76],
+    "target_crash_path_recall_at_5": [0.80, 0.88],
+    "target_completed_crash_rate": [0.81, 0.84]
+  }
+}

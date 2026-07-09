@@ -937,6 +937,89 @@ def render_submit_poc(payload: Dict[str, Any]) -> str:
     return "\n".join(result_parts)
 
 
+def render_gdb_debug(payload: Dict[str, Any]) -> str:
+    """Render gdb_debug tool output.
+
+    High-value: which binary/PoC, the gdb commands run, exit signal, a crash
+    summary if the output looks like a sanitizer/segfault trace, and the raw gdb
+    output (already tail-truncated by the tool).
+    """
+    poc_path = str(payload.get("poc_path") or "")
+    binary = str(payload.get("binary_path") or "")
+    rc = payload.get("returncode")
+    commands = payload.get("commands") or []
+    output = str(payload.get("output") or "")
+    input_mode = str(payload.get("input_mode") or "")
+    timed_out = payload.get("timed_out")
+
+    result_parts = [_call_header("gdb_debug", poc_path=poc_path, binary=binary)]
+
+    meta = []
+    if commands:
+        meta.append("cmds: " + ", ".join(str(c) for c in commands))
+    if input_mode:
+        meta.append(f"input={input_mode}")
+    ld = str(payload.get("ld_library_path") or "")
+    if ld:
+        meta.append(f"libs={ld}")
+    if rc is not None:
+        meta.append(f"gdb_exit={rc}")
+    if timed_out:
+        meta.append("TIMED OUT")
+    if meta:
+        result_parts.append("  " + " | ".join(meta))
+
+    crash = _crash_summary(output)
+    if crash:
+        result_parts.append(f"  {crash}")
+
+    if payload.get("commands_stripped"):
+        result_parts.append(
+            "  (fuzzing disabled: run/`set args` overrides were stripped — only your single PoC runs)"
+        )
+    result_parts.append("  NOTE: diagnostic only — submit_poc remains the verdict.")
+
+    if output.strip():
+        result_parts.append(output)
+    if payload.get("output_truncated"):
+        result_parts.append("  --- output truncated (head dropped) ---")
+
+    return "\n".join(result_parts)
+
+
+def render_run(payload: Dict[str, Any]) -> str:
+    """Render the `run` tool output: crash verdict + exit code + program output."""
+    poc_path = str(payload.get("poc_path") or "")
+    binary = str(payload.get("binary_path") or "")
+    rc = payload.get("returncode")
+    output = str(payload.get("output") or "")
+    ld = str(payload.get("ld_library_path") or "")
+
+    result_parts = [_call_header("run", poc_path=poc_path, binary=binary)]
+    if payload.get("crashed"):
+        verdict = "CRASHED"
+    elif payload.get("timed_out"):
+        verdict = "TIMED OUT"
+    else:
+        verdict = "no crash (exit 0)"
+    meta = [verdict]
+    if rc is not None:
+        meta.append(f"exit={rc}")
+    if ld:
+        meta.append(f"libs={ld}")
+    result_parts.append("  " + " | ".join(meta))
+
+    crash = _crash_summary(output)
+    if crash:
+        result_parts.append(f"  {crash}")
+    result_parts.append("  NOTE: diagnostic only — submit_poc remains the verdict.")
+    if output.strip():
+        result_parts.append(output)
+    if payload.get("output_truncated"):
+        result_parts.append("  --- output truncated (head dropped) ---")
+    return "\n".join(result_parts)
+
+
 def render_record_chain_node(payload: Dict[str, Any]) -> str:
     """Render record_chain_node tool output."""
     parts = [_call_header("record_chain_node")]
@@ -983,6 +1066,8 @@ _RENDERERS = {
     "WRITE": render_WRITE,
     "BASH": render_BASH,
     "submit_poc": render_submit_poc,
+    "gdb_debug": render_gdb_debug,
+    "run": render_run,
     "record_chain_node": render_record_chain_node,
     "record_gate": render_record_gate,
 }

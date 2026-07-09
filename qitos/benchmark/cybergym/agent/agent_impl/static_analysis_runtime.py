@@ -7,8 +7,41 @@ import json
 from pathlib import Path
 from typing import Any, Dict
 
-from ..analysis.models import SinkCandidateInput
+from ..analysis.models import SinkCandidateInput, stable_value
 from ..analysis.service import AnalysisService
+from .constants import CYBERGYM_VNEXT_ANALYSIS
+
+
+def stable_description_analysis(state: Any) -> dict[str, Any] | None:
+    analysis = getattr(state, "description_analysis", None)
+    if analysis is None:
+        return None
+    return stable_value(analysis)
+
+
+def stable_verified_refs(state: Any) -> list[dict[str, Any]]:
+    return [
+        stable_value(item)
+        for item in list(getattr(state, "verified_search_refs", []) or [])
+    ]
+
+
+def stable_selected_harness(state: Any) -> dict[str, Any] | None:
+    resolution = getattr(state, "harness_resolution", None)
+    selected_id = str(getattr(resolution, "selected_candidate_id", "") or "")
+    selected = next(
+        (item for item in list(getattr(state, "harness_candidates", []) or [])
+         if getattr(item, "candidate_id", "") == selected_id),
+        None,
+    )
+    if selected is None:
+        return None
+    consumption = getattr(getattr(state, "input_format", None), "consumption", None)
+    payload = stable_value(selected)
+    if isinstance(payload, dict) and consumption is not None:
+        payload["consumption"] = stable_value(consumption)
+        payload["first_hops"] = list(getattr(consumption, "first_hops", []) or [])
+    return payload
 
 
 class StaticAnalysisRuntimeMixin:
@@ -63,9 +96,27 @@ class StaticAnalysisRuntimeMixin:
             if key in report
         }
         try:
+            crash_type = str(getattr(state, "crash_type", "") or "") or str((getattr(state, "metadata", None) or {}).get("crash_type_prior", "") or "")
+            if CYBERGYM_VNEXT_ANALYSIS:
+                ranked = service.discover_ranked_vulnerability_paths(
+                    description_analysis=stable_description_analysis(state),
+                    verified_refs=stable_verified_refs(state),
+                    harness=stable_selected_harness(state),
+                    crash_type=crash_type,
+                    top_k=5,
+                )
+                self._sync_ranked_paths(state, ranked)
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).error(
+                "discover_ranked_vulnerability_paths failed: %s: %s", type(exc).__name__, exc, exc_info=True,
+            )
+        try:
+            crash_type = str(getattr(state, "crash_type", "") or "") or str((getattr(state, "metadata", None) or {}).get("crash_type_prior", "") or "")
             search = service.discover_sink_navigation_leads(
                 limit=5,
                 description=str(getattr(state, "vulnerability_description", "") or ""),
+                crash_type=crash_type,
             )
             self._sync_navigation_leads(state, search)
         except Exception as exc:
@@ -73,9 +124,94 @@ class StaticAnalysisRuntimeMixin:
             logging.getLogger(__name__).error(
                 "discover_sink_navigation_leads failed: %s: %s", type(exc).__name__, exc, exc_info=True,
             )
+        try:
+            crash_type = str(getattr(state, "crash_type", "") or "") or str((getattr(state, "metadata", None) or {}).get("crash_type_prior", "") or "")
+            reachable = service.reachable_functions_from_entry(
+                limit=20,
+                crash_type=crash_type,
+                description=str(getattr(state, "vulnerability_description", "") or ""),
+            )
+            if reachable.get("status") == "success":
+                state.reachable_function_candidates = reachable.get("candidates", [])
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).error(
+                "reachable_functions_from_entry failed: %s: %s", type(exc).__name__, exc, exc_info=True,
+            )
 
     @staticmethod
-    def _sync_navigation_leads(state: Any, result: dict[str, Any]) -> None:
+    def _sync_ranked_paths(state: Any, result: dict[str, Any]) -> None:
+        if result.get("status") not in {"success", "partial"}:
+            return
+        from ..state import SinkCandidate
+
+        paths = list(result.get("paths") or [])[:5]
+        state.ranked_vulnerability_paths = paths
+        state.ranked_paths_graph_id = str(result.get("graph_id") or "")
+        state.ranked_paths_status = str(result.get("status") or "")
+        existing_by_id = {item.candidate_id: item for item in list(getattr(state, "sink_candidates", []) or [])}
+        current_ids: set[str] = set()
+        for path in paths:
+            endpoint = path.get("endpoint") or {}
+            candidate_id = "ranked_" + str(path.get("path_id") or "")
+            current_ids.add(candidate_id)
+            function = str(endpoint.get("function") or "").rsplit("::", 1)[-1]
+            file_name = str(endpoint.get("file") or "")
+            line = int(endpoint.get("line") or 0)
+            role = str(path.get("endpoint_role") or "path_anchor")
+            family = str(path.get("candidate_family") or "unknown")
+            score = min(.49, max(.10, float(path.get("score") or 0.0)))
+            evidence = (
+                f"ranked vulnerability path {path.get('path_id')} role={role} "
+                f"family={family} score={path.get('score')}"
+            )
+            metadata = {
+                "requires_review": True,
+                "ranked_path_id": path.get("path_id"),
+                "candidate_role": role,
+                "candidate_family": family,
+                "score_breakdown": path.get("score_breakdown", {}),
+                "generation_channels": path.get("generation_channels", []),
+                "next_read": path.get("next_read", {}),
+            }
+            candidate = existing_by_id.get(candidate_id)
+            if candidate is None:
+                state.sink_candidates.append(SinkCandidate(
+                    function=function,
+                    location=f"{file_name}:{line}" if file_name else "",
+                    confidence=score,
+                    evidence=evidence,
+                    status="candidate",
+                    source="static_navigation",
+                    candidate_id=candidate_id,
+                    file=file_name,
+                    line=line,
+                    category=family,
+                    reason=evidence,
+                    metadata=metadata,
+                ))
+            elif candidate.source == "static_navigation":
+                candidate.confidence = score
+                candidate.evidence = candidate.reason = evidence
+                candidate.file = file_name
+                candidate.line = line
+                candidate.location = f"{file_name}:{line}" if file_name else ""
+                candidate.category = family
+                candidate.metadata = {**dict(candidate.metadata or {}), **metadata}
+        state.sink_candidates = [
+            item for item in state.sink_candidates
+            if item.source != "static_navigation"
+            or item.candidate_id in current_ids
+            or not str(item.candidate_id).startswith("ranked_")
+        ]
+        revisions = dict((getattr(state, "metadata", {}) or {}).get("_vnext_context_revisions") or {})
+        revisions["path"] = int(revisions.get("path", 0) or 0) + 1
+        state.metadata["_vnext_context_revisions"] = revisions
+
+    @staticmethod
+    def _sync_navigation_leads(
+        state: Any, result: dict[str, Any], *, allow_auto_promote: bool = True,
+    ) -> None:
         """Keep Top-3 provisional leads in State without satisfying checkpoints."""
         if result.get("status") not in {"success", "partial"}:
             return
@@ -105,6 +241,10 @@ class StaticAnalysisRuntimeMixin:
             if candidate.function.lower() not in lead_functions:
                 candidate.metadata["description_anchor_stale"] = True
                 candidate.confidence = min(candidate.confidence, .29)
+                # Properly eliminate stale candidates so they don't appear in
+                # navigation_candidates() or the Likely section
+                candidate.status = "eliminated"
+                candidate.metadata["requires_review"] = False
             else:
                 candidate.metadata["graph_validated"] = True
                 candidate.confidence = min(candidate.confidence, .49)
@@ -136,6 +276,129 @@ class StaticAnalysisRuntimeMixin:
                 candidate.confidence = min(.69, float(lead.get("score") or 0))
                 candidate.evidence = candidate.reason = evidence
                 candidate.metadata.update(metadata)
+
+        # ── Auto-promote: guarantee every trace has an active sink ──
+        # If no confirmed sink exists yet, promote the top navigation lead
+        # (skipping entry-point functions) so the formulation phase has a target.
+        if allow_auto_promote and leads and not state.confirmed_sink_candidates():
+            from ..analysis.vuln_patterns import is_entry_point_function
+            for lead in leads:
+                top_func = str(lead.get("function") or "").strip()
+                top_score = float(lead.get("score") or 0)
+                top_lead_id = str(lead.get("lead_id") or "")
+                if not top_func or is_entry_point_function(top_func) or top_score < 0.3:
+                    continue
+                # Find the provisional candidate created above and promote it
+                for candidate in state.sink_candidates:
+                    if candidate.candidate_id == top_lead_id:
+                        candidate.source = "model_candidate"
+                        candidate.status = "candidate"
+                        candidate.metadata = dict(candidate.metadata or {})
+                        candidate.metadata["requires_review"] = False
+                        candidate.metadata["reviewed"] = True
+                        candidate.metadata["auto_promoted"] = True
+                        candidate.metadata["confirmed_via"] = "auto_promotion"
+                        break
+                else:
+                    continue  # Candidate not found, try next lead
+                # Update active sink
+                state.active_sink_id = state._primary_sink_id()
+                state.active_sink_candidate_id = top_lead_id
+                state.analysis_status = "TARGET_PROPOSED"
+                state.metadata["_pending_sink_analysis"] = top_lead_id
+                break  # Promoted one, done
+
+    @staticmethod
+    def _description_navigation_text(analysis: Any) -> str:
+        fields = (
+            "vuln_type", "access_mode", "memory_region", "mechanism_tags",
+            "described_operations", "described_state_transitions", "numeric_facts",
+            "suspect_functions", "suspect_files", "suspect_modules", "suspect_params",
+            "trigger_conditions", "search_hints",
+        )
+        parts: list[str] = []
+        for name in fields:
+            value = getattr(analysis, name, "")
+            if isinstance(value, list):
+                parts.extend(str(item) for item in value[:12] if str(item).strip())
+            elif str(value or "").strip():
+                parts.append(str(value))
+        return " ".join(parts)[:4000]
+
+    def _refresh_description_analysis(self, state: Any) -> None:
+        """Verify newly recorded description priors and refresh navigation once."""
+        metadata = getattr(state, "metadata", {}) or {}
+        if not metadata.get("_description_analysis_dirty"):
+            return
+        service = self._analysis_service(state)
+        if service is None:
+            metadata["_description_analysis_refresh_error"] = "analysis service unavailable"
+            return
+        analysis = getattr(state, "description_analysis", None)
+        try:
+            result = service.verify_description_references(analysis, limit_per_hint=5)
+        except Exception as exc:
+            metadata["_description_analysis_refresh_error"] = f"{type(exc).__name__}: {str(exc)[:180]}"
+            return
+
+        from ..state import VerifiedCodeRef
+
+        step = int(getattr(state, "current_step", 0) or 0)
+        prior_created = {
+            str(getattr(item, "ref_id", "") or ""): int(getattr(item, "created_step", step) or step)
+            for item in list(getattr(state, "verified_search_refs", []) or [])
+        }
+        refs: list[VerifiedCodeRef] = []
+        for item in list(result.get("refs") or [])[:24]:
+            values = dict(item)
+            ref_id = str(values.get("ref_id") or "")
+            values["created_step"] = prior_created.get(ref_id, step)
+            values["last_relevant_step"] = step
+            refs.append(VerifiedCodeRef(**values))
+        state.verified_search_refs = refs
+        state.unresolved_search_hints = [
+            str(item) for item in list(result.get("unresolved_hints") or [])[:24]
+        ]
+        analysis.status = "partial" if result.get("status") == "partial" else "verified"
+        analysis.last_relevant_step = step
+        metadata.pop("_description_analysis_dirty", None)
+        metadata.pop("_description_analysis_refresh_error", None)
+        metadata["_description_reference_gaps"] = list(result.get("gaps") or [])[:4]
+        revisions = dict(metadata.get("_vnext_context_revisions") or {})
+        revisions["description"] = int(revisions.get("description", 0) or 0) + 1
+        metadata["_vnext_context_revisions"] = revisions
+
+        description = self._description_navigation_text(analysis)
+        focus_ids = [item.symbol_id for item in refs if item.symbol_id]
+        crash_type = str(getattr(analysis, "crash_type_hint", "") or metadata.get("crash_type_prior", ""))
+        try:
+            search = service.discover_sink_navigation_leads(
+                limit=5, description=description,
+                focus_symbol_ids=focus_ids, crash_type=crash_type,
+            )
+            self._sync_navigation_leads(state, search, allow_auto_promote=False)
+        except Exception as exc:
+            metadata["_description_navigation_error"] = f"{type(exc).__name__}: {str(exc)[:180]}"
+        try:
+            if CYBERGYM_VNEXT_ANALYSIS:
+                ranked = service.discover_ranked_vulnerability_paths(
+                    description_analysis=stable_description_analysis(state),
+                    verified_refs=stable_verified_refs(state),
+                    harness=stable_selected_harness(state),
+                    crash_type=crash_type,
+                    top_k=5,
+                )
+                self._sync_ranked_paths(state, ranked)
+        except Exception as exc:
+            metadata["_description_ranked_path_error"] = f"{type(exc).__name__}: {str(exc)[:180]}"
+        try:
+            reachable = service.reachable_functions_from_entry(
+                limit=20, crash_type=crash_type, description=description,
+            )
+            if reachable.get("status") == "success":
+                state.reachable_function_candidates = reachable.get("candidates", [])
+        except Exception as exc:
+            metadata["_description_reachability_error"] = f"{type(exc).__name__}: {str(exc)[:180]}"
 
     @staticmethod
     def _validate_description_symbols(state: Any, content: str, service: AnalysisService) -> None:
@@ -199,10 +462,12 @@ class StaticAnalysisRuntimeMixin:
         state.latest_read_analysis_fingerprint = fingerprint
         state.analysis_graph_id = service.graph_id or getattr(state, "analysis_graph_id", "")
         state.analysis_index_status = service.index_status
+        crash_type = str(getattr(state, "crash_type", "") or "") or str((getattr(state, "metadata", None) or {}).get("crash_type_prior", "") or "")
         navigation = service.discover_sink_navigation_leads(
             limit=5,
             description=str(getattr(state, "vulnerability_description", "") or ""),
             focus_symbol_ids=[str(item.get("symbol_id") or "") for item in result.get("focus", [])],
+            crash_type=crash_type,
         )
         self._sync_navigation_leads(state, navigation)
 
@@ -290,6 +555,11 @@ class StaticAnalysisRuntimeMixin:
             state.latest_brief_id = str(result.get("brief_id") or "")
             state.active_sink_candidate_id = candidate_id
             state.open_analysis_unresolved_ids = [str(x.get("id") or x.get("reason") or "") for x in state.latest_sink_analysis_brief.get("unresolved", [])]
+            state.active_input_mappings = list(state.latest_sink_analysis_brief.get("input_mappings") or [])[:8]
+            if state.active_input_mappings:
+                revisions = dict(state.metadata.get("_vnext_context_revisions") or {})
+                revisions["mapping"] = int(revisions.get("mapping", 0) or 0) + 1
+                state.metadata["_vnext_context_revisions"] = revisions
             paths = state.latest_sink_analysis_brief.get("candidate_paths", [])
             state.selected_analysis_path_id = str(paths[0].get("path_id") or "") if paths else ""
             state.analysis_status = "BRIEF_AVAILABLE"
@@ -449,13 +719,43 @@ class StaticAnalysisRuntimeMixin:
         """Convert typed recipe requirements without text classification."""
         brief = dict(getattr(state, "latest_sink_analysis_brief", {}) or {})
         requirements = brief.get("requirements") or brief.get("key_constraints") or []
-        if not requirements:
+        mappings = list(brief.get("input_mappings") or [])
+        state.active_input_mappings = mappings[:8]
+        if not requirements and not mappings:
             return
         existing_formulas = {
             (s.get("normalized_formula", ""), s.get("path_id", ""))
             for s in (getattr(state, "suggested_constraints", []) or [])
         }
         suggestions = list(getattr(state, "suggested_constraints", []) or [])
+        for mapping in mappings[:6]:
+            if mapping.get("status") == "unresolved":
+                continue
+            mapping_id = str(mapping.get("mapping_id") or "")
+            expr = f"{mapping.get('sink_argument')} <- input[{mapping.get('offset_expression') or '?'}]"
+            path_id = str(getattr(state, "selected_analysis_path_id", "") or "")
+            dedup_key = (expr, path_id)
+            if dedup_key in existing_formulas:
+                continue
+            suggestions.append({
+                "requirement_id": "req_" + mapping_id,
+                "gate_type": "value_gate",
+                "description": f"Input mapping: {expr}",
+                "required_condition": expr,
+                "normalized_formula": expr,
+                "safe_formula": "",
+                "violation_formula": "",
+                "input_mapping": mapping_id,
+                "polarity": "satisfy",
+                "origin": "input_mapping",
+                "source_span": (mapping.get("evidence") or [{}])[0] if mapping.get("evidence") else {},
+                "node_function": "",
+                "role": "dataflow",
+                "path_id": path_id,
+                "confidence": "high" if float(mapping.get("confidence", 0) or 0) >= .8 else "medium",
+                "analysis_status": mapping.get("status", "inferred"),
+            })
+            existing_formulas.add(dedup_key)
         for c in requirements[:12]:
             expr = str(c.get("expression", "")).strip()
             if not expr:
@@ -519,28 +819,41 @@ class StaticAnalysisRuntimeMixin:
 
     @staticmethod
     def _inject_static_analysis_brief(state: Any, prepared: str) -> str:
-        additions: list[str] = []
+        """Inject static analysis data into state for V13 section renderers.
+
+        Instead of appending orphaned Markdown sections after the V13 brief,
+        this method writes analysis data into state.metadata so that the V13
+        section renderers (Current Assessment, Required Conditions, Vulnerability
+        Path, Next Action) can consume it. Nothing is appended as an orphan
+        XML/Markdown block.
+        """
+        meta = getattr(state, "metadata", {}) or {}
+
+        # 1. Static index status — metadata only, never model-facing XML.
         graph_id = str(getattr(state, "analysis_graph_id", "") or "")
         index_status = str(getattr(state, "analysis_index_status", "NO_INDEX") or "NO_INDEX")
         coverage = dict(getattr(state, "analysis_index_coverage", {}) or {})
         index_fp = hashlib.sha256(json.dumps({"graph": graph_id, "status": index_status, "coverage": coverage}, sort_keys=True).encode()).hexdigest()
         if graph_id and index_fp != getattr(state, "injected_index_fingerprint", ""):
-            additions.append(
-                f'<static_index_status graph_id="{graph_id}" status="{index_status}">\n'
-                f'files={coverage.get("files_indexed", 0)}/{coverage.get("files_total", 0)} '
-                f'functions={coverage.get("functions", 0)} callsites={coverage.get("callsites", 0)}\n'
-                '</static_index_status>'
-            )
+            meta["_static_index_summary"] = {
+                "graph_id": graph_id,
+                "status": index_status,
+                "files_indexed": coverage.get("files_indexed", 0),
+                "files_total": coverage.get("files_total", 0),
+                "functions": coverage.get("functions", 0),
+                "callsites": coverage.get("callsites", 0),
+            }
             state.injected_index_fingerprint = index_fp
 
+        # 2. Sink search brief — compatibility fingerprint only. Ranked paths
+        #    and provisional SinkCandidate records are the model-facing source.
         search = dict(getattr(state, "latest_sink_search_brief", {}) or {})
         search_fp = str(getattr(state, "sink_search_fingerprint", "") or "")
         if search and search_fp and search_fp != getattr(state, "injected_sink_search_fingerprint", ""):
-            payload = str(search.get("context_payload") or "").strip()
-            if payload:
-                additions.append(payload)
             state.injected_sink_search_fingerprint = search_fp
 
+        # 3. Analysis brief — store rendered sections in state.metadata for
+        #    V13 Required Conditions and Vulnerability Path to consume.
         brief = dict(getattr(state, "latest_sink_analysis_brief", {}) or {})
         if brief:
             brief_fp = hashlib.sha256(json.dumps({
@@ -548,75 +861,60 @@ class StaticAnalysisRuntimeMixin:
                 "paths": brief.get("candidate_paths"), "gaps": brief.get("gaps"),
             }, sort_keys=True, default=str).encode()).hexdigest()
             if brief_fp != getattr(state, "injected_brief_fingerprint", ""):
-                payload = str(brief.get("context_payload") or "").strip()
-                if payload:
-                    additions.append(payload)
+                from .ir_renderer import IRRenderer
+                sections = IRRenderer.render_brief_sections(brief)
+                if sections:
+                    meta["_analysis_brief_sections"] = sections
                 state.injected_brief_fingerprint = brief_fp
 
+        # 4. Code index context — store in state.metadata for V13 Next Action
+        #    to reference when generating recommended READ targets.
         read_result = dict(getattr(state, "latest_read_analysis", {}) or {})
         read_fp = str(read_result.get("fingerprint") or "")
         if read_fp and read_fp != getattr(state, "injected_read_analysis_fingerprint", ""):
-            if read_result.get("kind") == "static_analysis_delta":
-                lines = [f'<static_analysis_delta path_id="{read_result.get("path_id", "")}">']
-                for key in ("added", "revised", "invalidated"):
-                    values = read_result.get(key) or []
-                    if values:
-                        lines.append(f"{key}:")
-                        lines.extend(f"- {value}" for value in values[:3])
-                lines.append("</static_analysis_delta>")
-            else:
-                focus = read_result.get("focus") or []
-                lines = ["<code_index_context>"]
-                if focus:
-                    item = focus[0]
-                    lines.append(f'focus={item.get("function")} @{item.get("file")}:{item.get("start_line")}-{item.get("end_line")}')
-                lines.append(f'reachable_from_fuzz_entry={str(bool(read_result.get("reachable_from_entry"))).lower()}')
-                if read_result.get("direct_callers"):
-                    lines.append("callers=" + ", ".join(read_result["direct_callers"][:3]))
-                callee_risks = read_result.get("callee_risks") or []
-                if callee_risks:
-                    callee_strs = []
-                    has_risky = False
-                    has_leaf = False
-                    for cr in callee_risks[:6]:
-                        name = cr.get("name", "?")
-                        sub = cr.get("sub_callees", -1)
-                        if sub == 0:
-                            depth_tag = "(leaf)"
-                            has_leaf = True
-                        elif sub > 0:
-                            depth_tag = f"({sub} callees)"
-                        else:
-                            depth_tag = ""
-                        if cr.get("risk") == "risky":
-                            callee_strs.append(f"⚠{name}{depth_tag}")
-                            has_risky = True
-                        else:
-                            callee_strs.append(f"{name}{depth_tag}")
-                    lines.append("callees=" + ", ".join(callee_strs))
-                    if has_risky or has_leaf:
-                        hint = "[HINT: ⚠ callees are common crash sites."
-                        if has_leaf:
-                            hint += " (leaf) callees have no sub-calls — they are the deepest functions and most likely the actual crash point."
-                        else:
-                            hint += " If the focus function is a sink candidate, check if a ⚠ callee is the actual leaf-level crash point."
-                        hint += "]"
-                        lines.append(hint)
-                elif read_result.get("relevant_callees"):
-                    lines.append("callees=" + ", ".join(read_result["relevant_callees"][:3]))
-                for guard in (read_result.get("notable_guards") or [])[:3]:
-                    lines.append(f"guard={guard}")
-                for signal in (read_result.get("risk_signals") or [])[:3]:
-                    lines.append(f'risk={signal.get("kind")}: {signal.get("expression", "")[:180]}')
-                controlled = read_result.get("input_controlled_parameters") or {}
-                if controlled:
-                    lines.append("input_control=" + "; ".join(f"{name}({', '.join(values)})" for name, values in list(controlled.items())[:3]))
-                if read_result.get("focus_role"):
-                    lines.append("focus_role=" + str(read_result["focus_role"]))
-                for lead in (read_result.get("navigation_leads") or [])[:2]:
-                    next_read = lead.get("next_read") or {}
-                    lines.append(f'next_read={lead.get("function")} @{next_read.get("path")} offset={next_read.get("offset")} limit={next_read.get("limit")} because={lead.get("why_inspect")}')
-                lines.append("</code_index_context>")
-            additions.append("\n".join(lines))
+            # Store compact code context for V13 renderers
+            focus = read_result.get("focus") or []
+            ctx_lines = []
+            if focus:
+                item = focus[0]
+                ctx_lines.append(f"- Focus: `{item.get('function')}` @{item.get('file')}:{item.get('start_line')}-{item.get('end_line')}")
+            ctx_lines.append(f"- Reachable from fuzz entry: {str(bool(read_result.get('reachable_from_entry'))).lower()}")
+            callee_risks = read_result.get("callee_risks") or []
+            if callee_risks:
+                callee_parts = []
+                for cr in callee_risks[:6]:
+                    name = cr.get("name", "?")
+                    sub = cr.get("sub_callees", -1)
+                    tag = "(leaf)" if sub == 0 else f"({sub} callees)" if sub > 0 else ""
+                    risk_tag = " [RISKY]" if cr.get("risk") == "risky" else ""
+                    callee_parts.append(f"`{name}`{tag}{risk_tag}")
+                ctx_lines.append(f"- Callees: {', '.join(callee_parts)}")
+            elif read_result.get("relevant_callees"):
+                ctx_lines.append(f"- Callees: {', '.join(read_result['relevant_callees'][:3])}")
+            for guard in (read_result.get("notable_guards") or [])[:3]:
+                ctx_lines.append(f"- Guard: {guard}")
+            for signal in (read_result.get("risk_signals") or [])[:3]:
+                ctx_lines.append(f"- Risk: {signal.get('kind')}: {signal.get('expression', '')[:120]}")
+            controlled = read_result.get("input_controlled_parameters") or {}
+            if controlled:
+                ctx_lines.append(f"- Input controlled: {'; '.join(f'{name}({', '.join(values)})' for name, values in list(controlled.items())[:3])}")
+            if read_result.get("focus_role"):
+                ctx_lines.append(f"- Role: {read_result['focus_role']}")
+            # Store navigation leads from read analysis for Next Action
+            nav_leads = []
+            for lead in (read_result.get("navigation_leads") or [])[:2]:
+                next_read = lead.get("next_read") or {}
+                nav_leads.append({
+                    "function": lead.get("function", ""),
+                    "path": next_read.get("path", ""),
+                    "offset": next_read.get("offset", ""),
+                    "limit": next_read.get("limit", ""),
+                    "why": lead.get("why_inspect", ""),
+                })
+            if ctx_lines:
+                meta["_code_context_markdown"] = "\n".join(ctx_lines)
+            if nav_leads:
+                meta["_code_context_nav_leads"] = nav_leads
             state.injected_read_analysis_fingerprint = read_fp
-        return prepared if not additions else prepared + "\n\n" + "\n\n".join(additions)
+
+        return prepared

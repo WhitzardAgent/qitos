@@ -108,3 +108,18 @@ class TaskAnalysisMixin:
             if match:
                 return match.group(1)
         return ""
+
+    @staticmethod
+    def _crash_type_to_bug_type(crash_type: str) -> str:
+        """Map a normalized crash_type to bug_type. Returns '' if no mapping."""
+        mapping = {
+            "heap-buffer-overflow": "buffer_overflow",
+            "stack-buffer-overflow": "buffer_overflow",
+            "global-buffer-overflow": "buffer_overflow",
+            "heap-use-after-free": "use_after_free",
+            "heap-double-free": "use_after_free",
+            "use-of-uninitialized-value": "uninitialized_value",
+            "index-out-of-bounds": "buffer_overflow",
+            "segv": "null_pointer_dereference",
+        }
+        return mapping.get(crash_type.strip().lower().replace(" ", "-"), "")

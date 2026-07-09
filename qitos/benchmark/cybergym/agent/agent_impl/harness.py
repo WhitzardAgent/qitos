@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import hashlib
 import re as _re
 import shlex
 from pathlib import Path
@@ -387,7 +388,8 @@ class HarnessMixin:
         This is a best-effort initial model — it gets confirmed later when
         source code reveals the entry function (e.g., LLVMFuzzerTestOneInput).
         """
-        from ..state import InputFormatModel
+        from ..state import HarnessConsumptionEvidence, HarnessConsumptionModel, InputFormatModel
+        from .harness_analyzer import analyze_harness_consumption
 
         fmt = InputFormatModel()
         desc_lower = state.vulnerability_description.lower()
@@ -504,6 +506,62 @@ class HarnessMixin:
             fmt.field_confidence["entry_point"] = (
                 1.0 if resolution.status == "reachability_verified" else 0.75
             )
+
+            repo_root = Path(str(state.repo_dir or state.workspace_root or ""))
+            source_file = repo_root / selected.source_path
+            cache_key = ""
+            try:
+                digest = hashlib.blake2s(source_file.read_bytes(), digest_size=8).hexdigest()
+                cache_key = f"{selected.candidate_id}|{selected.source_path}|{selected.entry_function}|{digest}"
+            except OSError:
+                cache_key = f"{selected.candidate_id}|{selected.source_path}|{selected.entry_function}|missing"
+
+            prior_key = str(getattr(state, "metadata", {}).get("_harness_consumption_cache_key", "") or "")
+            prior_model = getattr(getattr(state, "input_format", None), "consumption", None)
+            if cache_key and cache_key == prior_key and prior_model is not None:
+                fmt.consumption = prior_model
+            else:
+                try:
+                    fmt.consumption = analyze_harness_consumption(
+                        repo_root,
+                        selected.source_path,
+                        selected.entry_function,
+                    )
+                except Exception as exc:
+                    fmt.consumption = HarnessConsumptionModel(
+                        status="partial",
+                        evidence=[
+                            HarnessConsumptionEvidence(
+                                "gap",
+                                f"harness analyzer failed: {type(exc).__name__}: {str(exc)[:120]}",
+                                selected.source_path,
+                                selected.line,
+                                .0,
+                            )
+                        ],
+                    )
+                if cache_key:
+                    state.metadata["_harness_consumption_cache_key"] = cache_key
+                    revisions = dict(state.metadata.get("_vnext_context_revisions") or {})
+                    revisions["harness"] = int(revisions.get("harness", 0) or 0) + 1
+                    state.metadata["_vnext_context_revisions"] = revisions
+
+            if fmt.consumption.first_hops:
+                selected.direct_calls = list(fmt.consumption.first_hops)
+            if fmt.consumption.magic_bytes:
+                fmt.magic_bytes = fmt.consumption.magic_bytes
+                fmt.field_provenance["magic_bytes"] = "selected harness source"
+                fmt.field_confidence["magic_bytes"] = 0.98
+            if "temp_file" in (fmt.consumption.patterns or []):
+                fmt.input_path = "temp_file"
+                fmt.field_provenance["input_path"] = "selected harness source"
+                fmt.field_confidence["input_path"] = 0.95
+            elif fmt.consumption.pattern in {"direct_data_size", "struct_split", "magic_header", "multi_api"}:
+                fmt.input_path = "buffer"
+                fmt.field_provenance["input_path"] = "selected harness source"
+                fmt.field_confidence["input_path"] = max(
+                    fmt.field_confidence.get("input_path", 0.0), 0.94,
+                )
         fmt.confirmed = getattr(resolution, "status", "") == "reachability_verified"
 
         return fmt

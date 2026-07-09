@@ -114,6 +114,10 @@ SUGGESTED_CONSTRAINTS_ENABLED = os.environ.get(
 # Default ON — tree-sitter extractor produces useful suggestions.
 # Set to 0 to disable if quality regresses.
 
+CYBERGYM_VNEXT_ANALYSIS = os.environ.get(
+    "CYBERGYM_VNEXT_ANALYSIS", "1"
+).strip().lower() not in {"0", "false", "no", "off"}
+
 # ---------------------------------------------------------------------------
 # Sanitisation
 # ---------------------------------------------------------------------------

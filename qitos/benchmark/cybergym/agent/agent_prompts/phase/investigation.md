@@ -8,7 +8,7 @@
 - Use `summarize_function(symbol_id)` to quickly understand a function without reading its full source.
 - Use `trace_value(function, line, expression)` to trace where a parameter value originates across functions.
 - Use `extract_constraints(function, target_line)` to get static-analysis constraints at a callsite.
-- Use `explain_path(path_id)` for a readable summary of an interprocedural path (path IDs appear in Suggested Constraints and Interprocedural Analysis).
+- Use `explain_path(path_id)` for a readable summary of an interprocedural path (path IDs appear in Required Conditions and Vulnerability Path).
 - Use `CorpusInspect` + `HexView`/`StructProbe` to understand the input format from real seed files.
 - Converge on one concrete trigger hypothesis.
 - Once you can explain the trigger shape, move to candidate construction immediately.

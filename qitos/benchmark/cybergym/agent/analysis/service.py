@@ -19,7 +19,8 @@ from typing import Any
 from .indexer import index_file, index_file_isolated, resolve_calls, scan_files
 from .models import (
     AnalysisPath, CallCandidate, CallEdge, CallSite, ConstraintIR, DefinitionIR,
-    ExprIR, FunctionSummary, FunctionSymbol, Parameter, RiskSignal, SinkAnalysisBrief,
+    ExprIR, FunctionSummary, FunctionSymbol, Parameter, RankedVulnerabilityPath,
+    RiskSignal, SinkAnalysisBrief,
     SinkCandidateInput, SourceLocation, stable_value,
 )
 
@@ -591,6 +592,154 @@ class AnalysisService:
         self._ensure(); q = query.strip()
         return [s for s in self.symbols if s.symbol_id == q or s.qualified_name == q or s.name == q or s.symbol_id.endswith(q)]
 
+    @staticmethod
+    def _description_value(analysis: Any, name: str) -> list[str]:
+        value = analysis.get(name, []) if isinstance(analysis, dict) else getattr(analysis, name, [])
+        return [str(item).strip() for item in (value or []) if str(item).strip()]
+
+    @staticmethod
+    def _identifier_key(value: str) -> str:
+        return "".join(re.findall(r"[a-z0-9]+", str(value or "").casefold()))
+
+    def verify_description_references(
+        self, analysis: Any, limit_per_hint: int = 5,
+    ) -> dict[str, Any]:
+        """Resolve description priors to bounded source-backed references.
+
+        This method deliberately does not create or promote sink candidates.
+        A hit means only that a description-derived string exists in indexed
+        source; reachability and vulnerability semantics are separate evidence.
+        """
+        self._ensure(self.config.automatic_timeout_seconds)
+        per_hint = max(1, min(int(limit_per_hint or 5), 10))
+        function_queries = self._description_value(analysis, "suspect_functions")
+        hint_queries = self._description_value(analysis, "search_hints")
+        file_queries = self._description_value(analysis, "suspect_files")
+        all_queries = list(dict.fromkeys(function_queries + hint_queries + file_queries))[:48]
+        indexed_files = sorted(set(self.file_hashes) | {item.file for item in self.symbols})
+
+        refs: list[dict[str, Any]] = []
+        unresolved: list[str] = []
+        seen: set[tuple[str, str, str, int]] = set()
+        truncated = False
+
+        def add_ref(
+            query: str, *, symbol: FunctionSymbol | None = None, file: str = "",
+            line: int = 0, match_kind: str, confidence: float, evidence: str,
+        ) -> bool:
+            nonlocal truncated
+            target_file = symbol.file if symbol is not None else file
+            symbol_id = symbol.symbol_id if symbol is not None else ""
+            key = (query.casefold(), symbol_id, target_file, int(line or 0))
+            if key in seen:
+                return False
+            query_count = sum(item[0] == query.casefold() for item in seen)
+            if query_count >= per_hint:
+                truncated = True
+                return False
+            seen.add(key)
+            material = f"{self.graph_id}|{query}|{symbol_id}|{target_file}|{line}|{match_kind}"
+            refs.append({
+                "query": query,
+                "ref_id": "ref_" + hashlib.blake2s(material.encode(), digest_size=7).hexdigest(),
+                "symbol_id": symbol_id,
+                "symbol": symbol.qualified_name if symbol is not None else "",
+                "file": target_file,
+                "line": int(line or (symbol.body_location.start_line if symbol is not None else 0)),
+                "match_kind": match_kind,
+                "confidence": round(float(confidence), 3),
+                "evidence": evidence[:180],
+                "status": "verified",
+            })
+            return True
+
+        # Function-like priors: exact qualified/name, then casefold, then a
+        # conservative normalized-identifier equality (never substring).
+        for query in list(dict.fromkeys(function_queries + hint_queries)):
+            before = len(refs)
+            exact = [s for s in self.symbols if query in {s.name, s.qualified_name, s.symbol_id}]
+            for symbol in exact:
+                add_ref(query, symbol=symbol, line=symbol.body_location.start_line,
+                        match_kind="exact_symbol", confidence=.96,
+                        evidence="exact indexed symbol match")
+            if len(refs) == before:
+                folded = query.casefold()
+                matches = [s for s in self.symbols if folded in {s.name.casefold(), s.qualified_name.casefold()}]
+                for symbol in matches:
+                    add_ref(query, symbol=symbol, line=symbol.body_location.start_line,
+                            match_kind="casefold_symbol", confidence=.90,
+                            evidence="case-insensitive indexed symbol match")
+            if len(refs) == before:
+                normalized = self._identifier_key(query)
+                if len(normalized) >= 3:
+                    matches = [s for s in self.symbols if normalized in {
+                        self._identifier_key(s.name), self._identifier_key(s.qualified_name)
+                    }]
+                    for symbol in matches:
+                        add_ref(query, symbol=symbol, line=symbol.body_location.start_line,
+                                match_kind="normalized_symbol", confidence=.84,
+                                evidence="token-normalized indexed symbol match")
+
+        # File priors: exact relative path, basename, or path suffix.
+        for query in file_queries:
+            before = len(refs)
+            normalized = query.replace("\\", "/").lstrip("./").casefold()
+            for rel in indexed_files:
+                rel_folded = rel.casefold()
+                if rel_folded == normalized or Path(rel).name.casefold() == Path(normalized).name.casefold() or rel_folded.endswith("/" + normalized):
+                    add_ref(query, file=rel, line=1, match_kind="file", confidence=.92,
+                            evidence="indexed file path match")
+            if len(refs) == before:
+                unresolved.append(query)
+
+        # Literal fallback searches only indexed source files and only after a
+        # symbol/file miss. re.escape makes model-provided metacharacters data.
+        resolved_queries = {item["query"].casefold() for item in refs}
+        literal_queries = [q for q in all_queries if q.casefold() not in resolved_queries]
+        source_suffixes = {".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx", ".m", ".mm"}
+        for query in literal_queries:
+            if len(query) < 2:
+                unresolved.append(query)
+                continue
+            pattern = re.compile(re.escape(query), re.IGNORECASE)
+            matched = False
+            for rel in indexed_files:
+                if Path(rel).suffix.lower() not in source_suffixes:
+                    continue
+                path = self.root / rel
+                try:
+                    if not path.is_file() or path.stat().st_size > self.config.max_file_size_mb * 1024 * 1024:
+                        continue
+                    text = path.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    continue
+                for match in pattern.finditer(text):
+                    line = text.count("\n", 0, match.start()) + 1
+                    matched |= add_ref(query, file=rel, line=line, match_kind="literal_text",
+                                       confidence=.68, evidence="bounded literal text match in indexed source")
+                    if sum(item[0] == query.casefold() for item in seen) >= per_hint:
+                        break
+                if sum(item[0] == query.casefold() for item in seen) >= per_hint:
+                    break
+            if not matched:
+                unresolved.append(query)
+
+        unresolved = list(dict.fromkeys(item for item in unresolved if item.casefold() not in {
+            ref["query"].casefold() for ref in refs
+        }))[:24]
+        partial = self.index_status != "GRAPH_READY"
+        gaps = []
+        if partial and unresolved:
+            gaps.append("index is partial; unresolved hints are unknown, not evidence of absence")
+        return {
+            "status": "partial" if partial else "success",
+            "refs": refs[:24],
+            "unresolved_hints": unresolved,
+            "truncated": truncated or len(refs) > 24,
+            "gaps": gaps,
+            "graph_id": self.graph_id,
+        }
+
     def summarize_function(self, symbol_id: str) -> dict[str, Any]:
         matches = self._symbols_matching(symbol_id)
         if not matches: return {"status": "not_found", "symbol": symbol_id}
@@ -834,7 +983,7 @@ class AnalysisService:
             "reason": item.get("reason") or item.get("description") or "source control dependence",
         }
 
-    def _navigation_rows(self, *, description: str = "", focus_symbol_ids: set[str] | None = None) -> list[dict[str, Any]]:
+    def _navigation_rows(self, *, description: str = "", focus_symbol_ids: set[str] | None = None, crash_type: str = "") -> list[dict[str, Any]]:
         by_id = {item.symbol_id: item for item in self.symbols}
         summaries = {item.function_id: item for item in self.summaries}
         incoming: dict[str, list[CallEdge]] = {}
@@ -872,6 +1021,17 @@ class AnalysisService:
             name_tokens = set(re.findall(r"[a-z0-9]+", symbol.qualified_name.lower().replace("_", " ")))
             description_score = .05 if description_tokens & name_tokens else 0.0
             penalty = 0.0
+            # Depth-aware scoring: shallow functions (depth<=1) are dispatchers,
+            # deep-but-reachable functions (depth>=4) are likely actual crash sites.
+            call_depth = len(self.entry_paths.get(symbol.symbol_id, [])) if reachable else 0
+            depth_score = 0.0
+            if reachable and self.entrypoints:
+                if call_depth <= 1:
+                    penalty += .12  # Too shallow — dispatcher, not crash site
+                elif call_depth >= 4:
+                    depth_score = .08  # Deep + reachable = likely crash function
+                elif call_depth >= 3:
+                    depth_score = .04  # Moderately deep
             if not reachable and self.entrypoints:
                 penalty += .15
             if summary.unresolved_nodes:
@@ -901,7 +1061,25 @@ class AnalysisService:
                         parameter_dependencies=sorted(controlled),
                     )
                     signals.append(vuln_signal)
-            score = max(0.0, min(1.0, input_score + risk_score + reach_score + direct_score + utility_score + focus_score + description_score - penalty))
+            # Entry-point functions are never the actual crash sink
+            from .vuln_patterns import is_entry_point_function
+            if is_entry_point_function(leaf_name):
+                penalty += 0.30
+            # Crash-type-aware keyword boosts
+            crash_type_boost = 0.0
+            if crash_type:
+                from .vuln_patterns import CRASH_TYPE_SINK_HINTS
+                hints = CRASH_TYPE_SINK_HINTS.get(crash_type)
+                if hints:
+                    name_lower = symbol.name.lower()
+                    for kw, boost in hints["keywords"].items():
+                        if kw in name_lower:
+                            crash_type_boost += boost
+                    cat_boosts = hints.get("vuln_categories", {})
+                    for sig in signals:
+                        if sig.kind in cat_boosts:
+                            crash_type_boost += cat_boosts[sig.kind]
+            score = max(0.0, min(1.0, input_score + risk_score + reach_score + direct_score + utility_score + focus_score + description_score + depth_score + crash_type_boost - penalty))
             if score < .10:
                 continue
             if signals and signals[0].kind == "lifecycle":
@@ -943,7 +1121,9 @@ class AnalysisService:
                     "input_control": round(input_score, 3), "risk": round(risk_score, 3),
                     "reachability": round(reach_score, 3), "directness": round(direct_score, 3),
                     "utility": round(utility_score, 3), "read_focus": round(focus_score, 3),
-                    "description_prior": round(description_score, 3), "penalty": round(penalty, 3),
+                    "description_prior": round(description_score, 3), "depth_prior": round(depth_score, 3),
+                    "crash_type_prior": round(crash_type_boost, 3),
+                    "penalty": round(penalty, 3), "call_depth": call_depth,
                 },
                 "incoming": [item.caller_id for item in incoming.get(symbol.symbol_id, [])[:4]],
                 "outgoing": [item.callee_id for item in outgoing.get(symbol.symbol_id, [])[:4]],
@@ -974,11 +1154,12 @@ class AnalysisService:
     def discover_sink_navigation_leads(
         self, entrypoint: str | None = None, limit: int = 5,
         description: str = "", focus_symbol_ids: list[str] | None = None,
+        crash_type: str = "",
     ) -> dict[str, Any]:
         """Return source-backed places to inspect; never claims a true sink."""
         self._ensure(self.config.automatic_timeout_seconds)
         limit = max(1, min(int(limit or 5), 20))
-        rows = self._navigation_rows(description=description, focus_symbol_ids=set(focus_symbol_ids or []))
+        rows = self._navigation_rows(description=description, focus_symbol_ids=set(focus_symbol_ids or []), crash_type=crash_type)
         if entrypoint:
             matched = {item.symbol_id for item in self._symbols_matching(entrypoint)}
             rows = [row for row in rows if not matched or any(item in matched for item in self.entry_paths.get(row["symbol_id"], [])[:1])]
@@ -995,7 +1176,10 @@ class AnalysisService:
         material = json.dumps({"graph": self.graph_id, "entrypoint": entrypoint, "description": description, "leads": [x["lead_id"] for x in leads]}, sort_keys=True)
         brief_id = "search_" + hashlib.blake2s(material.encode(), digest_size=8).hexdigest()
         entry_names = [next((s.name for s in self.symbols if s.symbol_id == item), item) for item in self.entrypoints]
-        lines = [f'<sink_search_brief brief_id="{brief_id}">', "Static navigation leads; inspect and explicitly confirm one with record_sink_candidate."]
+        lines = [
+            f"Static navigation brief: {brief_id}",
+            "Inspect these navigation leads and explicitly confirm one with record_sink_candidate.",
+        ]
         if entry_names:
             lines.append("entries=" + ", ".join(entry_names[:3]))
         for index, lead in enumerate(leads, 1):
@@ -1006,10 +1190,9 @@ class AnalysisService:
             lines.append(f'   next_read=READ(path="{lead["file"]}", offset={lead["next_read"]["offset"]}, limit={lead["next_read"]["limit"]})')
         for warning in warnings[:2]:
             lines.append(f'warning={warning["kind"]}: {warning["function"]} — {warning["reason"]}')
-        lines.append("</sink_search_brief>")
         payload = "\n".join(lines)
         while self._estimate_tokens(payload) > self.config.automatic_token_budget and len(leads) > 1:
-            leads.pop(); lines = lines[:2 + len(leads) * 3] + ["</sink_search_brief>"]; payload = "\n".join(lines)
+            leads.pop(); lines = lines[:2 + len(leads) * 3]; payload = "\n".join(lines)
         result = {
             "status": "success" if leads else "partial", "brief_id": brief_id,
             "graph_id": self.graph_id, "entrypoints": entry_names, "leads": leads,
@@ -1018,6 +1201,422 @@ class AnalysisService:
         }
         self.store.put("sink_search_brief", brief_id, result)
         return result
+
+    @staticmethod
+    def _description_values(analysis: Any, field_name: str) -> list[str]:
+        if analysis is None:
+            return []
+        value = analysis.get(field_name, []) if isinstance(analysis, dict) else getattr(analysis, field_name, [])
+        return [str(item).strip() for item in (value or []) if str(item).strip()]
+
+    def _selected_entry_ids(self, harness: dict[str, Any] | None) -> tuple[set[str], list[dict[str, Any]]]:
+        gaps: list[dict[str, Any]] = []
+        selected_path = str((harness or {}).get("source_path") or "")
+        selected_entry = str((harness or {}).get("entry_function") or "")
+        selected_line = int((harness or {}).get("line") or 0)
+        candidates = list(self.entrypoints)
+        if selected_entry:
+            matches = [
+                item.symbol_id for item in self.symbols
+                if item.name == selected_entry
+                and (not selected_path or item.file == selected_path)
+                and (not selected_line or abs(item.body_location.start_line - selected_line) <= 3)
+            ]
+            if len(matches) == 1:
+                return {matches[0]}, gaps
+            if matches:
+                gaps.append({
+                    "id": "ambiguous_selected_harness_entry",
+                    "reason": f"{len(matches)} symbols match selected harness",
+                    "candidate_symbol_ids": matches[:8],
+                })
+                return set(matches), gaps
+            gaps.append({
+                "id": "selected_harness_entry_not_resolved",
+                "reason": f"could not resolve {selected_entry} @{selected_path}:{selected_line}",
+            })
+        if not candidates:
+            gaps.append({"id": "entrypoint_required", "reason": "no indexed fuzz entrypoint found"})
+        return set(candidates), gaps
+
+    def _path_to_endpoint(self, entry_ids: set[str], endpoint_id: str, max_depth: int) -> tuple[list[str], list[CallEdge], str, list[dict[str, Any]]]:
+        by_caller: dict[str, list[CallEdge]] = {}
+        for edge in self.edges:
+            by_caller.setdefault(edge.caller_id, []).append(edge)
+        parent: dict[str, tuple[str, CallEdge]] = {}
+        queue = [(eid, 0) for eid in entry_ids]
+        seen = set(entry_ids)
+        while queue:
+            current, depth = queue.pop(0)
+            if current == endpoint_id:
+                chain = [current]
+                edges: list[CallEdge] = []
+                while current in parent:
+                    prev, edge = parent[current]
+                    edges.append(edge)
+                    current = prev
+                    chain.append(current)
+                return list(reversed(chain)), list(reversed(edges)), "resolved", []
+            if depth >= max_depth:
+                continue
+            for edge in sorted(by_caller.get(current, []), key=lambda e: -e.confidence):
+                if edge.callee_id in seen:
+                    continue
+                seen.add(edge.callee_id)
+                parent[edge.callee_id] = (current, edge)
+                queue.append((edge.callee_id, depth + 1))
+        if endpoint_id in self.entry_paths:
+            chain = list(self.entry_paths.get(endpoint_id) or [])
+            if chain and chain[0] in entry_ids:
+                return chain, [], "partial", [{
+                    "id": "path_edges_not_reconstructed",
+                    "reason": "entry_paths had symbols but callsite edges were incomplete",
+                }]
+        return [endpoint_id], [], "partial", [{
+            "id": "entry_to_endpoint_path_unresolved",
+            "reason": f"no path within depth {max_depth}; unresolved/indirect calls may exist",
+        }]
+
+    def discover_ranked_vulnerability_paths(
+        self,
+        *,
+        description_analysis: dict[str, Any] | None = None,
+        verified_refs: list[dict[str, Any]] | None = None,
+        harness: dict[str, Any] | None = None,
+        crash_type: str = "",
+        fast_depth: int = 8,
+        deep_depth: int = 24,
+        top_k: int = 5,
+    ) -> dict[str, Any]:
+        """Return diversified, source-backed candidate vulnerability paths."""
+        self._ensure(self.config.automatic_timeout_seconds)
+        top_k = max(1, min(int(top_k or 5), 10))
+        from .vulnerability_knowledge import (
+            classify_endpoint_role,
+            endpoint_semantics,
+            score_risk_signal,
+        )
+        from .vuln_patterns import is_entry_point_function
+
+        semantics = endpoint_semantics(crash_type)
+        entry_ids, entry_gaps = self._selected_entry_ids(harness)
+        verified_refs = list(verified_refs or [])
+        ref_symbol_ids = {
+            str(item.get("symbol_id") or "") for item in verified_refs
+            if str(item.get("symbol_id") or "")
+        }
+        ref_files = {
+            str(item.get("file") or "") for item in verified_refs
+            if str(item.get("file") or "")
+        }
+        ref_by_symbol: dict[str, list[str]] = {}
+        for item in verified_refs:
+            sid = str(item.get("symbol_id") or "")
+            if sid:
+                ref_by_symbol.setdefault(sid, []).append(str(item.get("ref_id") or ""))
+        suspect_funcs = {value.casefold() for value in self._description_values(description_analysis, "suspect_functions")}
+        suspect_files = {value.casefold() for value in self._description_values(description_analysis, "suspect_files")}
+        harness_first_hops = {
+            str(item).casefold()
+            for item in ((harness or {}).get("first_hops") or [])
+            if str(item).strip()
+        }
+
+        rows = self._navigation_rows(
+            description=" ".join(
+                self._description_values(description_analysis, "suspect_functions")
+                + self._description_values(description_analysis, "search_hints")
+            ),
+            focus_symbol_ids=ref_symbol_ids,
+            crash_type=crash_type,
+        )[:50]
+        by_id = {item.symbol_id: item for item in self.symbols}
+        summaries = {item.function_id: item for item in self.summaries}
+        pool: list[RankedVulnerabilityPath] = []
+        endpoint_seen: set[str] = set()
+
+        for row in rows:
+            endpoint_id = str(row.get("symbol_id") or "")
+            symbol = by_id.get(endpoint_id)
+            if symbol is None or is_entry_point_function(symbol.name):
+                continue
+            summary = summaries.get(endpoint_id)
+            risk_signals = list(summary.risk_signals if summary else [])
+            if not risk_signals:
+                fake_signal = RiskSignal(
+                    signal_id=f"path_anchor_{hashlib.blake2s(endpoint_id.encode(), digest_size=5).hexdigest()}",
+                    kind="path_anchor",
+                    expression=symbol.name,
+                    location=symbol.body_location,
+                    severity=.25,
+                    reason="reachable or description-focused path anchor",
+                )
+                risk_signals = [fake_signal]
+            best_signal = max(risk_signals, key=lambda sig: score_risk_signal(sig, semantics))
+            risk_semantics = 0.30 * score_risk_signal(best_signal, semantics)
+
+            chain, path_edges, status, gaps = self._path_to_endpoint(entry_ids, endpoint_id, fast_depth)
+            if status != "resolved" and entry_ids:
+                deep_chain, deep_edges, deep_status, deep_gaps = self._path_to_endpoint(entry_ids, endpoint_id, deep_depth)
+                if deep_status == "resolved":
+                    chain, path_edges, status, gaps = deep_chain, deep_edges, deep_status, []
+                else:
+                    gaps.extend(deep_gaps)
+            reachability = 0.25 if status == "resolved" and chain and chain[0] in entry_ids else 0.10 if chain else 0.0
+            unresolved_edges = sum(1 for edge in path_edges if edge.confidence < .50)
+            input_control = 0.20 if self.input_control.get(endpoint_id) else 0.0
+            if risk_signals and any(set(sig.parameter_dependencies) & set(self.input_control.get(endpoint_id, {})) for sig in risk_signals):
+                input_control = 0.20
+            elif self.input_control.get(endpoint_id):
+                input_control = 0.12
+            desc_match = 0.0
+            if endpoint_id in ref_symbol_ids or symbol.file in ref_files:
+                desc_match = 0.15
+            elif symbol.name.casefold() in suspect_funcs or symbol.file.casefold() in suspect_files:
+                desc_match = 0.04
+            harness_alignment = 0.0
+            if harness_first_hops:
+                chain_names = {by_id[sid].name.casefold() for sid in chain if sid in by_id}
+                if chain_names & harness_first_hops:
+                    harness_alignment = 0.10
+            elif chain and chain[0] in entry_ids:
+                harness_alignment = 0.04
+            penalty = 0.0
+            if unresolved_edges:
+                penalty += min(.12, .04 * unresolved_edges)
+            if status != "resolved":
+                penalty += .10
+            if len(chain) <= 2 and risk_semantics < .20:
+                penalty += .06
+            if not risk_signals or best_signal.kind == "path_anchor":
+                penalty += .05
+            total = max(0.0, min(1.0, reachability + risk_semantics + input_control + desc_match + harness_alignment - penalty))
+            role = classify_endpoint_role(best_signal, semantics)
+            if endpoint_id in endpoint_seen and len(pool) >= 50:
+                continue
+            endpoint_seen.add(endpoint_id)
+            callsite_material = [edge.callsite_id for edge in path_edges]
+            path_material = json.dumps([self.graph_id, chain, callsite_material, best_signal.signal_id], sort_keys=True)
+            path_id = "vpath_" + hashlib.blake2s(path_material.encode(), digest_size=8).hexdigest()
+            chain_items = []
+            for sid in chain:
+                sym = by_id.get(sid)
+                if sym:
+                    chain_items.append({
+                        "symbol_id": sid, "function": sym.qualified_name,
+                        "file": sym.file, "line": sym.body_location.start_line,
+                    })
+            channels = ["entry_forward"]
+            if endpoint_id in ref_symbol_ids or symbol.file in ref_files:
+                channels.append("verified_description")
+            if risk_semantics > .15:
+                channels.append("risk_backward")
+            if harness_alignment:
+                channels.append("harness_first_hop")
+            pool.append(RankedVulnerabilityPath(
+                path_id=path_id,
+                symbol_ids=chain,
+                endpoint_symbol_id=endpoint_id,
+                endpoint_signal_id=best_signal.signal_id,
+                endpoint_role=role,
+                candidate_family=semantics.family,
+                score=round(total, 4),
+                score_breakdown={
+                    "reach": round(reachability, 3),
+                    "risk": round(risk_semantics, 3),
+                    "input": round(input_control, 3),
+                    "desc": round(desc_match, 3),
+                    "harness": round(harness_alignment, 3),
+                    "penalty": round(penalty, 3),
+                },
+                resolution_status=status,
+                description_ref_ids=ref_by_symbol.get(endpoint_id, []),
+                graph_distance_hint=max(0, len(chain) - 1) if chain else None,
+                gaps=gaps,
+                generation_channels=channels,
+                chain=chain_items,
+                endpoint={
+                    "symbol_id": endpoint_id,
+                    "function": symbol.qualified_name,
+                    "file": symbol.file,
+                    "line": symbol.body_location.start_line,
+                    "signal": {
+                        "signal_id": best_signal.signal_id,
+                        "kind": best_signal.kind,
+                        "expression": best_signal.expression,
+                        "severity": best_signal.severity,
+                        "reason": best_signal.reason,
+                    },
+                },
+                next_read={
+                    "path": symbol.file,
+                    "offset": max(0, symbol.body_location.start_line - 20),
+                    "limit": min(180, max(80, symbol.body_location.end_line - symbol.body_location.start_line + 40)),
+                },
+            ))
+
+        pool.sort(key=lambda item: (-item.score, item.endpoint["file"], item.endpoint["line"]))
+        selected: list[RankedVulnerabilityPath] = []
+        file_counts: dict[str, int] = {}
+        role_counts: dict[str, int] = {}
+        for item in pool:
+            file_name = str(item.endpoint.get("file", ""))
+            if file_counts.get(file_name, 0) >= 2:
+                continue
+            if role_counts.get(item.endpoint_role, 0) >= 3:
+                continue
+            selected.append(item)
+            file_counts[file_name] = file_counts.get(file_name, 0) + 1
+            role_counts[item.endpoint_role] = role_counts.get(item.endpoint_role, 0) + 1
+            if len(selected) >= top_k:
+                break
+        if len(selected) < top_k:
+            for item in pool:
+                if item not in selected:
+                    selected.append(item)
+                    if len(selected) >= top_k:
+                        break
+        result = {
+            "status": "success" if selected else "partial",
+            "paths": [stable_value(item) for item in selected],
+            "endpoint_count": len(pool),
+            "truncated": len(pool) > len(selected),
+            "gaps": entry_gaps,
+            "graph_id": self.graph_id,
+            "crash_type": crash_type,
+            "candidate_pool_size": min(len(pool), 50),
+        }
+        fingerprint = hashlib.sha256(json.dumps({
+            "graph": self.graph_id,
+            "paths": [item.path_id for item in selected],
+            "pool": len(pool),
+        }, sort_keys=True).encode()).hexdigest()
+        self.store.put("ranked_vulnerability_paths", fingerprint, result)
+        return result
+
+    def reachable_functions_from_entry(
+        self, entrypoint: str = "", limit: int = 20,
+        crash_type: str = "", description: str = "",
+    ) -> dict[str, Any]:
+        """Collect all functions reachable from a fuzz driver entry, filtered
+        and ranked by vulnerability relevance.
+
+        Implements the expert method's Layer 2+3: starting from the fuzz driver,
+        enumerate reachable functions via BFS, then score by crash-type keywords,
+        dangerous operations, description match, and call depth.
+        """
+        self._ensure(self.config.automatic_timeout_seconds)
+        limit = max(1, min(int(limit or 20), 50))
+
+        # 1. Find entry symbol(s)
+        entry_ids: set[str] = set()
+        if entrypoint:
+            entry_ids = {item.symbol_id for item in self._symbols_matching(entrypoint)}
+        if not entry_ids:
+            entry_ids = set(self.entrypoints)
+
+        if not entry_ids:
+            return {"status": "error", "reason": "no entrypoint found"}
+
+        # 2. BFS through call graph, depth up to 8
+        adjacency: dict[str, set[str]] = {}
+        for edge in self.edges:
+            adjacency.setdefault(edge.caller_id, set()).add(edge.callee_id)
+
+        reachable: dict[str, int] = {}  # symbol_id -> depth
+        queue = [(eid, 0) for eid in entry_ids]
+        for eid, d in queue:
+            if eid in reachable or d > 8:
+                continue
+            reachable[eid] = d
+            for callee in adjacency.get(eid, set()):
+                if callee not in reachable:
+                    queue.append((callee, d + 1))
+
+        # 3. Score each reachable function
+        from .vuln_patterns import CRASH_TYPE_SINK_HINTS, is_entry_point_function
+        hints = CRASH_TYPE_SINK_HINTS.get(crash_type, {})
+        crash_keywords = hints.get("keywords", {})
+        crash_categories = hints.get("vuln_categories", {})
+        desc_tokens = {
+            token.lower() for token in re.findall(r"[A-Za-z_][A-Za-z0-9_]{2,}", description)
+            if token.lower() not in {"the", "and", "with", "from", "that", "this", "function"}
+        }
+
+        by_id = {item.symbol_id: item for item in self.symbols}
+        summaries = {item.function_id: item for item in self.summaries}
+
+        candidates: list[dict[str, Any]] = []
+        for sid, depth in reachable.items():
+            symbol = by_id.get(sid)
+            if symbol is None:
+                continue
+            if is_entry_point_function(symbol.name):
+                continue
+
+            summary = summaries.get(sid)
+            signals = sorted(summary.risk_signals, key=lambda item: -item.severity) if summary else []
+
+            score = 0.0
+            # Crash-type keyword match
+            name_lower = symbol.name.lower()
+            for kw, boost in crash_keywords.items():
+                if kw in name_lower:
+                    score += boost
+            # Crash-type category match
+            for sig in signals:
+                if sig.kind in crash_categories:
+                    score += crash_categories[sig.kind]
+            # Dangerous operation signal
+            if signals:
+                score += 0.10 * min(signals[0].severity, 1.0)
+            # Description token match
+            name_tokens = set(re.findall(r"[a-z0-9]+", symbol.qualified_name.lower().replace("_", " ")))
+            if desc_tokens & name_tokens:
+                score += 0.08
+            # Depth bonus: deeper = more likely crash site
+            if depth >= 4:
+                score += 0.08
+            elif depth >= 3:
+                score += 0.04
+            # Entry depth penalty
+            if depth <= 1:
+                score -= 0.10
+
+            if score < 0.05:
+                continue
+
+            candidates.append({
+                "symbol_id": sid,
+                "function": symbol.qualified_name,
+                "file": symbol.file,
+                "line": symbol.body_location.start_line,
+                "score": round(score, 4),
+                "depth": depth,
+                "risk_signals": [{"kind": s.kind, "expression": s.expression, "severity": s.severity} for s in signals[:2]],
+                "why": signals[0].reason if signals else f"reachable at depth {depth}",
+            })
+
+        # 4. Sort by score, diversify across files
+        candidates.sort(key=lambda c: -c["score"])
+        # Deduplicate by file: max 3 per file
+        file_count: dict[str, int] = {}
+        diversified: list[dict[str, Any]] = []
+        for c in candidates:
+            fc = file_count.get(c["file"], 0)
+            if fc < 3:
+                diversified.append(c)
+                file_count[c["file"]] = fc + 1
+            if len(diversified) >= limit:
+                break
+
+        return {
+            "status": "success",
+            "entry_functions": [by_id[eid].name for eid in entry_ids if eid in by_id],
+            "total_reachable": len(reachable),
+            "candidates": diversified,
+            "crash_type": crash_type,
+        }
 
     def get_sink_search_brief(self, brief_id: str) -> dict[str, Any]:
         return self.store.get("sink_search_brief", brief_id) or {"status": "not_found", "brief_id": brief_id}
@@ -1213,6 +1812,17 @@ class AnalysisService:
         if not provenance and paths:
             for name, value in paths[0].get("edges", [])[-1].get("bindings", {}).items() if paths[0].get("edges") else []:
                 provenance.append({"sink_argument": name, "expression": _expr(value).render(), "status": "partially_resolved", "trace": []})
+        from .input_mapping import derive_input_mapping
+        input_mappings = []
+        for item in provenance[:4]:
+            mapping = derive_input_mapping(
+                item,
+                harness=candidate.metadata.get("harness") if isinstance(candidate.metadata, dict) else None,
+                sink_argument=str(item.get("sink_argument") or ""),
+                sink_expression=str(item.get("expression") or ""),
+                constraint="",
+            )
+            input_mappings.append(stable_value(mapping))
         requirements: list[dict[str, Any]] = []
         for path in paths:
             for order, item in enumerate(path.get("constraints", []), start=1):
@@ -1275,7 +1885,27 @@ class AnalysisService:
                     "diagnosis": "description_anchor", "score": current_row["score"],
                     "why_inspect": "description match is stronger than code-path evidence; validate before selecting",
                 })
-        full = {"candidate": stable_value(candidate), "target": stable_value(target) if target else {}, "target_resolution": target_resolution, "paths": paths, "requirements": requirements, "trigger_conditions": trigger_conditions, "sink_dataflow": provenance, "gaps": gaps, "alternatives": alternatives}
+        mapped_requirements = []
+        for mapping in input_mappings:
+            if mapping.get("status") in {"confirmed", "inferred"}:
+                req = {
+                    "requirement_id": "req_" + mapping["mapping_id"],
+                    "path_id": paths[0]["path_id"] if paths else "sink_local",
+                    "order": len(requirements) + len(mapped_requirements) + 1,
+                    "role": "dataflow",
+                    "gate_type": "value_gate",
+                    "expression": f"{mapping.get('sink_argument')} <- {mapping.get('source_parameter')}[{mapping.get('offset_expression') or '?'}]",
+                    "safe_formula": "",
+                    "violation_formula": "",
+                    "input_mapping": mapping["mapping_id"],
+                    "status": mapping.get("status", "inferred"),
+                    "confidence": mapping.get("confidence", .5),
+                    "origin": stable_value(mapping.get("evidence", [{}])[0]) if mapping.get("evidence") else {},
+                    "reason": "sink argument has source-backed input byte mapping",
+                }
+                mapped_requirements.append(req)
+        requirements.extend(mapped_requirements)
+        full = {"candidate": stable_value(candidate), "target": stable_value(target) if target else {}, "target_resolution": target_resolution, "paths": paths, "requirements": requirements, "trigger_conditions": trigger_conditions, "sink_dataflow": provenance, "input_mappings": input_mappings, "gaps": gaps, "alternatives": alternatives}
         self.store.put("analysis", full_id, full)
         def _path_brief(p):
             chain_details = []
@@ -1290,6 +1920,13 @@ class AnalysisService:
         suggested = ([{"tool": "get_path_details", "arguments": {"path_id": paths[0]["path_id"]}}] if paths else []) + ([{"tool": "trace_value", "arguments": {"function": target.symbol_id, "line": candidate.line, "expression": provenance[0]["expression"]}}] if target and provenance else [])
         if alternatives:
             suggested.append({"tool": "expand_candidate_neighborhood", "arguments": {"candidate_id": candidate.candidate_id, "depth": 3, "limit": 10}})
+        brief_mappings = [
+            item for item in input_mappings
+            if item.get("status") in {"confirmed", "inferred"}
+        ][:4] + [
+            item for item in input_mappings
+            if item.get("status") == "unresolved" and item.get("gaps")
+        ][:2]
         brief = SinkAnalysisBrief(
             brief_id, candidate.candidate_id,
             "success" if target and (paths or trigger_conditions) and not gaps else "partial",
@@ -1301,6 +1938,7 @@ class AnalysisService:
             requirements=requirements[:self.config.automatic_max_constraints],
             trigger_conditions=trigger_conditions[:6], gaps=gaps[:3],
             alternatives=alternatives[:5],
+            input_mappings=brief_mappings,
         )
         brief.context_payload = self.render_brief(brief)
         while self._estimate_tokens(brief.context_payload) > self.config.automatic_token_budget and (brief.requirements or brief.gaps or brief.alternatives or len(brief.candidate_paths) > 1):
@@ -1320,12 +1958,22 @@ class AnalysisService:
 
     @staticmethod
     def render_brief(brief: SinkAnalysisBrief) -> str:
-        lines = [f'<static_analysis_result type="poc_recipe" brief_id="{html.escape(brief.brief_id)}" candidate_id="{html.escape(brief.candidate_id)}" status="{brief.status}">', "<target>", html.escape(str(brief.target_resolution or brief.target)), "</target>", "<paths>"]
-        lines.extend(html.escape(str(x)) for x in brief.candidate_paths); lines.extend(["</paths>", "<requirements>"])
-        lines.extend(html.escape(str(x)) for x in brief.requirements); lines.extend(["</requirements>", "<triggers>"])
-        lines.extend(html.escape(str(x)) for x in brief.trigger_conditions); lines.extend(["</triggers>", "<provenance>"])
-        lines.extend(html.escape(str(x)) for x in brief.argument_provenance); lines.extend(["</provenance>", "<gaps>"])
-        lines.extend(html.escape(str(x)) for x in brief.gaps); lines.extend(["</gaps>", "<alternatives>"])
-        lines.extend(html.escape(str(x)) for x in brief.alternatives); lines.extend(["</alternatives>", "<suggested_queries>"])
-        lines.extend(html.escape(str(x)) for x in brief.suggested_queries); lines.extend(["</suggested_queries>", "</static_analysis_result>"])
-        return "\n".join(lines)
+        from ..agent_impl.ir_renderer import IRRenderer
+        # Build a plain dict from the brief for the renderer
+        brief_data = {
+            "target_resolution": brief.target_resolution if brief.target_resolution else None,
+            "target": brief.target if not brief.target_resolution else None,
+            "candidate_paths": list(brief.candidate_paths or []),
+            "requirements": list(brief.requirements or []),
+            "trigger_conditions": list(brief.trigger_conditions or []),
+            "argument_provenance": list(brief.argument_provenance or []),
+            "gaps": list(brief.gaps or []),
+            "alternatives": list(brief.alternatives or []),
+            "suggested_queries": list(brief.suggested_queries or []),
+        }
+        return IRRenderer.render_brief_xml(
+            brief_data,
+            brief_id=brief.brief_id,
+            candidate_id=brief.candidate_id,
+            status=brief.status,
+        )

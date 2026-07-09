@@ -274,11 +274,11 @@ class PromptsMixin:
             if confirmed_gates:
                 constraint_lines += (
                     "\n## Pre-Construction Derivation Checklist\n"
-                    "Before writing PoC code, derive concrete values for EACH requirement in the PoC Byte Layout:\n"
+                    "Before writing PoC code, derive concrete values for EACH condition in Required Conditions:\n"
                     "1. For fixed-byte requirements: what exact bytes must appear at what offset?\n"
                     "2. For field constraints: what value triggers the vulnerability? compute the exact number\n"
                     "3. Compute: total PoC size = header bytes + field bytes + overflow data\n"
-                    "4. Verify: does the PoC satisfy every requirement listed in 'PoC Requirements'?\n"
+                    "4. Verify: does the PoC satisfy every condition in Required Conditions?\n"
                     "Write these as Python comments BEFORE the PoC code.\n"
                 )
                 # Remind about trigger-role gates in suggestions
@@ -286,7 +286,7 @@ class PromptsMixin:
                 trigger_suggestions = [s for s in suggestions if s.get("role") == "trigger"]
                 if trigger_suggestions:
                     constraint_lines += (
-                        "- TRIGGER GATES: There are trigger-role constraints in Suggested Constraints. "
+                        "- TRIGGER GATES: There are trigger-role conditions in Required Conditions. "
                         "These define what makes the vulnerability manifest at the sink. "
                         "Confirm them via record_gate before constructing the PoC.\n"
                     )

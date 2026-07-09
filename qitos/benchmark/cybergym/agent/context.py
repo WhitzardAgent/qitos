@@ -707,6 +707,65 @@ class PostCompactRestorer:
                 )
             )
 
+        # V13: Restore investigation brief summary after compaction
+        # This ensures the agent doesn't lose its confirmed understanding
+        # of the vulnerability, sinks, and constraints.
+        if budget_remaining > 0:
+            brief_parts = []
+            # Sinks
+            confirmed_sinks = state.confirmed_sink_candidates() if hasattr(state, "confirmed_sink_candidates") else []
+            if confirmed_sinks:
+                sink_strs = [f"`{s.function}` @{s.location} (conf={s.confidence:.1f})" for s in confirmed_sinks[:3]]
+                brief_parts.append(f"Confirmed sinks: {'; '.join(sink_strs)}")
+            # Harness
+            if getattr(state, "harness_entry_confirmed", False):
+                hcs = list(getattr(state, "harness_candidates", []) or [])
+                if hcs:
+                    hc = hcs[0]
+                    brief_parts.append(f"Harness: `{hc.entry_function or 'entry'}` @{hc.source_path}:{hc.line}")
+            # Crash type
+            crash_type = str(getattr(state, "crash_type", "") or "").strip()
+            if crash_type and crash_type != "UNSET":
+                brief_parts.append(f"Crash type: {crash_type}")
+            # Gates
+            open_gates = state.open_gates() if hasattr(state, "open_gates") else []
+            if open_gates:
+                gate_strs = [f"{g.gate_type}: {g.required_condition or g.description}" for g in open_gates[:3]]
+                brief_parts.append(f"Open gates: {'; '.join(gate_strs)}")
+            # PoC attempts
+            poc_attempts = int(getattr(state, "poc_attempts", 0) or 0)
+            consecutive = int(getattr(state, "consecutive_misses", 0) or 0)
+            if poc_attempts > 0:
+                brief_parts.append(f"PoC attempts: {poc_attempts} ({consecutive} consecutive NO_TRIGGER)")
+            # Key feedback facts (crash_type, crash_location from ASAN)
+            feedback_facts = list(getattr(state, "durable_feedback_facts", []) or [])
+            if feedback_facts:
+                fact_strs = [str(f or "").strip()[:80] for f in feedback_facts[-3:]]
+                brief_parts.append(f"Feedback facts: {'; '.join(f for f in fact_strs if len(f) > 3)}")
+            # Key code facts (function signatures, buffer sizes)
+            code_facts = list(getattr(state, "durable_code_facts", []) or [])
+            if code_facts:
+                fact_strs = [str(f or "").strip()[:80] for f in code_facts[-3:]]
+                brief_parts.append(f"Code facts: {'; '.join(f for f in fact_strs if len(f) > 3)}")
+
+            if brief_parts:
+                # Force full brief regeneration on next observation
+                meta = getattr(state, "metadata", {}) or {}
+                meta.pop("_v13_last_sections", None)
+                meta.pop("_v13_last_events", None)
+                meta["_v13_last_step"] = -1  # Force full refresh
+                restored.append(
+                    HistoryMessage(
+                        role="system",
+                        content=f"[Restored context] Investigation brief: {' | '.join(brief_parts)}",
+                        step_id=0,
+                        metadata={
+                            "source": "post_compact_restore",
+                            "restored_file": "v13_brief",
+                        },
+                    )
+                )
+
         return [*compacted_messages, *restored]
 
     def _read_truncated(self, poc_path: str, state: Any) -> str:
