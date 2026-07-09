@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import importlib
+import importlib.metadata
 from typing import Any, Callable, Dict, Optional
 
 from qitos.core.spec import BenchmarkRunResult, ExperimentSpec, RunSpec
 from qitos.core.task import Task
 
 from .cybench import CyBenchAdapter, run_cybench_task
-from .cybergym import CyberGymBenchmarkAdapter, run_cybergym_task
 from .desktop import DesktopStarterAdapter, run_desktop_starter_task
 from .gaia import GaiaAdapter, run_gaia_task
 from .osworld import OSWorldBenchmarkAdapter, run_osworld_task
@@ -26,7 +26,6 @@ def normalize_benchmark_name(value: str) -> str:
         "tau-bench": "tau-bench",
         "gaia": "gaia",
         "cybench": "cybench",
-        "cybergym": "cybergym",
         "desktop": "desktop-starter",
         "desktop-starter": "desktop-starter",
         "osworld-starter": "desktop-starter",
@@ -61,24 +60,6 @@ def load_benchmark_tasks(
             run_with_subtasks=guided,
             limit=limit,
         )
-        return adapter.to_tasks(rows, split=split, limit=limit)
-    if normalized == "cybergym":
-        if root is None:
-            raise ValueError("CyberGym task loading requires root as a task id or task-id file")
-        root_value = str(root)
-        try:
-            from pathlib import Path
-
-            path = Path(root_value)
-            task_ids = (
-                [line.strip() for line in path.read_text(encoding="utf-8").splitlines()]
-                if path.exists()
-                else [root_value]
-            )
-        except OSError:
-            task_ids = [root_value]
-        adapter = CyberGymBenchmarkAdapter(difficulty=split)
-        rows = adapter.load_records(task_ids=task_ids, limit=limit)
         return adapter.to_tasks(rows, split=split, limit=limit)
     if normalized == "desktop-starter":
         adapter = DesktopStarterAdapter(dataset_path=root)
@@ -200,28 +181,6 @@ def resolve_builtin_runner(
             )
 
         return runner
-    if normalized == "cybergym" and lane in {
-        "cybergym_baseline",
-        "cybergym_smoke",
-        "baseline",
-        "smoke",
-    }:
-        def runner(*, task: Task, run_spec: RunSpec, experiment_spec: ExperimentSpec):
-            enriched = RunSpec.from_value(run_spec)
-            if not enriched.prompt_protocol:
-                enriched.prompt_protocol = "cybergym_agent_v1"
-            if not enriched.parser_name:
-                enriched.parser_name = "cybergym_agent"
-            if lane in {"cybergym_smoke", "smoke"}:
-                enriched.metadata = dict(enriched.metadata or {})
-                enriched.metadata["cybergym_smoke"] = True
-            return run_cybergym_task(
-                task=task,
-                run_spec=enriched,
-                experiment_spec=experiment_spec,
-            )
-
-        return runner
     if normalized == "osworld" and lane in {
         "osworld_baseline",
         "osworld_smoke",
@@ -244,6 +203,13 @@ def resolve_builtin_runner(
             )
 
         return runner
+    # Fallback: discover runners via entry_points (e.g. cybergym-agent registers itself)
+    try:
+        for ep in importlib.metadata.entry_points(group="qitos.benchmark.runners"):
+            if ep.name == normalized:
+                return ep.load()(strategy=strategy)
+    except Exception:
+        pass
     return None
 
 
