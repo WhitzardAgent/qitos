@@ -208,7 +208,7 @@ QitOS 当前处于 **Beta**。
 
 ## 参与贡献
 
-欢迎贡献方法模板、benchmark adapters、memory/history 工作流、qita UX 与核心框架能力。产品级 agent 应优先进入 `qitos-zoo`。开发环境、方法模板贡献、文档贡献流程见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+欢迎贡献方法模板、benchmark adapters、memory/history 工作流、qita UX 与核心框架能力。产品级 agent 应优先进入 `qitos-zoo`。开发环境、方法模板贡献、文档贡献流程详见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 ## License
 
