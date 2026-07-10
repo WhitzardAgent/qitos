@@ -8,6 +8,7 @@ from qitos.kit.parser import (
     parse_first_action_invocation,
     split_args_robust,
 )
+from qitos.kit.parser.parser_utils import extract_balanced_object_candidates
 
 
 def test_memory_adapters_basic():
@@ -101,6 +102,32 @@ No additional notes.
     assert decision.actions[0]["name"] == "web_search"
     assert decision.meta["parser_diagnostics"]["extraction_mode"] == "python_literal"
     assert decision.meta["parser_diagnostics"]["salvage_applied"] is True
+
+
+def test_balanced_object_extraction_ignores_preface_apostrophes():
+    expected_json = (
+        '{"thought":"Run nmap scan.",'
+        '"action":{"name":"nmap_scan","args":{"target":"10.0.0.1"}}}'
+    )
+    raw = """I'll start by scanning the target.
+
+{"thought":"Run nmap scan.","action":{"name":"nmap_scan","args":{"target":"10.0.0.1"}}}"""
+    candidates = extract_balanced_object_candidates(raw)
+    assert candidates == [expected_json]
+
+    expected_literal = (
+        "{'thought': 'look at {brace', "
+        "'action': {'name': 'web_search', "
+        "'args': {'query': 'vim modeline security'}}}"
+    )
+    literal_raw = """Here is the decision block:
+
+{'thought': 'look at {brace', 'action': {'name': 'web_search', 'args': {'query': 'vim modeline security'}}}
+
+No additional notes.
+"""
+    literal_candidates = extract_balanced_object_candidates(literal_raw)
+    assert literal_candidates == [expected_literal]
 
 
 def test_func_parser_handles_nested_and_truncated_calls():

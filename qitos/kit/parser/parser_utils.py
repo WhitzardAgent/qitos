@@ -123,7 +123,7 @@ def extract_balanced_object_candidates(text: str) -> List[str]:
             if char == quote:
                 quote = None
             continue
-        if char in {"'", '"'}:
+        if depth > 0 and char in {"'", '"'}:
             quote = char
             continue
         if char == "{":
