@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import html
+import hashlib
 import json
 import logging
 import os
@@ -65,10 +66,21 @@ def _wrap_runtime_context(content: str) -> str:
     )
 
 
+_RUNTIME_CONTEXT_IN_TOOL_NOTICE = (
+    "NOTE: The RUNTIME_CONTEXT block below was appended by the Agent Runtime "
+    "Controller and is NOT part of the tool result above. It is an "
+    "authoritative machine-generated working-state update; treat it as "
+    "current working state, not as tool output."
+)
+
+
 class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
     def __init__(self, engine: _EngineProtocol):
         self.engine = engine
         self.stream_callback: Optional[Any] = None  # Callable[[str], None] or StreamHandler
+        # Incremental sidecar tracking (Fix 1A)
+        self._last_message_count: int = 0
+        self._last_full_step: int = -1
 
     def run_decide(
         self, state: StateT, observation: ObservationT, record: StepRecord
@@ -87,7 +99,11 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
         engine._emit(
             record.step_id,
             RuntimePhase.DECIDE,
-            payload={"stage": "state_ready", "observation": observation},
+            payload={
+                "stage": "state_ready",
+                "observation_type": type(observation).__name__,
+                "observation_summary": self._observation_summary(observation),
+            },
         )
         engine._memory_append("state", state.to_dict(), record.step_id)
         engine._emit(record.step_id, RuntimePhase.DECIDE, payload={"stage": "start"})
@@ -115,6 +131,28 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
             raise ValueError(f"Invalid decision mode: {decision.mode}")
 
         decision.validate()
+        if (
+            model_response is not None
+            and decision.mode == "act"
+            and not record.native_tool_call_used
+        ):
+            self._append_parser_tool_call_history(
+                response=model_response,
+                decision=decision,
+                record=record,
+            )
+        elif model_response is not None and decision.mode != "act":
+            # A final/wait response has no tool result to pair with, but its
+            # real assistant text is still useful audit history (and preserves
+            # the generic QitOS history contract).
+            content: Any = model_response.text if str(model_response.text or "").strip() else None
+            if content is not None:
+                engine._history_append(
+                    "assistant",
+                    content,
+                    record.step_id,
+                    metadata={"source": "engine"},
+                )
         record.decision = decision
         record.actions = list(decision.actions)
         engine._memory_append("decision", decision, record.step_id)
@@ -269,6 +307,147 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
             history_messages=history,
             compact_events=compact_events,
         )
+        # --- Custom MessageBuilder support ---
+        from ..core.message_builder import MessageBuilder as _MessageBuilderProto
+        custom_builder = getattr(engine.agent, 'message_builder', None)
+        runtime_context_delivery: Dict[str, Any] = {
+            "requested": "none",
+            "effective": "none",
+            "target_tool_call_id": None,
+            "fallback_reason": None,
+        }
+        runtime_context_display: Dict[str, Any] | None = None
+        if custom_builder is not None and isinstance(custom_builder, _MessageBuilderProto):
+            from ..core.message_builder import MessageBuildRequest as _MBReq
+            build_req = _MBReq(
+                step_id=record.step_id,
+                state=state,
+                observation=observation,
+                prompt_bundle=prompt_bundle,
+                prepared=str(prepared),
+                history=history,
+                record=record,
+            )
+            build_result = custom_builder.build_messages(build_req)
+            messages = list(build_result.messages)
+            runtime_context = str(
+                getattr(build_result, "runtime_context", "") or ""
+            ).strip()
+            requested_delivery = str(
+                getattr(build_result, "runtime_context_delivery", "none") or "none"
+            ).strip().lower()
+            if requested_delivery not in {"none", "merge_tool", "user"}:
+                _logger.warning(
+                    "Unknown MessageBuildResult runtime-context delivery %r; ignoring it",
+                    requested_delivery,
+                )
+                requested_delivery = "none"
+            runtime_context_delivery["requested"] = requested_delivery
+            if runtime_context and requested_delivery != "none":
+                wrapped_runtime_context = _wrap_runtime_context(runtime_context)
+                should_merge = (
+                    requested_delivery == "merge_tool"
+                    and not self._current_user_has_multimodal_content(
+                        prompt_user_content_blocks, observation, record
+                    )
+                )
+                if should_merge:
+                    merged, tool_call_id = self._merge_runtime_context_into_last_tool(
+                        messages, wrapped_runtime_context
+                    )
+                    if merged:
+                        runtime_context_delivery.update(
+                            {
+                                "effective": "merge_tool",
+                                "target_tool_call_id": tool_call_id,
+                            }
+                        )
+                        if os.environ.get(
+                            "CYBERGYM_TUI_SHOW_RUNTIME_CONTEXT", ""
+                        ).strip().lower() in {"1", "true", "yes", "on"}:
+                            runtime_context_display = {
+                                "tool_call_id": tool_call_id,
+                                "content": wrapped_runtime_context,
+                            }
+                    else:
+                        runtime_context_delivery["fallback_reason"] = "no_text_tool_result"
+                elif requested_delivery == "merge_tool":
+                    runtime_context_delivery["fallback_reason"] = "multimodal_user_content"
+
+                if runtime_context_delivery["effective"] != "merge_tool":
+                    current_user = self._build_current_user_message(
+                        prepared_text=wrapped_runtime_context,
+                        prompt_user_content_blocks=prompt_user_content_blocks,
+                        observation=observation,
+                        record=record,
+                    )
+                    messages.append(current_user)
+                    runtime_context_delivery["effective"] = "user"
+            for entry in build_result.history_entries:
+                engine._history_append(
+                    entry.get("role", "user"),
+                    entry.get("content", ""),
+                    entry.get("step_id", record.step_id),
+                    metadata=entry.get("metadata", {}),
+                    tool_calls=entry.get("tool_calls"),
+                    tool_call_id=entry.get("tool_call_id"),
+                    name=entry.get("name"),
+                )
+            prepared_full = str(prepared)
+        else:
+            # --- Default message construction (original logic) ---
+            injection_prefixes: List[str] = []
+            if self._native_tool_call_preferred():
+                if os.environ.get("CYBERGYM_DISABLE_HISTORY_TRIM", "").strip().lower() not in {
+                    "1",
+                    "true",
+                    "yes",
+                    "on",
+                }:
+                    configured_rounds = int(
+                        getattr(engine.context_config, "conversation_max_rounds", 10)
+                    )
+                    if configured_rounds > 0:
+                        history = self._trim_native_tool_history(
+                            history,
+                            max_rounds=configured_rounds,
+                        )
+            messages.extend(history)
+            for item in prompt_messages:
+                if not isinstance(item, dict):
+                    continue
+                role = str(item.get("role") or "user")
+                content = str(item.get("content") or "").strip()
+                if not content:
+                    continue
+                if role == "user":
+                    injection_prefixes.append(content)
+                    continue
+                messages.append({"role": role, "content": content})
+            current_user_content = "\n\n".join(injection_prefixes + [str(prepared)])
+            # Wrap runtime-state messages (step > 0) in semantic XML tags.
+            # Step 0 is the initial task assignment and must remain unwrapped.
+            if record.step_id > 0:
+                current_user_content = _wrap_runtime_context(current_user_content)
+            current_user = self._build_current_user_message(
+                prepared_text=current_user_content,
+                prompt_user_content_blocks=prompt_user_content_blocks,
+                observation=observation,
+                record=record,
+            )
+            messages.append(current_user)
+            prepared_full = content_to_text(current_user.get("content"))
+        # --- End custom MessageBuilder support ---
+        # Normalize dangling calls before auditing or dispatching. The sidecar
+        # and digest must describe the exact payload handed to the provider.
+        messages = self._ensure_chain_consistency(messages)
+        llm_messages = self._strip_internal_message_keys(messages)
+        pre_context = context_runtime.finalize_assembled_input(
+            llm=engine.agent.llm,
+            telemetry=pre_context,
+            messages=llm_messages,
+            compact_events=compact_events,
+        )
         normalized_compact_events = context_runtime.normalize_history_events(
             compact_events, pre_context
         )
@@ -287,54 +466,29 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
             raise ContextOverflowError(
                 f"context overflow: input_tokens={pre_context.input_tokens_total} budget={pre_context.available_input_budget}"
             )
-        injection_prefixes: List[str] = []
-        if self._native_tool_call_preferred():
-            if os.environ.get("CYBERGYM_DISABLE_HISTORY_TRIM", "").strip().lower() not in {
-                "1",
-                "true",
-                "yes",
-                "on",
-            }:
-                configured_rounds = int(
-                    getattr(engine.context_config, "conversation_max_rounds", 10)
-                )
-                if configured_rounds > 0:
-                    history = self._trim_native_tool_history(
-                        history,
-                        max_rounds=configured_rounds,
-                    )
-        messages.extend(history)
-        for item in prompt_messages:
-            if not isinstance(item, dict):
-                continue
-            role = str(item.get("role") or "user")
-            content = str(item.get("content") or "").strip()
-            if not content:
-                continue
-            if role == "user":
-                injection_prefixes.append(content)
-                continue
-            messages.append({"role": role, "content": content})
-        current_user_content = "\n\n".join(injection_prefixes + [str(prepared)])
-        # Wrap runtime-state messages (step > 0) in semantic XML tags.
-        # Step 0 is the initial task assignment and must remain unwrapped.
-        if record.step_id > 0:
-            current_user_content = _wrap_runtime_context(current_user_content)
-        current_user = self._build_current_user_message(
-            prepared_text=current_user_content,
-            prompt_user_content_blocks=prompt_user_content_blocks,
-            observation=observation,
-            record=record,
+        request_options = self._build_model_request_options(
+            prompt_bundle=prompt_bundle,
+            protocol=protocol,
         )
-        messages.append(current_user)
-        prepared_full = content_to_text(current_user.get("content"))
-        self._write_assembled_messages_sidecar(state, record.step_id, messages)
+        model_input_digest = self._model_input_digest(state, record.step_id, llm_messages)
+        tool_schema_digest = self._tool_schema_digest(request_options.get("tools"))
+        model_input_digest["tool_schema"] = tool_schema_digest
+        self._write_assembled_messages_sidecar(state, record.step_id, llm_messages)
+        self._write_model_input_bundle_sidecar(
+            state,
+            record.step_id,
+            messages=llm_messages,
+            request_options=request_options,
+            prompt_bundle=prompt_bundle,
+            protocol=protocol,
+        )
         record.prompt_metadata = dict(prompt_metadata)
         record.prompt_metadata.update(
             {
                 "model_input_modalities": list(record.model_input_modalities),
                 "model_input_visual_count": int(record.model_input_visual_count),
                 "observation_modalities": list(record.observation_modalities),
+                "runtime_context_delivery": dict(runtime_context_delivery),
             }
         )
         record.context = context_runtime.telemetry_dict(pre_context)
@@ -348,27 +502,27 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
                 "prepared_full": prepared_full,
                 "history_message_count": len(history),
                 "history_messages_meta": history_metadata,
-                "messages": messages,
+                "message_count": len(llm_messages),
+                "messages_summary": [
+                    {"role": m.get("role"), "content_len": len(str(m.get("content", "")))}
+                    for m in llm_messages
+                ],
+                "model_input_digest": model_input_digest,
+                "tool_schema_digest": tool_schema_digest,
                 "context": dict(record.context),
                 "state_stats": self._state_stats(observation, record.context, state=state),
                 "prompt": dict(record.prompt_metadata),
+                "runtime_context_delivery": dict(runtime_context_delivery),
+                "runtime_context_display": runtime_context_display,
             },
         )
         history_content = str(prepared)
-        if record.step_id > 0:
-            history_content = _wrap_runtime_context(history_content)
-        engine._history_append(
-            "user", history_content, record.step_id, metadata={"source": "engine"}
-        )
-        request_options = self._build_model_request_options(
-            prompt_bundle=prompt_bundle,
-            protocol=protocol,
-        )
-        # Ensure chain consistency: every assistant tool_call must have
-        # a corresponding tool response. Add placeholder responses for
-        # any dangling tool calls (e.g., after error recovery).
-        messages = self._ensure_chain_consistency(messages)
-        llm_messages = self._strip_internal_message_keys(messages)
+        if custom_builder is None:
+            if record.step_id > 0:
+                history_content = _wrap_runtime_context(history_content)
+            engine._history_append(
+                "user", history_content, record.step_id, metadata={"source": "engine"}
+            )
         raw_decision = self._call_llm(engine.agent.llm, llm_messages, request_options)
         response = self._normalize_model_response(raw_decision)
         post_context = context_runtime.finalize_output(
@@ -404,18 +558,143 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
                 for item in list(response.tool_calls or [])
                 if isinstance(item, dict)
             ]
-        assistant_content: Any = response.text
-        if assistant_tool_calls and not str(response.text or "").strip():
-            assistant_content = None
-        engine._history_append(
-            "assistant",
-            assistant_content,
-            record.step_id,
-            metadata={"source": "engine"},
-            tool_calls=assistant_tool_calls,
-        )
+        # Native calls can be recorded immediately. Parser-derived actions are
+        # normalized after parsing, when we know their action ids and schema.
+        # That prevents an orphan plain assistant turn before a tool result.
+        if assistant_tool_calls:
+            assistant_content: Any = response.text
+            if not str(response.text or "").strip():
+                assistant_content = None
+            engine._history_append(
+                "assistant",
+                assistant_content,
+                record.step_id,
+                metadata={"source": "engine"},
+                tool_calls=assistant_tool_calls,
+            )
 
         return response
+
+    def _append_parser_tool_call_history(
+        self,
+        *,
+        response: ModelResponse,
+        decision: Decision[Any],
+        record: StepRecord,
+    ) -> None:
+        """Store parsed tool actions in the same assistant -> tool shape.
+
+        Text protocols do not provide provider-assigned call ids. Stable ids
+        are generated once here and copied onto the Action, so the executor's
+        matching tool result has the exact same ``tool_call_id``.
+        """
+        calls: List[Dict[str, Any]] = []
+        for index, item in enumerate(list(decision.actions or [])):
+            action = item if isinstance(item, Action) else Action.from_dict(dict(item))
+            call_id = action.action_id or f"call_{record.step_id}_{index}"
+            action.action_id = call_id
+            if action is not item:
+                decision.actions[index] = action
+            try:
+                arguments = json.dumps(dict(action.args or {}), ensure_ascii=False)
+            except Exception:
+                arguments = "{}"
+            calls.append(
+                {
+                    "id": call_id,
+                    "type": "function",
+                    "function": {"name": action.name, "arguments": arguments},
+                }
+            )
+        if not calls:
+            return
+        content: Any = response.text if str(response.text or "").strip() else None
+        self.engine._history_append(
+            "assistant",
+            content,
+            record.step_id,
+            metadata={"source": "engine", "decision_source": "parser"},
+            tool_calls=calls,
+        )
+        record.history_tool_calls_pending = True
+
+    def _model_input_digest(
+        self,
+        state: StateT,
+        step_id: int,
+        messages: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        try:
+            serialized = json.dumps(messages, ensure_ascii=False, sort_keys=True, default=str)
+        except Exception:
+            serialized = json.dumps([str(m) for m in messages], ensure_ascii=False)
+
+        role_counts: Dict[str, int] = {}
+        tool_call_count = 0
+        message_summaries: List[Dict[str, Any]] = []
+        for idx, message in enumerate(messages):
+            role = str(message.get("role") or "")
+            role_counts[role] = role_counts.get(role, 0) + 1
+            content_text = content_to_text(message.get("content"))
+            tool_calls = message.get("tool_calls")
+            tool_names: List[str] = []
+            if isinstance(tool_calls, list):
+                tool_call_count += len(tool_calls)
+                for call in tool_calls[:6]:
+                    if not isinstance(call, dict):
+                        continue
+                    fn = call.get("function")
+                    if isinstance(fn, dict) and fn.get("name"):
+                        tool_names.append(str(fn.get("name")))
+                    elif call.get("name"):
+                        tool_names.append(str(call.get("name")))
+            summary: Dict[str, Any] = {
+                "index": idx,
+                "role": role,
+                "content_len": len(content_text),
+            }
+            if message.get("name"):
+                summary["name"] = message.get("name")
+            if message.get("tool_call_id"):
+                summary["tool_call_id"] = message.get("tool_call_id")
+            if tool_names:
+                summary["tool_names"] = tool_names
+            message_summaries.append(summary)
+
+        system_text = "\n".join(
+            content_to_text(message.get("content"))
+            for message in messages
+            if message.get("role") == "system"
+        )
+        sections = {
+            "contract": "# CyberGym Agent Contract" in system_text or "Core Rules" in system_text,
+            "runtime_context": "<runtime_context>" in system_text,
+            "exploration_prompt": "# Exploration Phase" in system_text,
+            "construction_prompt": "# Construction Phase" in system_text,
+            "runtime_reminder": "<runtime_reminder>" in system_text,
+        }
+
+        sidecar_path = ""
+        try:
+            metadata = dict(getattr(state, "metadata", {}) or {})
+            trace_root = str(metadata.get("trace_run_dir") or "").strip()
+            if trace_root:
+                sidecar_path = str(
+                    Path(trace_root) / "agent_steps" / f"step-{int(step_id):04d}" / "assembled_messages.json"
+                )
+        except Exception:
+            sidecar_path = ""
+
+        return {
+            "message_count": len(messages),
+            "role_counts": role_counts,
+            "tool_call_count": tool_call_count,
+            "messages_hash": hashlib.sha256(serialized.encode("utf-8")).hexdigest()[:16],
+            "sections": sections,
+            "messages": message_summaries,
+            "recent_history": message_summaries[-8:],
+            "sidecar_path": sidecar_path,
+        }
 
     def _write_assembled_messages_sidecar(
         self,
@@ -430,12 +709,83 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
                 return
             step_dir = Path(trace_root) / "agent_steps" / f"step-{int(step_id):04d}"
             step_dir.mkdir(parents=True, exist_ok=True)
+
+            # Context can shrink after compaction, so count-based increments do
+            # not form a replayable audit trail. Every step gets the exact full
+            # message list that was hashed and sent to the model.
             (step_dir / "assembled_messages.json").write_text(
                 json.dumps(messages, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
+
+            # Keep the canonical CyberGym state beside the exact prompt that
+            # consumed it. This makes an exported trace independently
+            # auditable even when the task workspace is later removed.
+            workspace = str(getattr(state, "workspace_root", "") or "").strip()
+            if workspace:
+                state_path = Path(workspace) / ".cybergym" / "state.json"
+                if state_path.is_file():
+                    (step_dir / "cybergym_state.json").write_text(
+                        state_path.read_text(encoding="utf-8"), encoding="utf-8"
+                    )
+
+            self._last_message_count = len(messages)
+            self._last_full_step = step_id
         except Exception:
             return
+
+    @staticmethod
+    def _tool_schema_digest(tools: Any) -> Dict[str, Any]:
+        payload = list(tools or []) if isinstance(tools, list) else []
+        serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+        names = [
+            str((item.get("function") or {}).get("name") or "")
+            for item in payload if isinstance(item, dict)
+        ]
+        return {
+            "tool_count": len(payload),
+            "tool_names": [name for name in names if name],
+            "schema_hash": hashlib.sha256(serialized.encode("utf-8")).hexdigest()[:16],
+        }
+
+    def _write_model_input_bundle_sidecar(
+        self,
+        state: StateT,
+        step_id: int,
+        *,
+        messages: List[Dict[str, Any]],
+        request_options: Dict[str, Any],
+        prompt_bundle: Any,
+        protocol: Any,
+    ) -> None:
+        try:
+            metadata = dict(getattr(state, "metadata", {}) or {})
+            trace_root = str(metadata.get("trace_run_dir") or "").strip()
+            if not trace_root:
+                return
+            step_dir = Path(trace_root) / "agent_steps" / f"step-{int(step_id):04d}"
+            step_dir.mkdir(parents=True, exist_ok=True)
+            tools = list(request_options.get("tools") or [])
+            message_json = json.dumps(messages, ensure_ascii=False, sort_keys=True, default=str)
+            tools_json = json.dumps(tools, ensure_ascii=False, sort_keys=True, default=str)
+            combined = message_json + "\n" + tools_json
+            bundle = {
+                "messages": messages,
+                "tools": tools,
+                "prompt_metadata": dict(getattr(prompt_bundle, "metadata", {}) or {}),
+                "protocol": str(getattr(protocol, "id", "") or ""),
+                "tool_delivery": str(
+                    dict(getattr(prompt_bundle, "metadata", {}) or {}).get("tool_schema_delivery") or ""
+                ),
+                "messages_hash": hashlib.sha256(message_json.encode("utf-8")).hexdigest()[:16],
+                "schema_hash": hashlib.sha256(tools_json.encode("utf-8")).hexdigest()[:16],
+                "combined_hash": hashlib.sha256(combined.encode("utf-8")).hexdigest()[:16],
+            }
+            (step_dir / "model_input_bundle.json").write_text(
+                json.dumps(bundle, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+        except Exception:
+            _logger.debug("model input bundle sidecar write failed", exc_info=True)
 
     def _build_model_request_options(
         self, *, prompt_bundle: Any, protocol: Any
@@ -611,6 +961,25 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
             return {"role": "user", "content": content_blocks}
         return {"role": "user", "content": str(prepared_text or "")}
 
+    def _current_user_has_multimodal_content(
+        self,
+        prompt_user_content_blocks: List[Dict[str, Any]],
+        observation: ObservationT,
+        record: StepRecord,
+    ) -> bool:
+        """Return whether a runtime-context turn must stay a user message.
+
+        Tool results are serialized text in the OpenAI-compatible providers
+        supported by QitOS.  Do not discard image/file inputs merely to retain
+        a tool-terminal conversation shape.
+        """
+        blocks: List[Dict[str, Any]] = [
+            normalize_content_block(block) for block in prompt_user_content_blocks
+        ]
+        blocks.extend(self._task_visual_blocks())
+        blocks.extend(self._observation_visual_blocks(observation, record))
+        return any(str(block.get("type") or "text") != "text" for block in blocks)
+
     def _content_modalities(self, content_blocks: List[Dict[str, Any]]) -> List[str]:
         modalities: List[str] = []
         for block in content_blocks:
@@ -739,6 +1108,26 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
             ]
         return []
 
+    def _observation_summary(self, observation: ObservationT) -> Dict[str, Any]:
+        """Return a lightweight summary of the observation for trace events.
+
+        Avoids serializing the full observation into events.jsonl — the
+        full data is available via steps.jsonl if needed.
+        """
+        summary: Dict[str, Any] = {"type": type(observation).__name__}
+        if isinstance(observation, Observation):
+            action_results = getattr(observation, "action_results", None)
+            if action_results is not None:
+                summary["action_result_count"] = len(action_results)
+            if isinstance(observation.state, dict):
+                summary["state_keys"] = list(observation.state.keys())[:20]
+        elif isinstance(observation, dict):
+            summary["keys"] = list(observation.keys())[:20]
+            ar = observation.get("action_results")
+            if isinstance(ar, list):
+                summary["action_result_count"] = len(ar)
+        return summary
+
     def _observation_pack_payload(
         self, env_observation: Any, observation: ObservationT
     ) -> Dict[str, Any] | None:
@@ -801,10 +1190,17 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
                 stats["workspace_files"] = len(workspace_files)
         for key in (
             "input_tokens_total",
+            "available_input_budget",
+            "system_prompt_tokens",
+            "prepared_tokens",
             "history_tokens",
             "output_tokens",
             "occupancy_ratio",
             "context_window",
+            "counting_mode",
+            "provider_prompt_tokens",
+            "provider_completion_tokens",
+            "provider_total_tokens",
         ):
             if key in context:
                 stats[key] = context.get(key)
@@ -1474,20 +1870,24 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
                 value = raw_output.get(key)
                 if isinstance(value, str):
                     return value
-            # tool_calls no longer short-circuits: content may coexist
+            reasoning = raw_output.get("reasoning_content")
+            if isinstance(reasoning, str):
+                return reasoning
             choices = raw_output.get("choices")
             if isinstance(choices, list) and choices:
                 return self._extract_response_text(choices[0])
             message = raw_output.get("message")
             if isinstance(message, dict):
                 return self._extract_response_text(message)
+            tool_calls = raw_output.get("tool_calls")
+            if isinstance(tool_calls, list) and tool_calls:
+                return ""
             return str(raw_output)
         choices = getattr(raw_output, "choices", None)
         if isinstance(choices, list) and choices:
             return self._extract_response_text(choices[0])
         message = getattr(raw_output, "message", None)
         if message is not None:
-            # tool_calls no longer short-circuits: content may coexist
             content = getattr(message, "content", None)
             if isinstance(content, str):
                 return content
@@ -1510,10 +1910,16 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
             text = getattr(message, "text", None)
             if isinstance(text, str):
                 return text
+            tool_calls = getattr(message, "tool_calls", None)
+            if isinstance(tool_calls, list) and tool_calls:
+                return ""
         for key in ("text", "content", "output_text"):
             value = getattr(raw_output, key, None)
             if isinstance(value, str):
                 return value
+        tool_calls = getattr(raw_output, "tool_calls", None)
+        if isinstance(tool_calls, list) and tool_calls:
+            return ""
         return str(raw_output)
 
     def _extract_response_usage(self, raw_output: Any) -> Dict[str, Any] | None:
@@ -1726,6 +2132,35 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
             if not isinstance(step_marker, int) or step_marker >= earliest_step:
                 trimmed.append(message)
         return trimmed
+
+    def _merge_runtime_context_into_last_tool(
+        self, messages: List[Dict[str, Any]], runtime_context: str
+    ) -> tuple[bool, str | None]:
+        """Attach transient controller state to the final real tool result.
+
+        The provider-visible tool chain remains valid because the message keeps
+        the tool call id produced by the model.  A synthetic hidden tool would
+        instead require fabricating an assistant call/result pair and degrade
+        trace accuracy.
+        """
+        context = str(runtime_context or "").strip()
+        if not context:
+            return False, None
+        for index in range(len(messages) - 1, -1, -1):
+            message = messages[index]
+            if not isinstance(message, dict) or message.get("role") != "tool":
+                continue
+            content = message.get("content")
+            if not isinstance(content, str):
+                continue
+            updated = dict(message)
+            updated["content"] = (
+                f"{content.rstrip()}\n\n[{_RUNTIME_CONTEXT_IN_TOOL_NOTICE}]\n{context}"
+            )
+            messages[index] = updated
+            tool_call_id = updated.get("tool_call_id")
+            return True, str(tool_call_id) if tool_call_id is not None else None
+        return False, None
 
     def _ensure_chain_consistency(
         self, messages: List[Dict[str, Any]]

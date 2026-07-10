@@ -79,6 +79,9 @@ class ContextTelemetry:
     prepared_tokens: int = 0
     input_tokens_total: int = 0
     output_tokens: int = 0
+    provider_prompt_tokens: Optional[int] = None
+    provider_completion_tokens: Optional[int] = None
+    provider_total_tokens: Optional[int] = None
     occupancy_ratio: float = 0.0
     warning_threshold_ratio: float = 0.80
     counting_mode: str = "disabled"
@@ -129,6 +132,9 @@ class StepRecord:
     agent_id: Optional[str] = None
     native_tool_call_used: bool = False
     native_tool_call_fallback_reason: Optional[str] = None
+    # Parser-derived actions are mirrored as OpenAI-compatible tool calls so
+    # their results can remain in the same durable conversation chain.
+    history_tool_calls_pending: bool = False
     visual_assets: List[Dict[str, Any]] = field(default_factory=list)
     observation_modalities: List[str] = field(default_factory=list)
     visual_asset_count: int = 0

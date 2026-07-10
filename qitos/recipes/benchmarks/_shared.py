@@ -94,19 +94,31 @@ def execute_example_jobs(
         for item in pending:
             created.append(_run_example_job(runner, item, run_spec, experiment_spec))
     else:
+        import threading
+        in_flight: set[str] = set()
+        lock = threading.Lock()
+
+        def _dispatch(item: Dict[str, Any]) -> BenchmarkRunResult:
+            key = str(item.get("job_key", "") or item.get("task_id", "")).strip()
+            with lock:
+                if key in in_flight:
+                    return None  # skip duplicate
+                in_flight.add(key)
+            try:
+                return _run_example_job(runner, item, run_spec, experiment_spec)
+            finally:
+                with lock:
+                    in_flight.discard(key)
+
         with ThreadPoolExecutor(max_workers=max(1, int(concurrency))) as pool:
             futures = [
-                pool.submit(
-                    _run_example_job,
-                    runner,
-                    item,
-                    run_spec,
-                    experiment_spec,
-                )
+                pool.submit(_dispatch, item)
                 for item in pending
             ]
             for future in as_completed(futures):
-                created.append(future.result())
+                result = future.result()
+                if result is not None:
+                    created.append(result)
 
     all_rows = list(existing_rows) + created
     write_benchmark_results(target, all_rows)

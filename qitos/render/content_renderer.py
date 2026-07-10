@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import re
 from typing import Any, Dict, List, Optional, Tuple
@@ -72,6 +73,9 @@ class ContentFirstRenderer:
                 segments.append(reasoning.strip())
             # Content text (non-tool-call output the model produced)
             raw = payload.get("raw_output")
+            if isinstance(raw, str) and raw.strip():
+                if raw.lstrip().startswith("Choice(finish_reason="):
+                    raw = ""
             if isinstance(raw, str) and raw.strip():
                 # Try ReAct-style "Thought: ..." extraction first
                 m = _THOUGHT_RE.search(raw)
@@ -144,6 +148,8 @@ class ContentFirstRenderer:
                         "label": name.upper().replace("_", " "),
                         "detail": "",
                         "status": "error" if status == "error" else "success",
+                        "action_id": str(first.get("action_id") or ""),
+                        "args": first.get("args") if isinstance(first.get("args"), dict) else {},
                     }
                 names = []
                 has_error = False
@@ -158,7 +164,16 @@ class ContentFirstRenderer:
                     "detail": " | ".join(names),
                     "status": "error" if has_error else "success",
                     "action_count": len(items),
-                    "actions": [{"label": n, "detail": "", "status": "neutral"} for n in names],
+                    "actions": [
+                        {
+                            "label": str((item if isinstance(item, dict) else {}).get("tool_name") or (item if isinstance(item, dict) else {}).get("name") or "tool").upper().replace("_", " "),
+                            "detail": "",
+                            "status": "error" if str((item if isinstance(item, dict) else {}).get("status") or "").lower() == "error" else "neutral",
+                            "action_id": str((item if isinstance(item, dict) else {}).get("action_id") or ""),
+                            "args": (item if isinstance(item, dict) else {}).get("args") if isinstance((item if isinstance(item, dict) else {}).get("args"), dict) else {},
+                        }
+                        for item in items
+                    ],
                 }
             return None
         return None
@@ -212,10 +227,14 @@ class ContentFirstRenderer:
             )
             if ctx:
                 stats.setdefault("input_tokens_total", ctx.get("input_tokens_total"))
+                stats.setdefault("available_input_budget", ctx.get("available_input_budget"))
+                stats.setdefault("system_prompt_tokens", ctx.get("system_prompt_tokens"))
+                stats.setdefault("prepared_tokens", ctx.get("prepared_tokens"))
                 stats.setdefault("history_tokens", ctx.get("history_tokens"))
                 stats.setdefault("output_tokens", ctx.get("output_tokens"))
                 stats.setdefault("occupancy_ratio", ctx.get("occupancy_ratio"))
                 stats.setdefault("context_window", ctx.get("context_window"))
+                stats.setdefault("counting_mode", ctx.get("counting_mode"))
             return stats or None
         if event.node not in {"state", "observation"}:
             return None
@@ -339,6 +358,77 @@ class ContentFirstRenderer:
         }
 
     def memory_summary(self, event: RenderEvent) -> Optional[str]:
+        if event.node == "cybergym_memory":
+            snapshot = event.payload.get("snapshot") if isinstance(event.payload, dict) else None
+            if not isinstance(snapshot, dict):
+                return None
+            parts: List[str] = []
+            phase = snapshot.get("phase")
+            if phase:
+                parts.append(f"phase={phase}")
+            revision = snapshot.get("state_revision")
+            if revision is not None:
+                parts.append(f"state_rev={revision}")
+            ready_candidates = snapshot.get("ready_candidates")
+            if isinstance(ready_candidates, int):
+                parts.append(f"ready_candidates={ready_candidates}")
+            deadline = snapshot.get("deadline_missed_at")
+            if deadline is not None:
+                parts.append(f"submit_deadline_warning=step{deadline}")
+            statuses = snapshot.get("file_statuses")
+            if isinstance(statuses, dict):
+                ready = sum(1 for value in statuses.values() if value == "ready")
+                template = sum(1 for value in statuses.values() if value == "template")
+                missing = sum(1 for value in statuses.values() if value == "missing")
+                parts.append(f"files={ready} ready/{template} template/{missing} missing")
+            slot_sections = snapshot.get("slot_sections")
+            if isinstance(slot_sections, dict):
+                section_bits = [
+                    f"{slot}:[{', '.join(str(title) for title in titles[-3:])}]"
+                    for slot, titles in slot_sections.items()
+                    if isinstance(titles, list) and titles
+                ]
+                if section_bits:
+                    parts.append("slots=" + self._truncate(" ; ".join(section_bits), 360))
+            slot_navigation = snapshot.get("slot_navigation")
+            if isinstance(slot_navigation, dict):
+                navigation_bits = []
+                for slot, navigation in slot_navigation.items():
+                    if not isinstance(navigation, dict):
+                        continue
+                    standards = navigation.get("standards")
+                    if not isinstance(standards, list):
+                        continue
+                    status = ", ".join(
+                        f"{item.get('title')}={item.get('status')}"
+                        for item in standards if isinstance(item, dict)
+                    )
+                    purpose = str(navigation.get("purpose") or "")
+                    navigation_bits.append(f"{slot} ({purpose}): {status}")
+                if navigation_bits:
+                    parts.append("memory_map=" + self._truncate(" ; ".join(navigation_bits), 720))
+            required = snapshot.get("next_required")
+            if isinstance(required, str) and required.strip():
+                parts.append("next=" + self._truncate(required.strip(), 120))
+            last_action = snapshot.get("last_memory_action")
+            if isinstance(last_action, dict) and last_action.get("tool"):
+                target = str(last_action.get("slot") or "")
+                if last_action.get("section"):
+                    target += "#" + str(last_action["section"])
+                if last_action.get("query"):
+                    target += "?" + str(last_action["query"])
+                parts.append(f"last_memory={last_action['tool']} {target}")
+            ledger = snapshot.get("ledger_recent")
+            if isinstance(ledger, list) and ledger:
+                parts.append("ledger=" + self._truncate(" ; ".join(str(x) for x in ledger[-3:]), 240))
+            gdb = snapshot.get("gdb_recent")
+            if isinstance(gdb, list) and gdb:
+                parts.append("gdb=" + self._truncate(" ; ".join(str(x) for x in gdb[-2:]), 180))
+            delta = snapshot.get("delta")
+            if isinstance(delta, list) and delta:
+                parts.append("delta=" + self._truncate(", ".join(str(x) for x in delta), 160))
+            return " · ".join(parts) if parts else None
+
         if event.node != "memory_context":
             return None
         payload = event.payload or {}
@@ -353,13 +443,8 @@ class ContentFirstRenderer:
     def done_summary(self, stop_reason: Any, final_result: Any) -> str:
         return f"stop={stop_reason} · result={self._truncate(self._to_text(final_result), 180)}"
 
-    def _action_from_dict(self, action: Any) -> Dict[str, str]:
-        if not isinstance(action, dict):
-            return {
-                "label": "ACTION",
-                "detail": self._truncate(self._to_text(action), 120),
-                "status": "neutral",
-            }
+    def _action_from_dict(self, action: Any) -> Dict[str, Any]:
+        action = self._normalize_action(action)
         name = str(
             action.get("name") or action.get("tool") or action.get("action") or "action"
         )
@@ -368,16 +453,49 @@ class ContentFirstRenderer:
         if args:
             for key in ("query", "url", "path", "command", "prompt", "file"):
                 if key in args:
-                    detail = self._truncate(self._to_text(args[key]), 120)
+                    detail = self._truncate_middle(self._to_text(args[key]), 120)
                     break
             if not detail:
                 k = next(iter(args.keys()))
-                detail = self._truncate(f"{k}={self._to_text(args[k])}", 120)
+                detail = self._truncate_middle(f"{k}={self._to_text(args[k])}", 120)
+            extras = []
+            for key in ("offset", "limit", "timeout", "binary_path"):
+                if key in args:
+                    extras.append(f"{key}={self._to_text(args[key])}")
+            if extras:
+                detail = (detail + " · " if detail else "") + ", ".join(extras)
         return {
             "label": name.upper().replace("_", " "),
             "detail": self._compress_detail(detail),
             "status": "neutral",
+            # The console renderer deliberately uses this canonical payload,
+            # not ``detail``: action arguments are an audit surface and must
+            # never be shortened for a human reading tui.log.
+            "action_id": str(action.get("action_id") or ""),
+            "args": args,
         }
+
+    def _normalize_action(self, action: Any) -> Dict[str, Any]:
+        if isinstance(action, dict):
+            return dict(action)
+        if dataclasses.is_dataclass(action):
+            try:
+                return dataclasses.asdict(action)
+            except Exception:
+                pass
+        out: Dict[str, Any] = {}
+        for src, dst in (("name", "name"), ("tool", "tool"), ("action", "action"), ("action_id", "action_id")):
+            value = getattr(action, src, None)
+            if value not in (None, ""):
+                out[dst] = value
+        args = getattr(action, "args", None)
+        if isinstance(args, dict):
+            out["args"] = dict(args)
+        elif args is not None:
+            out["args"] = {"value": args}
+        if not out:
+            out = {"name": "action", "args": {"value": self._to_text(action)}}
+        return out
 
     def _extract_search_rows(self, data: Any) -> List[Tuple[str, str]]:
         rows: List[Tuple[str, str]] = []
@@ -502,7 +620,13 @@ class ContentFirstRenderer:
                 "secondary_only": secondary,
             }
 
-        cleaned = self._strip_noise(item)
+        cleaned = self._unwrap_tool_result(item)
+        tool_name = str(cleaned.get("tool_name") or cleaned.get("name") or "").strip()
+        specific = self._summarize_known_tool(cleaned, tool_name=tool_name, secondary=secondary)
+        if specific is not None:
+            return specific
+
+        cleaned = self._strip_noise(cleaned)
         rows = self._extract_search_rows(cleaned)
         if rows:
             table = Table(
@@ -524,7 +648,7 @@ class ContentFirstRenderer:
         if syntax is not None:
             return {
                 "status": "success",
-                "title": "Tool Observation" if secondary else "Structured Output",
+                "title": "Tool Observation" if secondary else (f"{tool_name} Output" if tool_name else "Tool Output"),
                 "syntax": syntax,
                 "primary_kind": "tool_syntax",
                 "secondary_only": secondary,
@@ -563,6 +687,185 @@ class ContentFirstRenderer:
             "secondary_only": secondary,
         }
 
+    def _unwrap_tool_result(self, item: Dict[str, Any]) -> Dict[str, Any]:
+        metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+        tool_name = str(
+            metadata.get("tool_name")
+            or metadata.get("name")
+            or item.get("tool_name")
+            or item.get("name")
+            or ""
+        ).strip()
+        if "output" not in item or not ("metadata" in item or "error" in item or "status" in item):
+            out = dict(item)
+            if tool_name and "tool_name" not in out:
+                out["tool_name"] = tool_name
+            return out
+        output = item.get("output")
+        if isinstance(output, dict):
+            out = dict(output)
+        else:
+            out = {"summary": self._to_text(output) if output is not None else ""}
+        if tool_name:
+            out.setdefault("tool_name", tool_name)
+        if item.get("error") and not out.get("error"):
+            out["error"] = item.get("error")
+        if item.get("status") and not out.get("tool_result_status"):
+            out["tool_result_status"] = item.get("status")
+        return out
+
+    def _summarize_known_tool(
+        self,
+        data: Dict[str, Any],
+        *,
+        tool_name: str,
+        secondary: bool = False,
+    ) -> Optional[Dict[str, Any]]:
+        name = tool_name.upper()
+        status = "error" if data.get("error") else "success"
+        summary = data.get("summary")
+        if isinstance(summary, str) and summary.strip():
+            body = summary.strip()
+            extras = []
+            for key in ("poc_path", "vul_exit_code", "verification_status", "oracle_outcome", "full_output_path"):
+                if data.get(key) not in (None, "") and str(data.get(key)) not in body:
+                    extras.append(f"{key}={data.get(key)}")
+            if extras:
+                body += "\n" + " · ".join(extras)
+            return {
+                "status": status,
+                "title": f"{name or 'Tool'} Result",
+                "body": self._head_tail(body, self.max_preview_chars),
+                "primary_kind": "tool_result",
+                "secondary_only": secondary,
+            }
+
+        if name == "READ" and isinstance(data.get("content"), str):
+            path = str(data.get("path") or data.get("file_path") or "")
+            title = "READ" + (f" {self._truncate_middle(path, 90)}" if path else "")
+            total = data.get("total_lines")
+            header = f"total_lines={total}" if total is not None else ""
+            hints = data.get("navigation_hints")
+            if isinstance(hints, list) and hints:
+                header = (header + " · " if header else "") + " ; ".join(str(x) for x in hints[:2])
+            body = (header + "\n" if header else "") + self._head_tail(str(data.get("content") or ""), self.max_preview_chars)
+            return {
+                "status": status,
+                "title": title,
+                "body": body,
+                "primary_kind": "tool_result",
+                "secondary_only": secondary,
+            }
+
+        if name == "BASH" or ("returncode" in data and ("stdout" in data or "stderr" in data)):
+            command = str(data.get("command") or "")
+            parts = []
+            if command:
+                parts.append(f"$ {self._truncate_middle(command, 180)}")
+            if data.get("returncode") is not None:
+                parts.append(f"returncode={data.get('returncode')}")
+            stdout = str(data.get("stdout") or data.get("output") or data.get("output_preview") or "")
+            stderr = str(data.get("stderr") or "")
+            if stdout:
+                parts.append("stdout:\n" + self._head_tail(stdout, self.max_preview_chars // 2))
+            if stderr:
+                parts.append("stderr:\n" + self._head_tail(stderr, self.max_preview_chars // 3))
+            if data.get("full_output_path"):
+                parts.append(f"full_output_path={data.get('full_output_path')}")
+            return {
+                "status": status,
+                "title": "BASH" + (f" rc={data.get('returncode')}" if data.get("returncode") is not None else ""),
+                "body": "\n".join(parts),
+                "primary_kind": "tool_result",
+                "secondary_only": secondary,
+            }
+
+        if name == "GDB" or "gdb_command" in data:
+            parts = []
+            for key in ("binary_path", "poc_path", "input_mode", "returncode", "timed_out"):
+                if data.get(key) not in (None, ""):
+                    parts.append(f"{key}={data.get(key)}")
+            commands = data.get("commands")
+            if isinstance(commands, list) and commands:
+                parts.append("commands=" + "; ".join(str(x) for x in commands[:8]))
+            output = str(data.get("output") or "")
+            if output:
+                parts.append("output:\n" + self._head_tail(output, self.max_preview_chars))
+            return {
+                "status": status,
+                "title": "GDB Result",
+                "body": "\n".join(parts),
+                "primary_kind": "tool_result",
+                "secondary_only": secondary,
+            }
+
+        if name == "REMEMBER":
+            parts = []
+            if data.get("revision") is not None:
+                parts.append(f"revision={data.get('revision')}")
+            if data.get("slot"):
+                parts.append(f"slot={data.get('slot')}")
+            if data.get("section"):
+                parts.append(f"section={data.get('section')}")
+            if data.get("mode"):
+                parts.append(f"mode={data.get('mode')}")
+            if data.get("custom_section") is True:
+                standards = data.get("standard_sections")
+                hint = ", ".join(str(item) for item in standards) if isinstance(standards, list) else ""
+                parts.append("custom_section=true" + (f"; standard_sections={hint}" if hint else ""))
+            summary_text = str(data.get("summary") or "")
+            if summary_text:
+                parts.append(self._head_tail(summary_text, self.max_preview_chars))
+            return {
+                "status": status,
+                "title": "REMEMBER Result",
+                "body": "\n".join(parts),
+                "primary_kind": "tool_result",
+                "secondary_only": secondary,
+            }
+
+        if name == "RECALL":
+            parts = []
+            if data.get("revision") is not None:
+                parts.append(f"revision={data.get('revision')}")
+            for key in ("slot", "section", "query"):
+                if data.get(key):
+                    parts.append(f"{key}={data.get(key)}")
+            available = data.get("available_sections")
+            if isinstance(available, list) and available:
+                parts.append("available_sections=" + ", ".join(str(item) for item in available))
+            navigation = data.get("navigation")
+            if isinstance(navigation, dict):
+                if navigation.get("purpose"):
+                    parts.append("purpose=" + str(navigation["purpose"]))
+                standards = navigation.get("standard_sections")
+                if isinstance(standards, list):
+                    parts.append("standard_sections=" + ", ".join(
+                        f"{item.get('title')}={item.get('status')}"
+                        for item in standards if isinstance(item, dict)
+                    ))
+            content = str(data.get("content") or data.get("message") or "")
+            if content:
+                parts.append(self._head_tail(content, self.max_preview_chars))
+            return {
+                "status": status,
+                "title": "RECALL Result",
+                "body": "\n\n".join(parts),
+                "primary_kind": "tool_result",
+                "secondary_only": secondary,
+            }
+
+        if name in {"GREP", "GLOB", "HEX_VIEW", "FIND_SYMBOLS", "CALLSITE_SEARCH"}:
+            body = self._best_body(data)
+            return {
+                "status": status,
+                "title": f"{name} Result",
+                "body": self._head_tail(body, self.max_preview_chars) if body else "",
+                "primary_kind": "tool_result",
+                "secondary_only": secondary,
+            }
+        return None
+
     def _extract_syntax(self, data: Dict[str, Any]) -> Optional[Syntax]:
         for key in ("content", "file_content", "source", "text"):
             value = data.get(key)
@@ -589,7 +892,7 @@ class ContentFirstRenderer:
         return text
 
     def _best_body(self, data: Dict[str, Any]) -> str:
-        for key in ("content", "summary", "message", "observation", "text"):
+        for key in ("summary", "content", "message", "observation", "text"):
             val = data.get(key)
             if isinstance(val, str) and val.strip():
                 return val
@@ -640,6 +943,24 @@ class ContentFirstRenderer:
             return text
         return f"{text[:limit]}... (truncated, {len(text)} total chars)"
 
+    def _head_tail(self, text: str, limit: int) -> str:
+        limit = max(120, int(limit))
+        if len(text) <= limit:
+            return text
+        head = max(60, int(limit * 0.65))
+        tail = max(40, limit - head)
+        return (
+            text[:head]
+            + f"\n... [truncated, {len(text)} total chars] ...\n"
+            + text[-tail:]
+        )
+
+    def _truncate_middle(self, text: str, limit: int) -> str:
+        if len(text) <= limit:
+            return text
+        keep = max(8, (limit - 5) // 2)
+        return f"{text[:keep]}...{text[-keep:]}"
+
     def _to_text(self, value: Any) -> str:
         if isinstance(value, str):
             return value
@@ -663,10 +984,10 @@ class ContentFirstRenderer:
                 parsed = urlparse(d)
                 host = parsed.netloc or d
                 path = parsed.path or ""
-                return self._truncate(f"{host}{path[:16]}", 40)
+                return self._truncate_middle(f"{host}{path}", 40)
             except Exception:
-                return self._truncate(d, 40)
-        return self._truncate(d, 70)
+                return self._truncate_middle(d, 40)
+        return self._truncate_middle(d, 70)
 
 
 __all__ = ["ContentFirstRenderer"]

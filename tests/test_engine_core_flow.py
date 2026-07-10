@@ -727,8 +727,13 @@ def test_engine_prefers_provider_usage_for_context_totals():
     result = Engine(agent=_Agent(), budget=RuntimeBudget(max_steps=2)).run("demo")
     ctx = result.records[0].context
     assert result.state.final_result == "exact"
-    assert ctx["counting_mode"] == "provider_usage"
-    assert ctx["input_tokens_total"] == 123
+    # Outbound-message accounting remains independent from the provider's
+    # post-hoc usage report; both are retained for trace auditability.
+    assert ctx["counting_mode"] == "model_count"
+    assert ctx["input_tokens_total"] == 10
+    assert ctx["provider_prompt_tokens"] == 123
+    assert ctx["provider_completion_tokens"] == 17
+    assert ctx["provider_total_tokens"] == 140
     assert ctx["output_tokens"] == 17
     assert ctx["tokens_total"] == 140
 

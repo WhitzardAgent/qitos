@@ -19,6 +19,9 @@ How to update:
 
 ### Added
 
+- Added transient runtime-context delivery to `MessageBuildResult`. Custom
+  agents can fold authoritative controller state into the final real tool
+  result without persisting a synthetic user turn.
 - Added `AgentSpec.tool_name` so delegate workers can expose task-oriented model-facing tool names while keeping the registry agent name stable.
 - Added qita's trajectory analysis workbench with diagnosis-first run pages, derived failure insights, focus navigation, critical-step guidance, an inspector panel, and expandable full-content evidence views for long thoughts, observations, parser diagnostics, actions, and critic outputs.
 - Added qita `step_interactions`, a derived action-observation view that pairs each action with its complete arguments, invocation metadata, model-visible result, and canonical raw result while separating environment-only and unmatched evidence.

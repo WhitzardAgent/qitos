@@ -166,6 +166,52 @@ class _ContextRuntime:
         )
         return telemetry
 
+    def finalize_assembled_input(
+        self,
+        *,
+        llm: Any,
+        telemetry: ContextTelemetry,
+        messages: List[Dict[str, Any]],
+        compact_events: List[Dict[str, Any]],
+    ) -> ContextTelemetry:
+        """Account for the exact OpenAI-compatible message payload.
+
+        Custom MessageBuilders can replace the default prompt entirely.  The
+        pre-builder estimate is still useful to budget history retrieval, but
+        it must never be reported as, or enforced like, the final request.
+        """
+        system_messages = [m for m in messages if m.get("role") == "system"]
+        anchor_messages = [m for m in messages if m.get("role") == "user"]
+        history_messages = [
+            m for m in messages if m.get("role") in {"assistant", "tool"}
+        ]
+        system_tokens, system_mode = self.count_tokens(system_messages, llm)
+        anchor_tokens, anchor_mode = self.count_tokens(anchor_messages, llm)
+        history_tokens, history_mode = self.count_tokens(history_messages, llm)
+        input_tokens, input_mode = self.count_tokens(messages, llm)
+
+        telemetry.system_prompt_tokens = system_tokens
+        # ``prepared_tokens`` remains the wire-compatible field name; for a
+        # custom builder it is the durable task-anchor/user-token count.
+        telemetry.prepared_tokens = anchor_tokens
+        telemetry.history_tokens = history_tokens
+        telemetry.input_tokens_total = input_tokens
+        telemetry.history_message_count = len(history_messages)
+        telemetry.compact_events = [
+            dict(x) for x in compact_events if isinstance(x, dict)
+        ]
+        telemetry.history_budget = self.history_budget(telemetry)
+        budget = telemetry.available_input_budget
+        telemetry.occupancy_ratio = 0.0
+        if isinstance(budget, int) and budget > 0:
+            telemetry.occupancy_ratio = min(
+                1.0, float(input_tokens) / float(budget)
+            )
+        telemetry.counting_mode = self._merge_counting_mode(
+            [system_mode, anchor_mode, history_mode, input_mode]
+        )
+        return telemetry
+
     def finalize_output(
         self,
         *,
@@ -179,30 +225,28 @@ class _ContextRuntime:
             completion_tokens = usage.get("completion_tokens")
             total_tokens = usage.get("total_tokens")
             if isinstance(prompt_tokens, int) and prompt_tokens >= 0:
-                telemetry.input_tokens_total = int(prompt_tokens)
-                budget = telemetry.available_input_budget
-                if isinstance(budget, int) and budget > 0:
-                    telemetry.occupancy_ratio = min(
-                        1.0, float(telemetry.input_tokens_total) / float(budget)
-                    )
+                telemetry.provider_prompt_tokens = int(prompt_tokens)
             if isinstance(completion_tokens, int) and completion_tokens >= 0:
+                telemetry.provider_completion_tokens = int(completion_tokens)
                 telemetry.output_tokens = int(completion_tokens)
             else:
                 telemetry.output_tokens = self.count_tokens(raw_output, llm)[0]
             if isinstance(total_tokens, int) and total_tokens >= 0:
+                telemetry.provider_total_tokens = int(total_tokens)
                 step_total = int(total_tokens)
             else:
-                step_total = int(telemetry.input_tokens_total) + int(
+                step_total = int(telemetry.provider_prompt_tokens or telemetry.input_tokens_total) + int(
                     telemetry.output_tokens
                 )
-            telemetry.counting_mode = "provider_usage"
         else:
             telemetry.output_tokens = self.count_tokens(raw_output, llm)[0]
             step_total = int(telemetry.input_tokens_total) + int(
                 telemetry.output_tokens
             )
 
-        self.prompt_tokens_total += int(telemetry.input_tokens_total)
+        self.prompt_tokens_total += int(
+            telemetry.provider_prompt_tokens or telemetry.input_tokens_total
+        )
         self.completion_tokens_total += int(telemetry.output_tokens)
         self.tokens_total += int(step_total)
         self.peak_input_tokens = max(
@@ -287,6 +331,9 @@ class _ContextRuntime:
             "prepared_tokens": telemetry.prepared_tokens,
             "input_tokens_total": telemetry.input_tokens_total,
             "output_tokens": telemetry.output_tokens,
+            "provider_prompt_tokens": telemetry.provider_prompt_tokens,
+            "provider_completion_tokens": telemetry.provider_completion_tokens,
+            "provider_total_tokens": telemetry.provider_total_tokens,
             "occupancy_ratio": telemetry.occupancy_ratio,
             "warning_threshold_ratio": telemetry.warning_threshold_ratio,
             "counting_mode": telemetry.counting_mode,

@@ -10,17 +10,25 @@ from qitos.core.memory import Memory, MemoryRecord
 
 
 class MarkdownFileMemory(Memory):
-    """Persist memory records in a local markdown log file."""
+    """Persist memory records in a local markdown log file.
 
-    def __init__(self, path: str = "memory.md", max_in_memory: int = 200):
+    Uses buffered writes to reduce file open/close syscalls.
+    """
+
+    def __init__(self, path: str = "memory.md", max_in_memory: int = 200, flush_every: int = 5):
         self.path = Path(path)
         self.max_in_memory = max_in_memory
+        self._flush_every = flush_every
         self._records: List[MemoryRecord] = []
+        self._pending: List[str] = []
         self._ensure_file()
 
     def append(self, record: MemoryRecord) -> None:
         self._records.append(record)
-        self._append_markdown(record)
+        block = self._format_block(record)
+        self._pending.append(block)
+        if len(self._pending) >= self._flush_every:
+            self._flush_pending()
         if self.max_in_memory > 0 and len(self._records) > self.max_in_memory:
             self._records = self._records[-self.max_in_memory :]
 
@@ -62,6 +70,11 @@ class MarkdownFileMemory(Memory):
 
     def reset(self, run_id: Optional[str] = None) -> None:
         self._records = []
+        self._pending.clear()
+
+    def flush(self) -> None:
+        """Flush any pending records to disk."""
+        self._flush_pending()
 
     def _ensure_file(self) -> None:
         if self.path.exists():
@@ -75,7 +88,8 @@ class MarkdownFileMemory(Memory):
         ]
         self.path.write_text("\n".join(header), encoding="utf-8")
 
-    def _append_markdown(self, record: MemoryRecord) -> None:
+    def _format_block(self, record: MemoryRecord) -> str:
+        """Format a memory record as a markdown block."""
         ts = datetime.now(timezone.utc).isoformat()
         block = [
             f"## Step {record.step_id} · {record.role}",
@@ -84,8 +98,15 @@ class MarkdownFileMemory(Memory):
         if record.metadata:
             block.append(f"- metadata: {record.metadata}")
         block.extend(["", "```text", str(record.content), "```", ""])
+        return "\n".join(block)
+
+    def _flush_pending(self) -> None:
+        """Write all pending blocks to disk in a single file open."""
+        if not self._pending:
+            return
         with self.path.open("a", encoding="utf-8") as fp:
-            fp.write("\n".join(block))
+            fp.write("".join(self._pending))
+        self._pending.clear()
 
 
 __all__ = ["MarkdownFileMemory"]

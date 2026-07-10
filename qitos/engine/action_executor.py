@@ -505,6 +505,7 @@ class ActionExecutor:
             "parent_run_id": "",
             "trace_writer": self.trace_writer,
             "shared_memory": self.shared_memory,
+            "agent": getattr(self._engine, "agent", None) if self._engine is not None else None,
         }
 
     def _resolve_tool(self, name: str) -> Optional[BaseTool]:

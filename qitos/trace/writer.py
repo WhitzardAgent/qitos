@@ -7,12 +7,47 @@ import json
 import os
 from dataclasses import asdict
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, IO, List, Optional
 
 from qitos.tracing.config import _redact_dict
 
 from .events import TraceEvent, TraceStep
 from .schema import TraceSchemaValidator
+
+
+class _BufferedJsonlWriter:
+    """Buffered append-only JSONL writer.
+
+    Batches multiple append operations into a single file write,
+    reducing open/close syscalls from O(events) to O(steps/buffer_size).
+    """
+
+    def __init__(self, path: str, flush_every: int = 10):
+        self.path = path
+        self._flush_every = flush_every
+        self._buffer: List[str] = []
+        self._fh: Optional[IO] = None
+
+    def append(self, line: str) -> None:
+        self._buffer.append(line)
+        if len(self._buffer) >= self._flush_every:
+            self.flush()
+
+    def flush(self) -> None:
+        if not self._buffer:
+            return
+        if self._fh is None:
+            self._fh = open(self.path, "a", encoding="utf-8")
+        self._fh.write("".join(self._buffer))
+        self._fh.flush()
+        self._buffer.clear()
+
+    def close(self) -> None:
+        if self._buffer:
+            self.flush()
+        if self._fh is not None:
+            self._fh.close()
+            self._fh = None
 
 
 class TraceWriter:
@@ -39,23 +74,27 @@ class TraceWriter:
         os.makedirs(self.run_dir, exist_ok=True)
         self._write_manifest(status="running")
 
+        # Buffered writers (Fix 2A)
+        self._events_writer = _BufferedJsonlWriter(self.events_path, flush_every=5)
+        self._steps_writer = _BufferedJsonlWriter(self.steps_path, flush_every=1)
+
     def write_event(self, event: TraceEvent) -> None:
-        self._append_jsonl(self.events_path, event.to_dict())
+        line = json.dumps(_redact_dict(event.to_dict()), ensure_ascii=False) + "\n"
+        self._events_writer.append(line)
         self._event_count += 1
 
     def write_step(self, step: TraceStep) -> None:
-        self._append_jsonl(self.steps_path, step.to_dict())
+        line = json.dumps(_redact_dict(step.to_dict()), ensure_ascii=False) + "\n"
+        self._steps_writer.append(line)
         self._step_count += 1
 
     def finalize(self, status: str, summary: Optional[Dict[str, Any]] = None) -> None:
+        # Flush buffered writers before validation
+        self._events_writer.close()
+        self._steps_writer.close()
         self._write_manifest(status=status, summary=summary or {})
         if self.strict_validate and status != "running":
             self._validate_artifacts()
-
-    def _append_jsonl(self, path: str, payload: Dict[str, Any]) -> None:
-        with open(path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(_redact_dict(payload), ensure_ascii=False))
-            f.write("\n")
 
     def _write_manifest(
         self, status: str, summary: Optional[Dict[str, Any]] = None
@@ -101,6 +140,9 @@ class TraceWriter:
             "agent_topology": self.metadata.get("agent_topology"),
             "agent_name": self.metadata.get("agent_name"),
             "handoff_count": self.metadata.get("handoff_count"),
+            # Extra provenance is optional for generic QitOS users but lets
+            # benchmark traces identify exact import paths and runtime flags.
+            "provenance": self.metadata.get("provenance", {}),
         }
         with open(self.manifest_path, "w", encoding="utf-8") as f:
             json.dump(_redact_dict(payload), f, ensure_ascii=False, indent=2)
@@ -157,48 +199,36 @@ def runtime_event_to_trace(run_id: str, event: Any) -> TraceEvent:
     )
 
 
-def runtime_step_to_trace(step: Any) -> TraceStep:
-    decision = getattr(step, "decision", None)
-    decision_payload: Any
-    if decision is not None and hasattr(decision, "__dict__"):
-        decision_payload = (
-            asdict(decision)
-            if hasattr(decision, "__dataclass_fields__")
-            else dict(decision.__dict__)
-        )
-    else:
-        decision_payload = decision
+def runtime_step_to_trace(step: Any, *, event_start_idx: int = -1, event_end_idx: int = -1) -> TraceStep:
+    """Convert a StepRecord to a lightweight TraceStep.
 
+    Heavy data (observation, decision, model_response, actions, etc.) is
+    already captured in events.jsonl as individual RuntimeEvent entries.
+    This function only fills lightweight metadata and event index range.
+    The heavy fields are left as defaults (None/empty) to avoid ~90%
+    data duplication between steps.jsonl and events.jsonl.
+    """
+    response = dict(getattr(step, "model_response", {}) or {})
+    model_response = {
+        key: response.get(key)
+        for key in ("model_name", "provider", "finish_reason")
+        if response.get(key) not in (None, "")
+    }
     return TraceStep(
         step_id=int(getattr(step, "step_id", 0)),
         agent_id=getattr(step, "agent_id", None),
-        observation=_normalize(getattr(step, "observation", None)),
-        decision=_normalize(decision_payload),
-        model_response=_normalize(dict(getattr(step, "model_response", {}) or {})),
-        actions=_normalize(list(getattr(step, "actions", []) or [])),
-        action_results=_normalize(list(getattr(step, "action_results", []) or [])),
-        tool_invocations=_normalize(list(getattr(step, "tool_invocations", []) or [])),
-        critic_outputs=_normalize(list(getattr(step, "critic_outputs", []) or [])),
+        event_start_idx=event_start_idx,
+        event_end_idx=event_end_idx,
         state_diff=_normalize(dict(getattr(step, "state_diff", {}) or {})),
-        context=_normalize(dict(getattr(step, "context", {}) or {})),
-        prompt_metadata=_normalize(dict(getattr(step, "prompt_metadata", {}) or {})),
         protocol_id=getattr(step, "protocol_id", None),
         parser_selected=getattr(step, "parser_selected", None),
         parser_fallback_used=bool(getattr(step, "parser_fallback_used", False)),
-        parser_attempts=_normalize(list(getattr(step, "parser_attempts", []) or [])),
-        parser_diagnostics=_normalize(
-            dict(getattr(step, "parser_diagnostics", {}) or {})
-        ),
         parser_contract=getattr(step, "parser_contract", None),
         parser_salvage_applied=bool(getattr(step, "parser_salvage_applied", False)),
         decision_source=getattr(step, "decision_source", None),
         native_tool_call_used=bool(getattr(step, "native_tool_call_used", False)),
         native_tool_call_fallback_reason=getattr(
             step, "native_tool_call_fallback_reason", None
-        ),
-        visual_assets=_normalize(list(getattr(step, "visual_assets", []) or [])),
-        observation_modalities=_normalize(
-            list(getattr(step, "observation_modalities", []) or [])
         ),
         visual_asset_count=int(getattr(step, "visual_asset_count", 0) or 0),
         has_screenshot=bool(getattr(step, "has_screenshot", False)),
@@ -212,6 +242,10 @@ def runtime_step_to_trace(step: Any) -> TraceStep:
         model_input_visual_count=int(
             getattr(step, "model_input_visual_count", 0) or 0
         ),
+        # Keep provider identity as a compact index; full response text and
+        # raw output remain event-only to avoid duplicating heavy payloads.
+        model_response=_normalize(model_response),
+        # Heavy fields intentionally left as defaults — reconstruct from events.jsonl
     )
 
 

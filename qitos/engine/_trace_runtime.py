@@ -32,6 +32,9 @@ class _TraceRuntime(Generic[StateT]):
         self.parser_warning_count = 0
         self.parser_salvage_count = 0
         self.parser_error_codes: Counter[str] = Counter()
+        # Event index tracking for lightweight TraceStep (Fix 1B)
+        self._step_event_start: Dict[int, int] = {}
+        self._step_event_end: Dict[int, int] = {}
 
     def emit(
         self,
@@ -42,6 +45,12 @@ class _TraceRuntime(Generic[StateT]):
         error: Optional[str] = None,
     ) -> None:
         engine = self.engine
+        # Track event index for lightweight TraceStep
+        event_idx = len(engine.events)
+        if step_id not in self._step_event_start:
+            self._step_event_start[step_id] = event_idx
+        self._step_event_end[step_id] = event_idx
+
         event_ts = datetime.now(timezone.utc).isoformat()
         event_payload = dict(payload or {})
         event_payload.setdefault("run_id", engine._active_run_id)
@@ -84,7 +93,16 @@ class _TraceRuntime(Generic[StateT]):
             return
         if self.engine.trace_writer is None:
             return
-        self.engine.trace_writer.write_step(runtime_step_to_trace(step))
+        step_id = getattr(step, "step_id", 0)
+        event_start = self._step_event_start.get(step_id, -1)
+        event_end = self._step_event_end.get(step_id, -1)
+        self.engine.trace_writer.write_step(
+            runtime_step_to_trace(
+                step,
+                event_start_idx=event_start,
+                event_end_idx=event_end,
+            )
+        )
 
     def finalize_step(self, record: StepRecord, state: StateT) -> None:
         self.write_trace_step(record)
@@ -499,6 +517,8 @@ class _TraceRuntime(Generic[StateT]):
         self.engine.records = []
         self.engine._last_env_observation = None
         self.engine._last_env_result = None
+        self._step_event_start.clear()
+        self._step_event_end.clear()
 
     def clear_active_context(self) -> None:
         self.engine._active_state = None

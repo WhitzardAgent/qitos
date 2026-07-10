@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
@@ -124,10 +126,13 @@ _PHASE_COLORS: Dict[str, str] = {
 class RenderStreamHook(RenderHook):
     """Emit normalized render events for terminal and frontend consumers."""
 
-    def __init__(self, output_jsonl: Optional[str] = None):
+    def __init__(self, output_jsonl: Optional[str] = None, jsonl_flush_every: int = 10):
         self.events: List[RenderEvent] = []
         self.output_jsonl = output_jsonl
         self._path = Path(output_jsonl) if output_jsonl else None
+        self._jsonl_buffer: List[str] = []
+        self._jsonl_flush_every = jsonl_flush_every
+        self._cybergym_memory_previous: Dict[str, Any] = {}
         if self._path is not None:
             self._path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -230,6 +235,8 @@ class RenderStreamHook(RenderHook):
                 "steps": result.step_count,
             },
         )
+        # Flush remaining buffered render events
+        self._flush_jsonl()
 
     def on_event(self, event, state, record, engine) -> None:
         # Promote multi-agent RuntimePhase events to first-class render nodes.
@@ -241,15 +248,19 @@ class RenderStreamHook(RenderHook):
             self._emit(channel, node, step_id=event.step_id, payload=dict(event.payload or {}))
 
         # Promote key model I/O events to first-class render nodes.
+        # Fix 3A: use lightweight payloads instead of full duplicates.
         if event.phase.value.lower() == "decide" and isinstance(event.payload, dict):
             stage = str(event.payload.get("stage", ""))
             if stage == "state_ready":
+                # Use observation_summary instead of full observation (Fix 1C already slimmed this)
+                observation_summary = event.payload.get("observation_summary")
                 observation = event.payload.get("observation")
                 self._emit(
                     "observation",
                     "state",
                     step_id=event.step_id,
-                    payload={"observation": observation},
+                    payload={"observation_summary": observation_summary} if observation_summary
+                    else {"observation_type": event.payload.get("observation_type")},
                 )
                 if isinstance(observation, dict):
                     if "plan_steps" in observation:
@@ -263,6 +274,7 @@ class RenderStreamHook(RenderHook):
                             },
                         )
             elif stage == "model_input":
+                # Use messages_summary instead of full messages list (Fix 1C)
                 self._emit(
                     "thinking",
                     "model_input",
@@ -272,11 +284,28 @@ class RenderStreamHook(RenderHook):
                         "history_message_count": event.payload.get(
                             "history_message_count"
                         ),
-                        "messages": event.payload.get("messages"),
+                        "message_count": event.payload.get("message_count"),
+                        "messages_summary": event.payload.get("messages_summary"),
+                        "model_input_digest": event.payload.get("model_input_digest"),
                         "context": event.payload.get("context"),
                         "state_stats": event.payload.get("state_stats"),
+                        "runtime_context_delivery": event.payload.get(
+                            "runtime_context_delivery"
+                        ),
+                        "runtime_context_display": event.payload.get(
+                            "runtime_context_display"
+                        ),
                     },
                 )
+                if os.getenv("QITOS_TUI_SHOW_MEMORY", "1").strip().lower() not in {"0", "false", "no", "off"}:
+                    snapshot = self._cybergym_memory_snapshot(state)
+                    if snapshot:
+                        self._emit(
+                            "memory",
+                            "cybergym_memory",
+                            step_id=event.step_id,
+                            payload={"snapshot": snapshot},
+                        )
             elif stage == "model_output":
                 self._emit(
                     "thinking",
@@ -310,11 +339,16 @@ class RenderStreamHook(RenderHook):
                     step_id=event.step_id,
                     payload={"diagnostics": event.payload.get("diagnostics")},
                 )
+        # Lightweight engine event — only ok/error + stage, not full payload
         self._emit(
             "engine_event",
             event.phase.value.lower(),
             step_id=event.step_id,
-            payload={"ok": event.ok, "payload": event.payload, "error": event.error},
+            payload={
+                "ok": event.ok,
+                "error": event.error,
+                "stage": event.payload.get("stage") if isinstance(event.payload, dict) else None,
+            },
         )
 
     def _emit(
@@ -329,10 +363,228 @@ class RenderStreamHook(RenderHook):
         )
         self.events.append(evt)
         if self._path is not None:
-            with self._path.open("a", encoding="utf-8") as f:
-                f.write(json.dumps(_redact_dict(evt.to_dict()), ensure_ascii=False))
-                f.write("\n")
+            line = json.dumps(_redact_dict(evt.to_dict()), ensure_ascii=False) + "\n"
+            self._jsonl_buffer.append(line)
+            if len(self._jsonl_buffer) >= self._jsonl_flush_every:
+                self._flush_jsonl()
+            else:
+                self._flush_jsonl()
         self.on_render_event(evt)
+
+    def _cybergym_memory_snapshot(self, state: Any) -> Dict[str, Any]:
+        workspace = str(getattr(state, "workspace_root", "") or "").strip()
+        if not workspace:
+            metadata = getattr(state, "metadata", None)
+            if isinstance(metadata, dict):
+                workspace = str(metadata.get("workspace_root") or "").strip()
+        if not workspace:
+            return {}
+        metadata = getattr(state, "metadata", None)
+        last_memory_action = dict(metadata.get("last_memory_action") or {}) if isinstance(metadata, dict) else {}
+        root = Path(workspace).expanduser()
+        memory_dir = root / ".cybergym"
+        if not memory_dir.is_dir():
+            return {}
+
+        canonical: Dict[str, Any] = {}
+        state_path = memory_dir / "state.json"
+        if state_path.is_file():
+            try:
+                parsed = json.loads(state_path.read_text(encoding="utf-8", errors="replace"))
+                if isinstance(parsed, dict):
+                    canonical = parsed
+            except Exception:
+                canonical = {}
+
+        memory_files = [
+            "next_action.md",
+            "task_brief.md",
+            "harness_model.md",
+            "corpus_model.md",
+            "repo_model.md",
+            "program_model.md",
+            "hypothesis_pool.md",
+            "construction_plan.md",
+            "experiment_ledger.md",
+            "gdb_observations.md",
+            "exhausted_paths.md",
+        ]
+        template_markers = (
+            "{{",
+            "}}",
+            "(Not yet initialized.)",
+            "No hypothesis selected",
+            "No active hypotheses",
+            "Starting investigation",
+            "{{SUMMARY}}",
+        )
+        statuses: Dict[str, str] = {}
+        contents: Dict[str, str] = {}
+        for name in memory_files:
+            path = memory_dir / name
+            if not path.exists():
+                statuses[name] = "missing"
+                continue
+            try:
+                text = path.read_text(encoding="utf-8", errors="replace")
+            except Exception:
+                statuses[name] = "unknown"
+                continue
+            contents[name] = text
+            stripped = text.strip()
+            if not stripped:
+                statuses[name] = "empty"
+            elif name in {
+                "program_model.md", "hypothesis_pool.md", "construction_plan.md",
+                "next_action.md", "experiment_ledger.md", "gdb_observations.md",
+                "exhausted_paths.md",
+            } and canonical:
+                statuses[name] = "generated"
+            elif any(marker in stripped for marker in template_markers):
+                statuses[name] = "template"
+            else:
+                statuses[name] = "ready"
+
+        slots = canonical.get("slots") if isinstance(canonical.get("slots"), dict) else {}
+        slot_sections: Dict[str, List[str]] = {}
+        slot_revisions: Dict[str, Any] = {}
+        slot_navigation: Dict[str, Dict[str, Any]] = {}
+        for slot, record in slots.items():
+            if not isinstance(record, dict):
+                continue
+            slot_revisions[str(slot)] = record.get("revision")
+            section_records = [item for item in record.get("sections") or [] if isinstance(item, dict)]
+            slot_sections[str(slot)] = [str(item.get("title") or "") for item in section_records if str(item.get("title") or "")]
+            standard_titles = {str(title) for title in record.get("standard_sections") or []}
+            standards = []
+            for title in record.get("standard_sections") or []:
+                item = next((value for value in section_records if value.get("title") == title), {})
+                content = str(item.get("content") or "").strip()
+                standards.append({"title": str(title), "status": "empty" if not content else str(item.get("owner") or "agent")})
+            slot_navigation[str(slot)] = {
+                "purpose": str(record.get("purpose") or ""),
+                "phase": str(record.get("phase") or ""),
+                "standards": standards,
+                "custom_sections": [
+                    str(item.get("title") or "") for item in section_records
+                    if item.get("title") not in standard_titles and item.get("title") != "Slot Guide"
+                ],
+            }
+        runtime = canonical.get("runtime") if isinstance(canonical.get("runtime"), dict) else {}
+        required = str(runtime.get("required_action") or "")
+        if not canonical:
+            required = self._extract_markdown_section(contents.get("next_action.md", ""), "Required Action")
+        ledger_recent = self._recent_table_rows(contents.get("experiment_ledger.md", ""), 3)
+        gdb_recent = self._recent_markdown_headers(contents.get("gdb_observations.md", ""), 2)
+        compact_state = {
+            "statuses": statuses,
+            "ledger_count": len(canonical.get("experiments") or []) if canonical else len(self._recent_table_rows(contents.get("experiment_ledger.md", ""), 100000)),
+            "gdb_count": len(canonical.get("gdb_sessions") or []) if canonical else len(self._recent_markdown_headers(contents.get("gdb_observations.md", ""), 100000)),
+            "revision": canonical.get("revision") if canonical else None,
+            "ready_candidates": len([
+                item for item in ((canonical.get("construction") or {}).get("ready_candidates") or [])
+                if isinstance(item, dict) and item.get("status") == "ready"
+            ]) if canonical else 0,
+            "deadline_missed_at": (canonical.get("runtime") or {}).get("submission_deadline_missed_at") if canonical else None,
+        }
+        delta: List[str] = []
+        previous = self._cybergym_memory_previous
+        previous_statuses = previous.get("statuses") if isinstance(previous.get("statuses"), dict) else {}
+        for key, value in statuses.items():
+            old = previous_statuses.get(key)
+            if old and old != value:
+                delta.append(f"{key}:{old}->{value}")
+        for key, label in (("ledger_count", "ledger"), ("gdb_count", "gdb")):
+            old = previous.get(key)
+            new = compact_state.get(key)
+            if isinstance(old, int) and isinstance(new, int) and new > old:
+                delta.append(f"{label}+{new - old}")
+        previous_slots = previous.get("slot_revisions") if isinstance(previous.get("slot_revisions"), dict) else {}
+        for slot, revision in slot_revisions.items():
+            if previous_slots.get(slot) not in (None, revision):
+                delta.append(f"{slot}@{revision}")
+        compact_state["slot_revisions"] = slot_revisions
+        self._cybergym_memory_previous = compact_state
+        return {
+            "phase": getattr(state, "current_phase", ""),
+            "memory_dir": str(memory_dir),
+            "file_statuses": statuses,
+            "next_required": required,
+            "slot_sections": slot_sections,
+            "slot_navigation": slot_navigation,
+            "ledger_recent": ledger_recent,
+            "gdb_recent": gdb_recent,
+            "delta": delta,
+            "state_revision": compact_state["revision"],
+            "ready_candidates": compact_state["ready_candidates"],
+            "deadline_missed_at": compact_state["deadline_missed_at"],
+            "last_memory_action": last_memory_action,
+            "state_present": bool(canonical),
+        }
+
+    @staticmethod
+    def _extract_markdown_section(text: str, heading: str) -> str:
+        if not text:
+            return ""
+        pattern = rf"^##\s+{re.escape(heading)}\s*$"
+        lines = text.splitlines()
+        start = -1
+        for idx, line in enumerate(lines):
+            if re.match(pattern, line.strip(), flags=re.IGNORECASE):
+                start = idx + 1
+                break
+        if start < 0:
+            return ""
+        collected: List[str] = []
+        for line in lines[start:]:
+            if line.startswith("## "):
+                break
+            stripped = line.strip()
+            if stripped:
+                collected.append(stripped)
+            if len(collected) >= 3:
+                break
+        return " ".join(collected)
+
+    @staticmethod
+    def _recent_table_rows(text: str, limit: int) -> List[str]:
+        rows: List[str] = []
+        for line in text.splitlines():
+            stripped = line.strip()
+            if not stripped.startswith("|"):
+                continue
+            if re.match(r"^\|[\s\-:|]+\|$", stripped):
+                continue
+            if "POC Path" in stripped and "Result" in stripped:
+                continue
+            cells = [cell.strip() for cell in stripped.split("|") if cell.strip()]
+            if len(cells) >= 5:
+                # V27's ledger adds hypothesis/mutation/parent/GDB columns;
+                # retain the actual Result column in the compact memory panel.
+                result_index = 5 if len(cells) >= 9 else 4
+                rows.append(f"{cells[0]} {cells[1]} {cells[result_index]}")
+        return rows[-limit:]
+
+    @staticmethod
+    def _recent_markdown_headers(text: str, limit: int) -> List[str]:
+        headers = [
+            line.strip("# ").strip()
+            for line in text.splitlines()
+            if line.startswith("##") and line.strip("# ").strip()
+        ]
+        return headers[-limit:]
+
+    def _flush_jsonl(self) -> None:
+        """Flush buffered render events to disk."""
+        if not self._jsonl_buffer or self._path is None:
+            return
+        with self._path.open("a", encoding="utf-8") as f:
+            f.write("".join(self._jsonl_buffer))
+        self._jsonl_buffer.clear()
+
+    def flush(self) -> None:
+        """Public flush for external callers (e.g., step boundary)."""
+        self._flush_jsonl()
 
     def on_render_event(self, event: RenderEvent) -> None:
         """Override in subclasses for side effects (console/UI streaming)."""
@@ -377,7 +629,16 @@ class ClaudeStyleHook(RenderStreamHook):
         log_file: Optional[str] = None,
     ):
         super().__init__(output_jsonl=output_jsonl)
+        env_max = os.getenv("QITOS_TUI_MAX_TOOL_CHARS", "").strip()
+        if env_max:
+            try:
+                max_preview_chars = int(env_max)
+            except ValueError:
+                pass
         self.max_preview_chars = max_preview_chars
+        self.detail_mode = os.getenv("QITOS_TUI_DETAIL", "normal").strip().lower() or "normal"
+        self.show_context_digest = os.getenv("QITOS_TUI_SHOW_CONTEXT", "1").strip().lower() not in {"0", "false", "no", "off"}
+        self.show_memory_panel = os.getenv("QITOS_TUI_SHOW_MEMORY", "1").strip().lower() not in {"0", "false", "no", "off"}
         # Per-task TUI log file: Rich Console writes the same rendered output
         # to both the terminal and a plain-text log file, preserving the
         # STEP / finish / tool_calls / ctx_used format for offline analysis.
@@ -496,6 +757,11 @@ class ClaudeStyleHook(RenderStreamHook):
                     if stats:
                         fixed = self._render_state_row(stats)
                         self._rail("gray40", f"[dim]State[/dim] [dim]{fixed}[/dim]")
+                    if self.show_context_digest:
+                        digest = (event.payload or {}).get("model_input_digest")
+                        if isinstance(digest, dict):
+                            for line in self._render_context_digest(digest):
+                                self._rail("gray50", f"[dim]{line}[/dim]")
                     # Render Constraint Board — same text the LLM sees
                     constraint_board = stats.get("constraint_board")
                     if isinstance(constraint_board, str) and constraint_board.strip():
@@ -617,6 +883,22 @@ class ClaudeStyleHook(RenderStreamHook):
                             if not stripped:
                                 continue
                             self._rail("bright_blue", f"[bright_blue]{stripped}[/bright_blue]")
+                    runtime_display = (event.payload or {}).get(
+                        "runtime_context_display"
+                    )
+                    if isinstance(runtime_display, dict):
+                        runtime_text = str(runtime_display.get("content") or "").strip()
+                        if runtime_text:
+                            from rich.markup import escape
+
+                            tool_call_id = runtime_display.get("tool_call_id") or "unknown"
+                            self._rail(
+                                "bright_green",
+                                "[bold bright_green]── Runtime Context "
+                                f"(folded into tool {escape(str(tool_call_id))}) ──[/bold bright_green]",
+                            )
+                            for line in runtime_text.splitlines():
+                                self._rail("gray70", f"[dim]{escape(line)}[/dim]")
                     self._state_steps.add(event.step_id)
                 return
             if event.step_id in self._thought_steps:
@@ -716,6 +998,11 @@ class ClaudeStyleHook(RenderStreamHook):
                 return
 
         if event.channel == "action":
+            if event.node == "tool_invocations" and event.step_id in self._action_steps:
+                # Planned actions already contain the canonical model request.
+                # Results, including failures, are rendered as observations;
+                # rendering invocation metadata again only duplicates actions.
+                return
             event_key = (event.step_id, id(event))
             if event_key in self._rendered_action_indices:
                 return
@@ -726,30 +1013,21 @@ class ClaudeStyleHook(RenderStreamHook):
                 status = action.get("status", "neutral")
                 bg = "blue" if status != "error" else "red"
 
-                # Multi-action: show parallel summary banner then individual actions
+                # Actions can be scheduled serially even when a model emitted
+                # several calls. Do not infer parallelism from their count.
                 if action_count > 1 and sub_actions:
                     self._rail(
                         "bright_blue",
-                        f"🚀 [bold white on bright_blue] {action_count} ACTIONS IN PARALLEL [/bold white on bright_blue]",
+                        f"🚀 [bold white on bright_blue] {action_count} ACTIONS [/bold white on bright_blue]",
                     )
                     for i, sub in enumerate(sub_actions):
-                        sub_label = sub.get("label", "?")
-                        sub_detail = sub.get("detail", "")
                         idx_key = (event.step_id, i)
                         if idx_key in self._rendered_action_indices:
                             continue
-                        line = f"  ┌ [bold white on {bg}] {sub_label} [/bold white on {bg}]"
-                        if sub_detail:
-                            line += f" [cyan]{sub_detail}[/cyan]"
-                        self._rail("blue", line)
+                        self._render_full_action(sub, bg=bg, prefix="  ")
                         self._rendered_action_indices.add(idx_key)
                 else:
-                    badge = action.get("label", "ACTION")
-                    detail = action.get("detail", "")
-                    line = f"🚀 [bold white on {bg}] {badge} [/bold white on {bg}]"
-                    if detail:
-                        line += f" [cyan]{detail}[/cyan]"
-                    self._rail("blue", line)
+                    self._render_full_action(action, bg=bg)
 
                 self._action_steps.add(event.step_id)
                 self._rendered_action_indices.add(event_key)
@@ -789,11 +1067,14 @@ class ClaudeStyleHook(RenderStreamHook):
             return
 
         if event.channel == "memory":
+            if not self.show_memory_panel:
+                return
             if event.step_id in self._memory_steps:
                 return
             mem = self._renderer.memory_summary(event)
             if mem:
-                self._rail("gray50", f"[dim]memory[/dim] [dim]{mem}[/dim]")
+                label = "Memory" if event.node == "cybergym_memory" else "memory"
+                self._rail("gray50", f"[dim]{label}[/dim] [dim]{mem}[/dim]")
                 self._memory_steps.add(event.step_id)
             return
 
@@ -953,23 +1234,82 @@ class ClaudeStyleHook(RenderStreamHook):
         order = [
             ("input_tokens_total", "ctx_used"),
             ("occupancy_ratio", "ctx_pct"),
+            ("system_prompt_tokens", "sys_toks"),
+            ("prepared_tokens", "anchor_toks"),
             ("history_tokens", "hist_toks"),
-            ("output_tokens", "out_toks"),
-            ("scratchpad_tokens", "sp_toks"),
-            ("scratchpad_items", "sp_items"),
-            ("memory_records", "mem_recs"),
-            ("workspace_files", "ws_files"),
+            ("counting_mode", "count_mode"),
         ]
         cells: List[str] = []
         for key, label in order:
             raw = stats.get(key, "-")
-            if key == "occupancy_ratio" and isinstance(raw, (int, float)):
+            if key == "input_tokens_total":
+                budget = stats.get("available_input_budget")
+                value = "-" if raw is None else str(raw)
+                if budget is not None:
+                    value += f"/{budget}"
+            elif key == "occupancy_ratio" and isinstance(raw, (int, float)):
                 value = f"{raw * 100:5.1f}%"
             else:
                 value = "-" if raw is None else str(raw)
             cell = f"{label:<9} {value:>6}"
             cells.append(cell)
         return "  ".join(cells)
+
+    def _render_full_action(self, action: Dict[str, Any], *, bg: str, prefix: str = "") -> None:
+        """Render exact action arguments without applying display truncation."""
+        label = str(action.get("label") or "ACTION")
+        action_id = str(action.get("action_id") or "")
+        suffix = f" [dim]id={action_id}[/dim]" if action_id else ""
+        self._rail("blue", f"{prefix}🚀 [bold white on {bg}] Action {label} [/bold white on {bg}]{suffix}")
+        args = action.get("args") if isinstance(action.get("args"), dict) else {}
+        if not args:
+            self._rail("blue", f"{prefix}   [dim](no arguments)[/dim]")
+            return
+        for key, value in args.items():
+            if isinstance(value, (dict, list)):
+                rendered = json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True)
+            else:
+                rendered = str(value)
+            rendered_lines = rendered.splitlines() or [""]
+            self._rail("blue", f"{prefix}   [cyan]{key}[/cyan]={rendered_lines[0]}")
+            for line in rendered_lines[1:]:
+                self._rail("blue", f"{prefix}     {line}")
+
+    def _render_context_digest(self, digest: Dict[str, Any]) -> List[str]:
+        role_counts = digest.get("role_counts") if isinstance(digest.get("role_counts"), dict) else {}
+        roles = ", ".join(f"{key}={value}" for key, value in sorted(role_counts.items()))
+        sections = digest.get("sections") if isinstance(digest.get("sections"), dict) else {}
+        active_sections = [key for key, value in sections.items() if value]
+        line = (
+            "Context digest "
+            f"messages={digest.get('message_count', '-')} "
+            f"roles=[{roles or '-'}] "
+            f"tool_calls={digest.get('tool_call_count', 0)} "
+            f"hash={digest.get('messages_hash', '-')}"
+        )
+        if active_sections:
+            line += " sections=" + ",".join(active_sections)
+        out = [line]
+        sidecar = str(digest.get("sidecar_path") or "").strip()
+        if sidecar:
+            out.append("Context sidecar " + self._truncate_middle(sidecar, 150))
+        if self.detail_mode == "debug":
+            recent = digest.get("recent_history")
+            if isinstance(recent, list) and recent:
+                parts = []
+                for item in recent[-6:]:
+                    if not isinstance(item, dict):
+                        continue
+                    label = str(item.get("role") or "?")
+                    if item.get("name"):
+                        label += f":{item.get('name')}"
+                    elif item.get("tool_names"):
+                        label += ":" + ",".join(str(x) for x in item.get("tool_names") or [])
+                    label += f"({item.get('content_len', 0)})"
+                    parts.append(label)
+                if parts:
+                    out.append("Context recent " + " -> ".join(parts))
+        return out
 
     def _print_agent_composition(self, engine: "Engine") -> None:
         self.console.print(Rule("[dim]AGENT COMPOSITION[/dim]", style="gray23"))
@@ -1115,6 +1455,12 @@ class ClaudeStyleHook(RenderStreamHook):
         if len(text) <= limit:
             return text
         return text[: max(8, limit - 3)] + "..."
+
+    def _truncate_middle(self, text: str, limit: int) -> str:
+        if len(text) <= limit:
+            return text
+        keep = max(8, (limit - 5) // 2)
+        return f"{text[:keep]}...{text[-keep:]}"
 
     def _start_status(self, text: str) -> None:
         if self._status is None:

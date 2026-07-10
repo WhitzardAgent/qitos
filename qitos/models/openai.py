@@ -25,6 +25,26 @@ from .base import Model, ModelStreamChunk
 GLM_TOKENIZER_ENV_VARS = ("QITOS_GLM_TOKENIZER_PATH", "GLM_TOKENIZER_PATH")
 
 
+def _wire_tool_schema(
+    tool_schema_payload: Optional[List[Dict[str, Any]]],
+) -> List[Dict[str, Any]]:
+    """Return provider-valid function tools from richer registry metadata."""
+    wire: List[Dict[str, Any]] = []
+    for item in list(tool_schema_payload or []):
+        if not isinstance(item, dict):
+            continue
+        function = item.get("function")
+        if not isinstance(function, dict) or not function.get("name"):
+            continue
+        clean_function = {
+            key: function[key]
+            for key in ("name", "description", "parameters", "strict")
+            if key in function and function[key] is not None
+        }
+        wire.append({"type": "function", "function": clean_function})
+    return wire
+
+
 def _relocate_chat_template_kwargs(kwargs: Dict[str, Any]) -> Dict[str, Any]:
     """Move ``chat_template_kwargs`` from top-level kwargs into ``extra_body``.
 
@@ -445,9 +465,10 @@ class OpenAIModel(Model):
         _ = protocol
         if str(delivery or "prompt_injection") not in {"api_parameter", "hybrid"}:
             return {}
-        if not tool_schema_payload:
+        wire = _wire_tool_schema(tool_schema_payload)
+        if not wire:
             return {}
-        return {"tools": tool_schema_payload}
+        return {"tools": wire}
 
     def supports_multimodal_input(self) -> bool:
         return True
@@ -614,9 +635,10 @@ class OpenAICompatibleModel(Model):
         _ = protocol
         if str(delivery or "prompt_injection") not in {"api_parameter", "hybrid"}:
             return {}
-        if not tool_schema_payload:
+        wire = _wire_tool_schema(tool_schema_payload)
+        if not wire:
             return {}
-        return {"tools": tool_schema_payload}
+        return {"tools": wire}
 
     def supports_multimodal_input(self) -> bool:
         return True

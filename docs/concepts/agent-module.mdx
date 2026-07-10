@@ -81,6 +81,27 @@ def prepare(self, state: StateT) -> str:
     return f"Task: {state.task}\nStep: {state.current_step}/{state.max_steps}"
 ```
 
+### Custom message builders
+
+Agents that need an exact provider message shape can expose a `message_builder`
+implementing `qitos.core.message_builder.MessageBuilder`. Its
+`MessageBuildResult` owns outbound messages and optional history entries.
+
+For a tool-using agent, set `runtime_context` with
+`runtime_context_delivery="merge_tool"` to attach transient controller state
+to the final real tool result. QitOS keeps its original `tool_call_id` and adds
+a notice that this state is not tool output. If no text tool result is available
+or a multimodal user turn is required, QitOS safely falls back to a user
+message; it never writes the transient context back to history.
+
+```python
+return MessageBuildResult(
+    messages=messages,
+    runtime_context=current_state_summary,
+    runtime_context_delivery="merge_tool",
+)
+```
+
 ### `decide` (optional)
 
 Override to provide your own decision logic before the Engine calls the LLM. Return `None` to let the Engine use its standard model decision path.
