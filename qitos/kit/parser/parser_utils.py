@@ -8,6 +8,7 @@ import re
 import xml.etree.ElementTree as ET
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
+from qitos.core._json_repair import escape_json_string_control_chars
 from qitos.kit.parser.func_parser import parse_first_action_invocation
 
 
@@ -69,6 +70,12 @@ def parse_object_like(text: str) -> Optional[Any]:
         return json.loads(text)
     except Exception:
         pass
+    repaired = escape_json_string_control_chars(text)
+    if repaired is not None:
+        try:
+            return json.loads(repaired)
+        except Exception:
+            pass
     try:
         return ast.literal_eval(text)
     except Exception:
@@ -85,6 +92,18 @@ def parse_object_like_detailed(
         return json.loads(text), json_mode
     except Exception:
         pass
+    repaired = escape_json_string_control_chars(text)
+    if repaired is not None:
+        try:
+            parsed = json.loads(repaired)
+            mode = (
+                "control_char_repair"
+                if json_mode == "direct"
+                else f"{json_mode}_control_char_repair"
+            )
+            return parsed, mode
+        except Exception:
+            pass
     try:
         return ast.literal_eval(text), literal_mode
     except Exception:
@@ -172,6 +191,10 @@ def parse_jsonish_object_detailed(
             warnings.append(
                 "AUTO-CORRECTED: parsed JSON-like payload using Python literal rules."
             )
+        if direct_mode == "control_char_repair":
+            warnings.append(
+                "AUTO-CORRECTED: escaped bare control characters inside JSON strings."
+            )
         return direct, warnings, direct_mode
 
     stripped = strip_code_fences(text)
@@ -211,6 +234,10 @@ def parse_jsonish_object_detailed(
             if parsed_mode == "python_literal":
                 candidate_warnings.append(
                     "AUTO-CORRECTED: parsed JSON-like payload using Python literal rules."
+                )
+            if parsed_mode.endswith("control_char_repair"):
+                candidate_warnings.append(
+                    "AUTO-CORRECTED: escaped bare control characters inside JSON strings."
                 )
             return parsed, warnings + candidate_warnings, parsed_mode
 

@@ -388,6 +388,63 @@ def test_openai_compatible_model_call_raw_retries_on_transient_errors(monkeypatc
     assert response.choices[0].message.content == "Final Answer: raw retried ok"
 
 
+def test_openai_compatible_model_disables_thinking_for_forced_tool_choice(
+    monkeypatch,
+) -> None:
+    captured: list[dict[str, object]] = []
+
+    class _FakeCompletions:
+        def create(self, **kwargs):
+            captured.append(dict(kwargs))
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(content="ok", tool_calls=None)
+                    )
+                ],
+                usage=SimpleNamespace(
+                    prompt_tokens=1, completion_tokens=1, total_tokens=2
+                ),
+            )
+
+    class _FakeClient:
+        def __init__(self, **kwargs):
+            self.chat = SimpleNamespace(completions=_FakeCompletions())
+
+    fake_openai = ModuleType("openai")
+    fake_openai.OpenAI = lambda **kwargs: _FakeClient(**kwargs)
+    fake_openai.APIError = Exception
+    monkeypatch.setitem(sys.modules, "openai", fake_openai)
+
+    llm = OpenAICompatibleModel(
+        model="qwen3.7-max",
+        api_key="test-key",
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+    )
+    llm.call_raw(
+        [{"role": "user", "content": "Call a tool"}],
+        tools=[{"type": "function", "function": {"name": "greet"}}],
+        tool_choice="required",
+        extra_body={"enable_thinking": True},
+    )
+    llm.call_raw(
+        [{"role": "user", "content": "Maybe call a tool"}],
+        tools=[{"type": "function", "function": {"name": "greet"}}],
+        tool_choice="auto",
+        extra_body={"enable_thinking": True},
+    )
+    llm.call_raw(
+        [{"role": "user", "content": "Call greet"}],
+        tools=[{"type": "function", "function": {"name": "greet"}}],
+        tool_choice={"type": "function", "function": {"name": "greet"}},
+        extra_body={"thinking": {"type": "enabled"}},
+    )
+
+    assert captured[0]["extra_body"] == {"enable_thinking": False}
+    assert captured[1]["extra_body"] == {"enable_thinking": True}
+    assert captured[2]["extra_body"] == {"thinking": {"type": "disabled"}}
+
+
 def test_explicit_provider_override_wins(monkeypatch) -> None:
     monkeypatch.setenv("QITOS_MODEL_PROVIDER", "anthropic")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-env")

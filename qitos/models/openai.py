@@ -42,6 +42,31 @@ def _relocate_chat_template_kwargs(kwargs: Dict[str, Any]) -> Dict[str, Any]:
     return result
 
 
+def _is_forced_tool_choice(tool_choice: Any) -> bool:
+    if isinstance(tool_choice, str):
+        return tool_choice.strip().lower() == "required"
+    return isinstance(tool_choice, dict)
+
+
+def _disable_thinking_for_forced_tool_choice(kwargs: Dict[str, Any]) -> Dict[str, Any]:
+    if not _is_forced_tool_choice(kwargs.get("tool_choice")):
+        return kwargs
+    result = dict(kwargs)
+    if "enable_thinking" in result:
+        result["enable_thinking"] = False
+    if "thinking" in result:
+        result["thinking"] = {"type": "disabled"}
+    extra_body = result.get("extra_body")
+    if isinstance(extra_body, dict):
+        patched_extra = dict(extra_body)
+        if "enable_thinking" in patched_extra:
+            patched_extra["enable_thinking"] = False
+        if "thinking" in patched_extra:
+            patched_extra["thinking"] = {"type": "disabled"}
+        result["extra_body"] = patched_extra
+    return result
+
+
 def _to_openai_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     normalized = normalize_messages(messages)
     out: List[Dict[str, Any]] = []
@@ -656,7 +681,9 @@ class OpenAICompatibleModel(Model):
     def _chat_completion(
         self, client: Any, messages: List[Dict[str, Any]], **kwargs: Any
     ) -> Any:
-        safe_kwargs = _relocate_chat_template_kwargs(kwargs)
+        safe_kwargs = _disable_thinking_for_forced_tool_choice(
+            _relocate_chat_template_kwargs(kwargs)
+        )
         response = client.chat.completions.create(
             model=self.model,
             messages=cast(Any, _to_openai_messages(messages)),
@@ -926,12 +953,15 @@ class AsyncOpenAICompatibleModel(OpenAICompatibleModel):
     async def _achat_completion(
         self, client: Any, messages: List[Dict[str, Any]], **kwargs: Any
     ) -> Any:
+        safe_kwargs = _disable_thinking_for_forced_tool_choice(
+            _relocate_chat_template_kwargs(kwargs)
+        )
         response = await client.chat.completions.create(
             model=self.model,
             messages=cast(Any, _to_openai_messages(messages)),
             temperature=self.temperature,
             max_tokens=self.max_tokens,
-            **kwargs,
+            **safe_kwargs,
         )
         self._set_last_usage(self._usage_from_response(response))
         return response

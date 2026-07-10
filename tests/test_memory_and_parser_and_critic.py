@@ -104,6 +104,22 @@ No additional notes.
     assert decision.meta["parser_diagnostics"]["salvage_applied"] is True
 
 
+def test_json_decision_parser_repairs_control_chars_inside_strings():
+    raw = (
+        '{"thought":"ok","action":{"name":"record_fact","args":{"evidence":"line1\n'
+        'line2"}}}'
+    )
+
+    decision = JsonDecisionParser().parse(raw)
+
+    assert decision.mode == "act"
+    assert decision.actions[0]["name"] == "record_fact"
+    assert decision.actions[0]["args"]["evidence"] == "line1\nline2"
+    diagnostics = decision.meta["parser_diagnostics"]
+    assert diagnostics["extraction_mode"] == "control_char_repair"
+    assert diagnostics["salvage_applied"] is True
+
+
 def test_balanced_object_extraction_ignores_preface_apostrophes():
     expected_json = (
         '{"thought":"Run nmap scan.",'

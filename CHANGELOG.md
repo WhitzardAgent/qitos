@@ -28,6 +28,7 @@ How to update:
 
 ### Fixed
 
+- Fixed OpenAI-compatible forced tool-call requests so conflicting thinking options are disabled, and repaired JSON/tool-call parsing for bare control characters inside string values.
 - Fixed JSON-like object extraction so apostrophes in surrounding natural-language text no longer hide valid JSON payloads.
 - Fixed `DelegateTool` context delivery so the optional tool-call `context` object is passed into the child agent via `Engine.run(..., context=...)`.
 - Fixed OpenAI-compatible tool schema generation for postponed or string annotations so CyberGym tools no longer emit invalid JSON Schema types.

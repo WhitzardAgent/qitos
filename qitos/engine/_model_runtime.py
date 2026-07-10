@@ -10,6 +10,7 @@ import re
 from pathlib import Path
 from typing import Any, Dict, Generic, List, Optional, TypeVar, cast
 
+from ..core._json_repair import escape_json_string_control_chars
 from ..core.action import Action
 
 _logger = logging.getLogger("qitos.engine._model_runtime")
@@ -1622,6 +1623,7 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
             return None
         arguments = function.get("arguments")
         args: Dict[str, Any] = {}
+        repaired_arguments = False
         if isinstance(arguments, dict):
             args = dict(arguments)
         elif isinstance(arguments, str):
@@ -1630,18 +1632,28 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
                 try:
                     parsed = json.loads(text)
                 except json.JSONDecodeError:
-                    return None
+                    repaired = escape_json_string_control_chars(text)
+                    if repaired is None:
+                        return None
+                    try:
+                        parsed = json.loads(repaired)
+                    except json.JSONDecodeError:
+                        return None
+                    repaired_arguments = True
                 if not isinstance(parsed, dict):
                     return None
                 args = dict(parsed)
         elif arguments is not None:
             return None
+        metadata = {
+            "tool_call_type": tool_call.get("type"),
+            "decision_source": "native_tool_calls",
+        }
+        if repaired_arguments:
+            metadata["arguments_repair"] = "escaped_control_chars"
         return Action(
             name=name,
             args=args,
             action_id=(str(tool_call.get("id")) if tool_call.get("id") is not None else None),
-            metadata={
-                "tool_call_type": tool_call.get("type"),
-                "decision_source": "native_tool_calls",
-            },
+            metadata=metadata,
         )

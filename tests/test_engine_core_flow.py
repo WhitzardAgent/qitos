@@ -1118,3 +1118,71 @@ def test_engine_native_tool_call_lane_falls_back_to_parser_on_bad_arguments():
         and (e.payload or {}).get("stage") == "native_tool_call_fallback"
     ]
     assert fallback_events
+
+
+def test_engine_native_tool_call_lane_repairs_control_chars_in_arguments():
+    class _ControlCharArgsModel:
+        model = "qwen-plus"
+
+        def __init__(self):
+            self.qitos_harness_metadata = {
+                "family_preset": "qwen",
+                "tool_policy": {
+                    "primary_delivery": "api_parameter",
+                    "fallback_delivery": "prompt_injection",
+                    "native_tool_call_preferred": True,
+                },
+            }
+
+        def call_raw(self, messages):
+            _ = messages
+            return {
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "record_fact",
+                            "arguments": '{"evidence":"line1\nline2"}',
+                        },
+                    }
+                ],
+            }
+
+    class _NeverParser:
+        def parse(self, raw_output, context=None):
+            _ = raw_output
+            _ = context
+            raise AssertionError("native tool-call repair should bypass parser")
+
+    class _Agent(DemoAgent):
+        def __init__(self):
+            registry = ToolRegistry()
+
+            @tool(name="record_fact")
+            def record_fact(evidence: str) -> str:
+                return evidence
+
+            registry.register(record_fact)
+            AgentModule.__init__(
+                self,
+                tool_registry=registry,
+                llm=_ControlCharArgsModel(),
+                model_parser=_NeverParser(),
+            )
+
+        def decide(self, state: DemoState, observation: dict[str, Any]):
+            _ = observation
+            if state.current_step > 0:
+                return Decision.final("done")
+            return None
+
+    result = Engine(agent=_Agent(), budget=RuntimeBudget(max_steps=3)).run("record")
+    record = result.records[0]
+    assert record.decision_source == "native_tool_calls"
+    assert record.native_tool_call_used is True
+    assert record.native_tool_call_fallback_reason is None
+    assert record.actions[0].name == "record_fact"
+    assert record.actions[0].args == {"evidence": "line1\nline2"}
+    assert record.actions[0].metadata["arguments_repair"] == "escaped_control_chars"
