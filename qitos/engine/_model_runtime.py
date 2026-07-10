@@ -1288,6 +1288,23 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
                 value = raw_output.get(key)
                 if isinstance(value, str):
                     return value
+            content = raw_output.get("content")
+            if isinstance(content, list):
+                parts: List[str] = []
+                for item in content:
+                    if isinstance(item, str):
+                        parts.append(item)
+                    elif isinstance(item, dict) and isinstance(item.get("text"), str):
+                        parts.append(str(item.get("text")))
+                    elif hasattr(item, "text") and isinstance(
+                        getattr(item, "text", None), str
+                    ):
+                        parts.append(str(getattr(item, "text")))
+                if parts:
+                    return "\n".join(parts)
+            reasoning = raw_output.get("reasoning_content")
+            if isinstance(reasoning, str):
+                return reasoning
             tool_calls = raw_output.get("tool_calls")
             if isinstance(tool_calls, list) and tool_calls:
                 return ""
@@ -1297,15 +1314,17 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
             message = raw_output.get("message")
             if isinstance(message, dict):
                 return self._extract_response_text(message)
+            if any(
+                key in raw_output
+                for key in ("content", "tool_calls", "reasoning_content")
+            ):
+                return ""
             return str(raw_output)
         choices = getattr(raw_output, "choices", None)
         if isinstance(choices, list) and choices:
             return self._extract_response_text(choices[0])
         message = getattr(raw_output, "message", None)
         if message is not None:
-            tool_calls = getattr(message, "tool_calls", None)
-            if isinstance(tool_calls, list) and tool_calls:
-                return ""
             content = getattr(message, "content", None)
             if isinstance(content, str):
                 return content
@@ -1328,6 +1347,14 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
             text = getattr(message, "text", None)
             if isinstance(text, str):
                 return text
+            tool_calls = getattr(message, "tool_calls", None)
+            if isinstance(tool_calls, list) and tool_calls:
+                return ""
+            if any(
+                hasattr(message, key)
+                for key in ("content", "tool_calls", "reasoning_content", "text")
+            ):
+                return ""
         for key in ("text", "content", "output_text"):
             value = getattr(raw_output, key, None)
             if isinstance(value, str):
