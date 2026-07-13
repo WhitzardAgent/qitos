@@ -31,6 +31,7 @@ class StopReason(str, Enum):
     ENV_TERMINAL = "env_terminal"
     TASK_VALIDATION_FAILED = "task_validation_failed"
     ENV_CAPABILITY_MISMATCH = "env_capability_mismatch"
+    INFRASTRUCTURE_INVALID = "infrastructure_invalid"
     UNRECOVERABLE_ERROR = "unrecoverable_error"
     INTERRUPT = "interrupt"
 

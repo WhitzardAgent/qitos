@@ -373,6 +373,15 @@ class _ActionRuntime(Generic[StateT, ActionT]):
         else:
             record.tool_invocations = exec_invocations
 
+        # Optional agent-owned pre-history commit for model-visible state
+        # receipts.  This is intentionally generic: an agent may canonicalize
+        # a state-tool result before history/TUI serialization while the
+        # normal reduce pass remains responsible for trace projection.  It is
+        # executed once in original tool-call order.
+        commit_results = getattr(getattr(engine, "agent", None), "commit_action_results", None)
+        if callable(commit_results):
+            commit_results(state, actions, results, step_id=record.step_id)
+
         if engine.env is not None:
             env_result = engine._run_env_step(
                 decision=decision,
