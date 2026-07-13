@@ -46,17 +46,37 @@ def _tool_specs(tool_registry: Any) -> List[Dict[str, Any]]:
     return []
 
 
-def _param_rows(spec: Dict[str, Any]) -> List[tuple[str, str]]:
+def _param_rows(spec: Dict[str, Any]) -> List[Dict[str, Any]]:
     schema = spec.get("input_schema") or {}
     props = schema.get("properties") if isinstance(schema, dict) else {}
-    rows: List[tuple[str, str]] = []
+    required = set(schema.get("required") or []) if isinstance(schema, dict) else set()
+    rows: List[Dict[str, Any]] = []
     if isinstance(props, dict):
         for key, value in props.items():
             if isinstance(value, dict):
-                rows.append((str(key), str(value.get("type") or "any")))
+                rows.append(
+                    {
+                        "name": str(key),
+                        "type": str(value.get("type") or "any"),
+                        "description": str(value.get("description") or ""),
+                        "required": key in required,
+                        "default": value.get("default"),
+                        "has_default": "default" in value,
+                        "enum": list(value.get("enum") or []),
+                    }
+                )
             else:
-                rows.append((str(key), "any"))
+                rows.append({"name": str(key), "type": "any", "description": "", "required": key in required, "has_default": False, "enum": []})
     return rows
+
+
+def _param_annotation(row: Dict[str, Any]) -> str:
+    notes = ["required" if row.get("required") else "optional"]
+    if row.get("enum"):
+        notes.append("one of " + " | ".join(str(item) for item in row["enum"]))
+    if row.get("has_default"):
+        notes.append(f"default={row.get('default')!r}")
+    return "; ".join(notes)
 
 
 def render_react_tool_schema(tool_registry: Any) -> str:
@@ -70,8 +90,9 @@ def render_react_tool_schema(tool_registry: Any) -> str:
         params = _param_rows(spec)
         if params:
             lines.append("  Parameters:")
-            for name, kind in params:
-                lines.append(f"  - {name}: {kind}")
+            for row in params:
+                detail = f" — {row['description']}" if row.get("description") else ""
+                lines.append(f"  - {row['name']}: {row['type']} ({_param_annotation(row)}){detail}")
     return "\n".join(lines).strip()
 
 
@@ -107,8 +128,11 @@ def render_xml_tool_schema(tool_registry: Any) -> str:
         params = _param_rows(spec)
         if params:
             lines.append("  <parameters>")
-            for name, kind in params:
-                lines.append(f'    <param name="{name}" type="{kind}" />')
+            for row in params:
+                lines.append(
+                    f'    <param name="{row["name"]}" type="{row["type"]}" '
+                    f'constraints="{_param_annotation(row)}">{row.get("description") or ""}</param>'
+                )
             lines.append("  </parameters>")
         lines.append("</tool>")
     return "\n".join(lines).strip()
@@ -123,8 +147,12 @@ def render_minimax_tool_schema(tool_registry: Any) -> str:
         lines.append(f'<invoke name="{spec["name"]}">')
         if description:
             lines.append(f"  <description>{description}</description>")
-        for name, kind in _param_rows(spec):
-            lines.append(f'  <parameter name="{name}" type="{kind}">value</parameter>')
+        for row in _param_rows(spec):
+            description = row.get("description") or "value"
+            lines.append(
+                f'  <parameter name="{row["name"]}" type="{row["type"]}" '
+                f'constraints="{_param_annotation(row)}">{description}</parameter>'
+            )
         lines.append("</invoke>")
     return "\n".join(lines).strip()
 

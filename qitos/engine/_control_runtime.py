@@ -358,8 +358,34 @@ class _ControlRuntime(Generic[StateT, ObservationT, ActionT]):
                 attempts = getattr(ctx_runtime, "reactive_compact_attempts", 0) if ctx_runtime else 0
                 history = engine._history()
                 if attempts < reactive_compact_limit and hasattr(history, "_messages") and len(history._messages) > 4:
-                    # Force aggressive compaction: keep only last 2 rounds
+                    # CyberGym exposes deterministic whole-transaction
+                    # sliding. Never route it through QitOS's model-summary
+                    # compactor; durable state already lives in its controller.
                     try:
+                        slider = getattr(history, "slide_window", None)
+                        if callable(slider):
+                            result = slider(
+                                required_savings_tokens=25_000,
+                                reason="reactive_provider_overflow",
+                            )
+                            if result.get("applied"):
+                                if ctx_runtime is not None:
+                                    ctx_runtime.reactive_compact_attempts = attempts + 1
+                                engine._emit(
+                                    step_id,
+                                    RuntimePhase.COMPACT,
+                                    payload={
+                                        "stage": "context_history",
+                                        "context": {
+                                            "stage": "history_window_slid",
+                                            **dict(result),
+                                        },
+                                    },
+                                )
+                                return True
+                            raise RuntimeError(
+                                "transaction history has no further complete window to slide"
+                            )
                         from ..kit.history.compact_history import CompactionController, CompactConfig
                         config = CompactConfig(
                             keep_last_rounds=1,

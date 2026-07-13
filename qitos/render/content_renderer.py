@@ -126,7 +126,6 @@ class ContentFirstRenderer:
                     return self._action_from_dict(actions[0])
                 summaries = [self._action_from_dict(a) for a in actions]
                 labels = [s["label"] for s in summaries]
-                details = [s["detail"] for s in summaries if s.get("detail")]
                 has_error = any(s.get("status") == "error" for s in summaries)
                 return {
                     "label": f"{len(actions)} ACTIONS",
@@ -294,6 +293,23 @@ class ContentFirstRenderer:
                     f"Context warning · {before:,} / {budget:,}{ratio}"
                     if isinstance(before, int) and isinstance(budget, int)
                     else "Context warning"
+                ),
+            }
+        if stage == "history_window_slid":
+            dropped = ctx.get("dropped_transactions")
+            step_start = ctx.get("dropped_step_start")
+            step_end = ctx.get("dropped_step_end")
+            detail = ""
+            if isinstance(dropped, int):
+                detail = f" · dropped {dropped} transactions"
+            if isinstance(step_start, int) and isinstance(step_end, int):
+                detail += f" · steps {step_start}–{step_end}"
+            return {
+                "color": "blue",
+                "text": (
+                    f"History window slid · {before:,} -> {after:,}{detail}"
+                    if isinstance(before, int) and isinstance(after, int)
+                    else f"History window slid{detail}"
                 ),
             }
         if stage == "microcompact_applied":

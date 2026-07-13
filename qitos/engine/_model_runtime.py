@@ -12,8 +12,6 @@ from pathlib import Path
 from typing import Any, Dict, Generic, List, Optional, TypeVar, cast
 
 from ..core.action import Action
-
-_logger = logging.getLogger("qitos.engine._model_runtime")
 from ..core.decision import Decision
 from ..core.errors import ErrorCategory, ParseExecutionError, RuntimeErrorInfo
 from ..core.model_response import ModelResponse
@@ -33,7 +31,7 @@ from ..protocols import get_protocol, resolve_protocol_chain
 from ..core.state import StateSchema
 from ._context_runtime import ContextOverflowError
 from ._protocol import _EngineProtocol
-from .streaming import StreamHandler, to_stream_handler
+from .streaming import to_stream_handler
 from .parser import (
     build_parser_diagnostics,
     normalize_parser_diagnostics,
@@ -41,6 +39,9 @@ from .parser import (
     parser_name,
 )
 from .states import RuntimePhase, StepRecord
+
+
+_logger = logging.getLogger("qitos.engine._model_runtime")
 
 
 StateT = TypeVar("StateT", bound=StateSchema)
@@ -279,6 +280,7 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
                         query["max_tokens"] = min(int(current_max), int(history_budget))
                     except Exception:
                         query["max_tokens"] = history_budget
+        history_impl: Any = None
         try:
             history_impl = engine._history()
             retrieved = history_impl.retrieve(
@@ -372,13 +374,13 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
                                 "target_tool_call_id": tool_call_id,
                             }
                         )
-                        if os.environ.get(
-                            "CYBERGYM_TUI_SHOW_RUNTIME_CONTEXT", ""
-                        ).strip().lower() in {"1", "true", "yes", "on"}:
-                            runtime_context_display = {
-                                "tool_call_id": tool_call_id,
-                                "content": wrapped_runtime_context,
-                            }
+                        # Runtime Context is transient provider state, but every
+                        # step must remain observable in the TUI/trace for
+                        # offline decision analysis.
+                        runtime_context_display = {
+                            "tool_call_id": tool_call_id,
+                            "content": wrapped_runtime_context,
+                        }
                     else:
                         runtime_context_delivery["fallback_reason"] = "no_text_tool_result"
                 elif requested_delivery == "merge_tool":
@@ -492,6 +494,135 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
             pre_context = context_runtime.apply_prompt_meter(pre_context, meter_result)
             if bool(getattr(prompt_meter, "required", False)) and str(meter_result.get("status") or "") != "ready":
                 raise ContextOverflowError("required SGLang prompt meter is unavailable")
+            # CyberGym exposes a deterministic sliding-window capability.  It
+            # is invoked only after measuring the exact provider packet,
+            # including native tool schemas.  The already-assembled packet and
+            # durable history are trimmed by identical whole step IDs, then
+            # re-measured. Other agents retain QitOS's generic history policy.
+            slider = getattr(history_impl, "slide_window", None)
+            if callable(slider):
+                for _ in range(3):
+                    planned = meter_result.get("planned_prompt_tokens")
+                    high = int(getattr(history_impl, "high_watermark", 150_000))
+                    target = int(getattr(history_impl, "target_watermark", 130_000))
+                    if not isinstance(planned, int) or planned <= high:
+                        break
+                    window_result = slider(
+                        current_prompt_tokens=planned,
+                        target_prompt_tokens=target,
+                        reason="provider_high_watermark",
+                    )
+                    dropped_steps = {
+                        int(item)
+                        for item in list(window_result.get("dropped_step_ids") or [])
+                    }
+                    if not window_result.get("applied") or not dropped_steps:
+                        break
+                    messages = [
+                        message
+                        for message in messages
+                        if not (
+                            isinstance(message.get("_step_id"), int)
+                            and int(message["_step_id"]) in dropped_steps
+                        )
+                    ]
+                    history = [
+                        message
+                        for message in history
+                        if not (
+                            isinstance(message.get("_step_id"), int)
+                            and int(message["_step_id"]) in dropped_steps
+                        )
+                    ]
+                    messages = self._ensure_chain_consistency(messages)
+                    llm_messages = self._strip_internal_message_keys(messages)
+                    pre_context = context_runtime.finalize_assembled_input(
+                        llm=engine.agent.llm,
+                        telemetry=pre_context,
+                        messages=llm_messages,
+                        compact_events=compact_events,
+                    )
+                    try:
+                        next_meter = prompt_meter.measure(
+                            messages=llm_messages,
+                            tools=list(request_options.get("tools") or []),
+                            llm=engine.agent.llm,
+                        )
+                    except Exception as exc:
+                        next_meter = {
+                            "status": "unavailable",
+                            "meter_source": "sglang_tokenize",
+                            "meter_error": f"{type(exc).__name__}: {exc}",
+                        }
+                    after = next_meter.get("planned_prompt_tokens")
+                    recorder = getattr(history_impl, "record_window_event", None)
+                    if callable(recorder) and isinstance(after, int):
+                        compact_events.append(
+                            recorder(
+                                window_result,
+                                before_prompt_tokens=planned,
+                                after_prompt_tokens=after,
+                            )
+                        )
+                    meter_result = next_meter
+                    pre_context = context_runtime.apply_prompt_meter(
+                        pre_context, meter_result
+                    )
+                history_metadata = list(
+                    getattr(history_impl, "get_last_message_metadata", lambda: [])()
+                    or []
+                )
+            pre_context = context_runtime.finalize_assembled_input(
+                llm=engine.agent.llm,
+                telemetry=pre_context,
+                messages=llm_messages,
+                compact_events=compact_events,
+            )
+            pre_context = context_runtime.apply_prompt_meter(
+                pre_context, meter_result
+            )
+        history_context_blocks = self._decision_context_blocks(
+            self._strip_internal_message_keys(history)
+        )
+        provider_context_blocks = self._decision_context_blocks(llm_messages)
+        expects_decision_context = "<DECISION_CONTEXT" in (
+            runtime_context or str(prepared or "")
+        )
+        if history_context_blocks:
+            raise RuntimeError(
+                "durable history contains a stale DECISION_CONTEXT block"
+            )
+        if expects_decision_context and len(provider_context_blocks) != 1:
+            raise RuntimeError(
+                "provider packet must contain exactly one current DECISION_CONTEXT"
+            )
+        final_tool_calls = [
+            str(call.get("id"))
+            for message in llm_messages
+            if isinstance(message, dict) and message.get("role") == "assistant"
+            for call in list(message.get("tool_calls") or [])
+            if isinstance(call, dict) and call.get("id")
+        ]
+        final_tool_results = [
+            str(message.get("tool_call_id"))
+            for message in llm_messages
+            if isinstance(message, dict)
+            and message.get("role") == "tool"
+            and message.get("tool_call_id")
+        ]
+        parity = {
+            "offered_call_count": len(final_tool_calls),
+            "result_count": len(final_tool_results),
+            "missing_result_ids": sorted(
+                set(final_tool_calls) - set(final_tool_results)
+            ),
+            "orphan_result_ids": sorted(
+                set(final_tool_results) - set(final_tool_calls)
+            ),
+        }
+        parity["valid"] = (
+            not parity["missing_result_ids"] and not parity["orphan_result_ids"]
+        )
         normalized_compact_events = context_runtime.normalize_history_events(
             compact_events, pre_context
         )
@@ -533,6 +664,8 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
                 "observation_modalities": list(record.observation_modalities),
                 "runtime_context_delivery": dict(runtime_context_delivery),
                 "tool_transaction_parity": parity,
+                "decision_context_block_count": len(provider_context_blocks),
+                "historical_decision_context_block_count": len(history_context_blocks),
             }
         )
         record.context = context_runtime.telemetry_dict(pre_context)
@@ -828,6 +961,7 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
             message_json = json.dumps(messages, ensure_ascii=False, sort_keys=True, default=str)
             tools_json = json.dumps(tools, ensure_ascii=False, sort_keys=True, default=str)
             combined = message_json + "\n" + tools_json
+            decision_context_blocks = self._decision_context_blocks(messages)
             bundle = {
                 "messages": messages,
                 "tools": tools,
@@ -842,12 +976,35 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
                 "messages_hash": hashlib.sha256(message_json.encode("utf-8")).hexdigest()[:16],
                 "schema_hash": hashlib.sha256(tools_json.encode("utf-8")).hexdigest()[:16],
                 "combined_hash": hashlib.sha256(combined.encode("utf-8")).hexdigest()[:16],
+                "decision_context_block_count": len(decision_context_blocks),
+                "decision_context_sha256": (
+                    hashlib.sha256(decision_context_blocks[0].encode("utf-8")).hexdigest()
+                    if len(decision_context_blocks) == 1
+                    else ""
+                ),
             }
             (step_dir / "model_input_bundle.json").write_text(
                 json.dumps(bundle, ensure_ascii=False, indent=2), encoding="utf-8"
             )
+            if len(decision_context_blocks) == 1:
+                (step_dir / "decision_context.md").write_text(
+                    decision_context_blocks[0] + "\n", encoding="utf-8"
+                )
         except Exception:
             _logger.debug("model input bundle sidecar write failed", exc_info=True)
+
+    @staticmethod
+    def _decision_context_blocks(messages: List[Dict[str, Any]]) -> List[str]:
+        """Return actual non-system Decision Context blocks in a packet."""
+        pattern = re.compile(
+            r"<DECISION_CONTEXT\b[^>]*>.*?</DECISION_CONTEXT>", re.DOTALL
+        )
+        blocks: List[str] = []
+        for message in messages:
+            if not isinstance(message, dict) or message.get("role") == "system":
+                continue
+            blocks.extend(pattern.findall(content_to_text(message.get("content"))))
+        return blocks
 
     def _build_model_request_options(
         self, *, prompt_bundle: Any, protocol: Any
