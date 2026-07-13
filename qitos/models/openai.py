@@ -7,6 +7,7 @@ Supports environment variable configuration: OPENAI_API_KEY, OPENAI_BASE_URL
 
 import json
 import os
+import time
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, AsyncIterator, Dict, Iterator, List, Optional, cast
@@ -23,6 +24,27 @@ from .base import Model, ModelStreamChunk
 
 
 GLM_TOKENIZER_ENV_VARS = ("QITOS_GLM_TOKENIZER_PATH", "GLM_TOKENIZER_PATH")
+
+
+def _usage_payload(usage: Any) -> Optional[Dict[str, Any]]:
+    """Normalize OpenAI/SGLang usage, including optional cache reporting."""
+    if usage is None:
+        return None
+    def field(name: str) -> Any:
+        return usage.get(name) if isinstance(usage, dict) else getattr(usage, name, None)
+    prompt_tokens = field("prompt_tokens")
+    completion_tokens = field("completion_tokens")
+    total_tokens = field("total_tokens")
+    details = field("prompt_tokens_details")
+    cached = details.get("cached_tokens") if isinstance(details, dict) else getattr(details, "cached_tokens", None)
+    if prompt_tokens is None and completion_tokens is None and total_tokens is None:
+        return None
+    return {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": total_tokens,
+        "cached_tokens": cached,
+    }
 
 
 def _wire_tool_schema(
@@ -214,7 +236,7 @@ class OpenAIModel(Model):
         system_prompt: Optional[str] = None,
         temperature: float = 0.7,
         max_tokens: int = 2048,
-        timeout: int = 60,
+        timeout: int = 120,
         context_window: Optional[int] = None,
         default_request_kwargs: Optional[Dict[str, Any]] = None,
     ):
@@ -304,13 +326,26 @@ class OpenAIModel(Model):
         self, client: Any, messages: List[Dict[str, Any]], **kwargs: Any
     ) -> Any:
         safe_kwargs = _relocate_chat_template_kwargs(kwargs)
-        response = client.chat.completions.create(
-            model=self.model,
-            messages=cast(Any, _to_openai_messages(messages)),
-            temperature=self.temperature,
-            max_tokens=self.max_tokens,
-            **safe_kwargs,
-        )
+        response = None
+        last_error: Exception | None = None
+        for attempt in range(3):
+            try:
+                response = client.chat.completions.create(
+                    model=self.model,
+                    messages=cast(Any, _to_openai_messages(messages)),
+                    temperature=self.temperature,
+                    max_tokens=self.max_tokens,
+                    **safe_kwargs,
+                )
+                break
+            except Exception as exc:
+                last_error = exc
+                if attempt >= 2:
+                    raise
+                time.sleep(2 ** attempt)
+        if response is None:
+            assert last_error is not None
+            raise last_error
         self._set_last_usage(self._usage_from_response(response))
         return response
 
@@ -379,6 +414,7 @@ class OpenAIModel(Model):
                             "prompt_tokens": getattr(chunk.usage, "prompt_tokens", None),
                             "completion_tokens": getattr(chunk.usage, "completion_tokens", None),
                             "total_tokens": getattr(chunk.usage, "total_tokens", None),
+                            "cached_tokens": getattr(getattr(chunk.usage, "prompt_tokens_details", None), "cached_tokens", None),
                         }
                         self._set_last_usage(usage_data)
                     yield ModelStreamChunk(
@@ -391,23 +427,7 @@ class OpenAIModel(Model):
             yield ModelStreamChunk(text=f"Error: {str(e)}", done=True)
 
     def _usage_from_response(self, response: Any) -> Optional[Dict[str, Any]]:
-        usage = getattr(response, "usage", None)
-        if usage is None:
-            return None
-        prompt_tokens = getattr(usage, "prompt_tokens", None)
-        completion_tokens = getattr(usage, "completion_tokens", None)
-        total_tokens = getattr(usage, "total_tokens", None)
-        if prompt_tokens is None and isinstance(usage, dict):
-            prompt_tokens = usage.get("prompt_tokens")
-            completion_tokens = usage.get("completion_tokens")
-            total_tokens = usage.get("total_tokens")
-        if prompt_tokens is None and completion_tokens is None and total_tokens is None:
-            return None
-        return {
-            "prompt_tokens": prompt_tokens,
-            "completion_tokens": completion_tokens,
-            "total_tokens": total_tokens,
-        }
+        return _usage_payload(getattr(response, "usage", None))
 
     def _format_tool_calls(self, tool_calls) -> str:
         """
@@ -501,7 +521,7 @@ class OpenAICompatibleModel(Model):
         system_prompt: Optional[str] = None,
         temperature: float = 0.7,
         max_tokens: int = 2048,
-        timeout: int = 60,
+        timeout: int = 120,
         context_window: Optional[int] = None,
         default_request_kwargs: Optional[Dict[str, Any]] = None,
     ):
@@ -679,13 +699,26 @@ class OpenAICompatibleModel(Model):
         self, client: Any, messages: List[Dict[str, Any]], **kwargs: Any
     ) -> Any:
         safe_kwargs = _relocate_chat_template_kwargs(kwargs)
-        response = client.chat.completions.create(
-            model=self.model,
-            messages=cast(Any, _to_openai_messages(messages)),
-            temperature=self.temperature,
-            max_tokens=self.max_tokens,
-            **safe_kwargs,
-        )
+        response = None
+        last_error: Exception | None = None
+        for attempt in range(3):
+            try:
+                response = client.chat.completions.create(
+                    model=self.model,
+                    messages=cast(Any, _to_openai_messages(messages)),
+                    temperature=self.temperature,
+                    max_tokens=self.max_tokens,
+                    **safe_kwargs,
+                )
+                break
+            except Exception as exc:
+                last_error = exc
+                if attempt >= 2:
+                    raise
+                time.sleep(2 ** attempt)
+        if response is None:
+            assert last_error is not None
+            raise last_error
         self._set_last_usage(self._usage_from_response(response))
         return response
 
@@ -699,23 +732,7 @@ class OpenAICompatibleModel(Model):
         return self._chat_completion(client, messages, **kwargs)
 
     def _usage_from_response(self, response: Any) -> Optional[Dict[str, Any]]:
-        usage = getattr(response, "usage", None)
-        if usage is None:
-            return None
-        prompt_tokens = getattr(usage, "prompt_tokens", None)
-        completion_tokens = getattr(usage, "completion_tokens", None)
-        total_tokens = getattr(usage, "total_tokens", None)
-        if prompt_tokens is None and isinstance(usage, dict):
-            prompt_tokens = usage.get("prompt_tokens")
-            completion_tokens = usage.get("completion_tokens")
-            total_tokens = usage.get("total_tokens")
-        if prompt_tokens is None and completion_tokens is None and total_tokens is None:
-            return None
-        return {
-            "prompt_tokens": prompt_tokens,
-            "completion_tokens": completion_tokens,
-            "total_tokens": total_tokens,
-        }
+        return _usage_payload(getattr(response, "usage", None))
 
     def stream(self, messages: List[Dict[str, Any]], **kwargs: Any) -> Iterator[ModelStreamChunk]:
         """Stream OpenAI-compatible response as chunks, yielding token-level text."""
@@ -760,6 +777,7 @@ class OpenAICompatibleModel(Model):
                             "prompt_tokens": getattr(chunk.usage, "prompt_tokens", None),
                             "completion_tokens": getattr(chunk.usage, "completion_tokens", None),
                             "total_tokens": getattr(chunk.usage, "total_tokens", None),
+                            "cached_tokens": getattr(getattr(chunk.usage, "prompt_tokens_details", None), "cached_tokens", None),
                         }
                         self._set_last_usage(usage_data)
                     continue
@@ -799,6 +817,7 @@ class OpenAICompatibleModel(Model):
                             "prompt_tokens": getattr(chunk.usage, "prompt_tokens", None),
                             "completion_tokens": getattr(chunk.usage, "completion_tokens", None),
                             "total_tokens": getattr(chunk.usage, "total_tokens", None),
+                            "cached_tokens": getattr(getattr(chunk.usage, "prompt_tokens_details", None), "cached_tokens", None),
                         }
                         self._set_last_usage(usage_data)
                     yield ModelStreamChunk(

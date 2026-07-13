@@ -14,6 +14,7 @@ from ..core.observation import Observation
 from ..core.state import StateSchema
 from ..core.task import Task
 from ..core.tool_result import ToolResult
+from ._action_runtime import _ActionRuntime
 from ._protocol import _EngineProtocol
 from .states import RuntimePhase
 
@@ -117,9 +118,18 @@ class _EnvRuntime(Generic[StateT, ObservationT, ActionT]):
     def _model_visible_tool_result_dict(self, item: Any) -> Any:
         result = ToolResult.from_value(item)
         tool_name = str(result.metadata.get("tool_name") or result.metadata.get("name") or "")
-        if tool_name.rsplit(".", 1)[-1] != "submit_poc":
-            return item
         output = result.output
+        has_summary = isinstance(output, dict) and bool(str(output.get("model_summary") or "").strip())
+        if tool_name.rsplit(".", 1)[-1] != "submit_poc" and not has_summary:
+            return item
+        if has_summary and tool_name.rsplit(".", 1)[-1] != "submit_poc":
+            visible_output = _ActionRuntime._model_visible_tool_output(self, tool_name, output)
+            return ToolResult(
+                status=result.status,
+                output=visible_output,
+                error=result.error,
+                metadata={**dict(result.metadata), "model_visible": True},
+            ).to_dict()
         if not isinstance(output, dict):
             return result.to_dict()
         if output.get("status") == "error":

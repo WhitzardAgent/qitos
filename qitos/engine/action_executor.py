@@ -30,8 +30,6 @@ _CONCURRENCY_SAFE_TOOLS = frozenset({
     # CyberGym read-only tools
     "READ", "GREP", "FindSymbols", "CallsiteSearch", "RepoMap",
     "FileInfo", "HexView", "StructProbe", "CorpusInspect",
-    # CyberGym submission (idempotent, safe to parallelize)
-    "submit_poc",
 })
 
 
@@ -118,9 +116,7 @@ class ActionExecutor:
             # Tools needing approval are NEVER concurrency safe
             if getattr(spec, "needs_approval", False):
                 return False
-            if getattr(spec, "concurrency_safe", False):
-                return True
-            if getattr(spec, "read_only", False):
+            if getattr(spec, "concurrency_safe", False) is True:
                 return True
         # Fallback: check legacy hardcoded set
         return tool_name in _CONCURRENCY_SAFE_TOOLS

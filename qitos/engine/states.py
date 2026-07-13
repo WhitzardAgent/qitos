@@ -82,6 +82,12 @@ class ContextTelemetry:
     provider_prompt_tokens: Optional[int] = None
     provider_completion_tokens: Optional[int] = None
     provider_total_tokens: Optional[int] = None
+    planned_prompt_tokens: Optional[int] = None
+    cached_tokens: Optional[int] = None
+    meter_source: str = "local_estimate"
+    meter_status: str = "not_configured"
+    meter_error: str = ""
+    token_estimate_error: Optional[int] = None
     occupancy_ratio: float = 0.0
     warning_threshold_ratio: float = 0.80
     counting_mode: str = "disabled"

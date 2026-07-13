@@ -19,6 +19,7 @@ from ..checkpoint.versioning import StateVersionTracker
 from ..checkpoint.durability import DurabilityManager, DurabilityMode
 from ..checkpoint.pending_writes import PendingWriteManager
 from ..core.agent_module import AgentModule
+from ..core.action import ActionExecutionPolicy
 from ..core.decision import Decision
 from ..core.errors import ErrorCategory, StopReason
 from ..core.env import Env, EnvObservation, EnvStepResult
@@ -289,6 +290,7 @@ class Engine(Generic[StateT, ObservationT, ActionT]):
         tracing_provider: Optional[Any] = None,
         interceptors: Optional[List[ToolInterceptor]] = None,
         auto_approve: bool = False,
+        action_execution_policy: Optional[ActionExecutionPolicy] = None,
     ):
         self.agent = agent
         self.agent_registry = agent_registry
@@ -353,6 +355,7 @@ class Engine(Generic[StateT, ObservationT, ActionT]):
         self.executor = (
             ActionExecutor(
                 tool_registry=self.tool_registry,
+                policy=action_execution_policy,
                 trace_writer=self.trace_writer,
                 delegate_depth=self._delegate_depth,
                 shared_memory=self._shared_memory,

@@ -185,3 +185,20 @@ def test_engine_surfaces_compact_events_and_history_metadata() -> None:
     assert any(item.get("summary") or item.get("compacted") for item in history_meta)
     context = model_input_events[-1].payload.get("context", {})
     assert context.get("input_tokens_total", 0) > 0
+
+
+def test_native_tool_history_keeps_only_complete_atomic_transactions() -> None:
+    from qitos.engine._model_runtime import _ModelRuntime
+    runtime = object.__new__(_ModelRuntime)
+    history = [
+        {"role": "assistant", "_step_id": 1, "tool_calls": [{"id": "a"}, {"id": "b"}]},
+        {"role": "tool", "_step_id": 1, "tool_call_id": "a", "content": "one"},
+        {"role": "tool", "_step_id": 1, "tool_call_id": "b", "content": "two"},
+        {"role": "assistant", "_step_id": 2, "tool_calls": [{"id": "dangling"}]},
+        {"role": "assistant", "_step_id": 3, "tool_calls": [{"id": "c"}]},
+        {"role": "tool", "_step_id": 3, "tool_call_id": "c", "content": "three"},
+    ]
+    result = runtime._trim_native_tool_history(history, max_rounds=16)
+    assert {m.get("_step_id") for m in result} == {1, 3}
+    consistent = runtime._ensure_chain_consistency(result)
+    assert all("Tool execution was interrupted" not in str(m.get("content", "")) for m in consistent)

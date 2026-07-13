@@ -19,6 +19,9 @@ How to update:
 
 ### Added
 
+- Added generic `model_summary` projection for native tool-call history and
+  model-visible observations. Tools can now retain full structured evidence
+  for reducers and replay while supplying a bounded readable result to models.
 - Added transient runtime-context delivery to `MessageBuildResult`. Custom
   agents can fold authoritative controller state into the final real tool
   result without persisting a synthetic user turn.

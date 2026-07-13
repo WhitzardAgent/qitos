@@ -317,7 +317,17 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
             "fallback_reason": None,
         }
         runtime_context_display: Dict[str, Any] | None = None
+        # The default builder has no separate transient context, but the
+        # final sidecar uses one common schema for both builder modes.
+        runtime_context = ""
         if custom_builder is not None and isinstance(custom_builder, _MessageBuilderProto):
+            configured_rounds = int(
+                getattr(engine.context_config, "conversation_max_rounds", 16)
+            )
+            if configured_rounds > 0:
+                history = self._trim_native_tool_history(
+                    history, max_rounds=configured_rounds
+                )
             from ..core.message_builder import MessageBuildRequest as _MBReq
             build_req = _MBReq(
                 step_id=record.step_id,
@@ -441,13 +451,47 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
         # Normalize dangling calls before auditing or dispatching. The sidecar
         # and digest must describe the exact payload handed to the provider.
         messages = self._ensure_chain_consistency(messages)
+        tool_calls = [
+            str(call.get("id")) for message in messages
+            if isinstance(message, dict) and message.get("role") == "assistant"
+            for call in list(message.get("tool_calls") or [])
+            if isinstance(call, dict) and call.get("id")
+        ]
+        tool_results = [
+            str(message.get("tool_call_id")) for message in messages
+            if isinstance(message, dict) and message.get("role") == "tool" and message.get("tool_call_id")
+        ]
+        parity = {
+            "offered_call_count": len(tool_calls),
+            "result_count": len(tool_results),
+            "missing_result_ids": sorted(set(tool_calls) - set(tool_results)),
+            "orphan_result_ids": sorted(set(tool_results) - set(tool_calls)),
+        }
+        parity["valid"] = not parity["missing_result_ids"] and not parity["orphan_result_ids"]
         llm_messages = self._strip_internal_message_keys(messages)
+        request_options = self._build_model_request_options(
+            prompt_bundle=prompt_bundle,
+            protocol=protocol,
+        )
         pre_context = context_runtime.finalize_assembled_input(
             llm=engine.agent.llm,
             telemetry=pre_context,
             messages=llm_messages,
             compact_events=compact_events,
         )
+        prompt_meter = getattr(engine.agent, "prompt_meter", None)
+        if prompt_meter is not None and callable(getattr(prompt_meter, "measure", None)):
+            try:
+                meter_result = prompt_meter.measure(
+                    messages=llm_messages,
+                    tools=list(request_options.get("tools") or []),
+                    llm=engine.agent.llm,
+                )
+            except Exception as exc:
+                meter_result = {"status": "unavailable", "meter_source": "sglang_tokenize", "meter_error": f"{type(exc).__name__}: {exc}"}
+            pre_context = context_runtime.apply_prompt_meter(pre_context, meter_result)
+            if bool(getattr(prompt_meter, "required", False)) and str(meter_result.get("status") or "") != "ready":
+                raise ContextOverflowError("required SGLang prompt meter is unavailable")
         normalized_compact_events = context_runtime.normalize_history_events(
             compact_events, pre_context
         )
@@ -466,10 +510,6 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
             raise ContextOverflowError(
                 f"context overflow: input_tokens={pre_context.input_tokens_total} budget={pre_context.available_input_budget}"
             )
-        request_options = self._build_model_request_options(
-            prompt_bundle=prompt_bundle,
-            protocol=protocol,
-        )
         model_input_digest = self._model_input_digest(state, record.step_id, llm_messages)
         tool_schema_digest = self._tool_schema_digest(request_options.get("tools"))
         model_input_digest["tool_schema"] = tool_schema_digest
@@ -481,6 +521,9 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
             request_options=request_options,
             prompt_bundle=prompt_bundle,
             protocol=protocol,
+            runtime_context=runtime_context,
+            runtime_context_delivery=runtime_context_delivery,
+            context=context_runtime.telemetry_dict(pre_context),
         )
         record.prompt_metadata = dict(prompt_metadata)
         record.prompt_metadata.update(
@@ -489,6 +532,7 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
                 "model_input_visual_count": int(record.model_input_visual_count),
                 "observation_modalities": list(record.observation_modalities),
                 "runtime_context_delivery": dict(runtime_context_delivery),
+                "tool_transaction_parity": parity,
             }
         )
         record.context = context_runtime.telemetry_dict(pre_context)
@@ -498,6 +542,7 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
             RuntimePhase.DECIDE,
             payload={
                 "stage": "model_input",
+                "tool_transaction_parity": parity,
                 "prepared": str(prepared),
                 "prepared_full": prepared_full,
                 "history_message_count": len(history),
@@ -531,6 +576,17 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
             raw_output=response.text,
         )
         record.context = context_runtime.telemetry_dict(post_context)
+        self._write_model_input_bundle_sidecar(
+            state,
+            record.step_id,
+            messages=llm_messages,
+            request_options=request_options,
+            prompt_bundle=prompt_bundle,
+            protocol=protocol,
+            runtime_context=runtime_context,
+            runtime_context_delivery=runtime_context_delivery,
+            context=record.context,
+        )
         record.model_response = response.to_summary_dict()
         engine._last_context_telemetry = dict(record.context)
         engine._emit(
@@ -757,6 +813,9 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
         request_options: Dict[str, Any],
         prompt_bundle: Any,
         protocol: Any,
+        runtime_context: str = "",
+        runtime_context_delivery: Dict[str, Any] | None = None,
+        context: Dict[str, Any] | None = None,
     ) -> None:
         try:
             metadata = dict(getattr(state, "metadata", {}) or {})
@@ -777,6 +836,9 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
                 "tool_delivery": str(
                     dict(getattr(prompt_bundle, "metadata", {}) or {}).get("tool_schema_delivery") or ""
                 ),
+                "pre_merge_runtime_context": str(runtime_context or ""),
+                "runtime_context_delivery": dict(runtime_context_delivery or {}),
+                "context": dict(context or {}),
                 "messages_hash": hashlib.sha256(message_json.encode("utf-8")).hexdigest()[:16],
                 "schema_hash": hashlib.sha256(tools_json.encode("utf-8")).hexdigest()[:16],
                 "combined_hash": hashlib.sha256(combined.encode("utf-8")).hexdigest()[:16],
@@ -1201,6 +1263,11 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
             "provider_prompt_tokens",
             "provider_completion_tokens",
             "provider_total_tokens",
+            "planned_prompt_tokens",
+            "cached_tokens",
+            "meter_source",
+            "meter_status",
+            "token_estimate_error",
         ):
             if key in context:
                 stats[key] = context.get(key)
@@ -2112,23 +2179,41 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
     ) -> List[Dict[str, Any]]:
         if max_rounds <= 0:
             return history
-        round_steps: List[int] = []
+        # A tool-call batch is an atomic transaction.  Only complete batches
+        # are eligible for retention; keeping a call without all of its
+        # results produces an invalid provider history and misleading replay.
+        expected_by_step: Dict[int, set[str]] = {}
+        responded_by_step: Dict[int, set[str]] = {}
         for message in history:
             if not isinstance(message, dict):
                 continue
             role = str(message.get("role") or "")
-            if not bool(message.get("tool_calls")) and role != "tool":
-                continue
             step_id = message.get("_step_id")
-            if isinstance(step_id, int):
-                round_steps.append(step_id)
-        if not round_steps:
+            if not isinstance(step_id, int):
+                continue
+            if role == "assistant":
+                for call in message.get("tool_calls") or []:
+                    call_id = call.get("id") if isinstance(call, dict) else None
+                    if call_id:
+                        expected_by_step.setdefault(step_id, set()).add(str(call_id))
+            elif role == "tool" and message.get("tool_call_id"):
+                responded_by_step.setdefault(step_id, set()).add(
+                    str(message["tool_call_id"])
+                )
+        complete_steps = sorted(
+            step for step, expected in expected_by_step.items()
+            if expected and expected <= responded_by_step.get(step, set())
+        )
+        if not complete_steps:
             return history
-        keep_steps = sorted(set(round_steps))[-max_rounds:]
+        keep_steps = complete_steps[-max_rounds:]
         earliest_step = min(keep_steps)
+        incomplete_steps = set(expected_by_step) - set(complete_steps)
         trimmed: List[Dict[str, Any]] = []
         for message in history:
             step_marker = message.get("_step_id")
+            if isinstance(step_marker, int) and step_marker in incomplete_steps:
+                continue
             if not isinstance(step_marker, int) or step_marker >= earliest_step:
                 trimmed.append(message)
         return trimmed
@@ -2204,13 +2289,20 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
         if not missing_ids:
             return messages
 
-        # Insert placeholder tool responses after the last message
+        # This is a last-resort provider parity guard for a genuinely current
+        # interrupted batch. Historical incomplete transactions are removed by
+        # _trim_native_tool_history and never receive synthetic prose.
         result = list(messages)
         for tid in missing_ids:
             result.append({
                 "role": "tool",
                 "tool_call_id": tid,
-                "content": "[Tool execution was interrupted. No result available.]",
+                "content": json.dumps({
+                    "status": "error",
+                    "code": "tool_call_not_completed",
+                    "reason": "The tool call did not produce a result in this transaction.",
+                    "next_action": "Retry the call if it is still relevant.",
+                }, sort_keys=True),
             })
         return result
 

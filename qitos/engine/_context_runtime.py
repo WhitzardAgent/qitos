@@ -212,6 +212,27 @@ class _ContextRuntime:
         )
         return telemetry
 
+    def apply_prompt_meter(
+        self, telemetry: ContextTelemetry, result: Dict[str, Any] | None
+    ) -> ContextTelemetry:
+        """Apply an optional provider-native preflight token measurement."""
+        if not isinstance(result, dict):
+            return telemetry
+        telemetry.meter_status = str(result.get("status") or "unavailable")
+        telemetry.meter_source = str(result.get("meter_source") or "provider_tokenize")
+        telemetry.meter_error = str(result.get("meter_error") or "")[:500]
+        planned = result.get("planned_prompt_tokens")
+        if isinstance(planned, int) and planned >= 0:
+            telemetry.planned_prompt_tokens = planned
+            telemetry.input_tokens_total = planned
+            budget = telemetry.available_input_budget
+            telemetry.occupancy_ratio = (
+                min(1.0, float(planned) / float(budget))
+                if isinstance(budget, int) and budget > 0 else 0.0
+            )
+            telemetry.counting_mode = "sglang_tokenize"
+        return telemetry
+
     def finalize_output(
         self,
         *,
@@ -226,6 +247,23 @@ class _ContextRuntime:
             total_tokens = usage.get("total_tokens")
             if isinstance(prompt_tokens, int) and prompt_tokens >= 0:
                 telemetry.provider_prompt_tokens = int(prompt_tokens)
+                if telemetry.planned_prompt_tokens is not None:
+                    telemetry.token_estimate_error = int(prompt_tokens) - int(telemetry.planned_prompt_tokens)
+                # The provider owns the final prompt measurement.  This is
+                # what TUI, trace and cumulative utilization must display.
+                telemetry.input_tokens_total = int(prompt_tokens)
+                budget = telemetry.available_input_budget
+                telemetry.occupancy_ratio = (
+                    min(1.0, float(prompt_tokens) / float(budget))
+                    if isinstance(budget, int) and budget > 0 else 0.0
+                )
+                telemetry.counting_mode = "provider_usage"
+                telemetry.meter_source = (
+                    "sglang_usage" if telemetry.meter_status == "ready" else "provider_usage"
+                )
+            cached = usage.get("cached_tokens")
+            if isinstance(cached, int) and cached >= 0:
+                telemetry.cached_tokens = cached
             if isinstance(completion_tokens, int) and completion_tokens >= 0:
                 telemetry.provider_completion_tokens = int(completion_tokens)
                 telemetry.output_tokens = int(completion_tokens)
@@ -334,6 +372,12 @@ class _ContextRuntime:
             "provider_prompt_tokens": telemetry.provider_prompt_tokens,
             "provider_completion_tokens": telemetry.provider_completion_tokens,
             "provider_total_tokens": telemetry.provider_total_tokens,
+            "planned_prompt_tokens": telemetry.planned_prompt_tokens,
+            "cached_tokens": telemetry.cached_tokens,
+            "meter_source": telemetry.meter_source,
+            "meter_status": telemetry.meter_status,
+            "meter_error": telemetry.meter_error,
+            "token_estimate_error": telemetry.token_estimate_error,
             "occupancy_ratio": telemetry.occupancy_ratio,
             "warning_threshold_ratio": telemetry.warning_threshold_ratio,
             "counting_mode": telemetry.counting_mode,

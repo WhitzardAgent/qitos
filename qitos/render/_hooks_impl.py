@@ -1238,6 +1238,9 @@ class ClaudeStyleHook(RenderStreamHook):
             ("prepared_tokens", "anchor_toks"),
             ("history_tokens", "hist_toks"),
             ("counting_mode", "count_mode"),
+            ("planned_prompt_tokens", "plan_toks"),
+            ("provider_prompt_tokens", "provider_toks"),
+            ("meter_source", "meter"),
         ]
         cells: List[str] = []
         for key, label in order:

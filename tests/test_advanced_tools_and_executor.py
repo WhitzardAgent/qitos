@@ -150,7 +150,7 @@ def test_action_executor_applies_validation_permission_and_truncation():
     assert ask.output["status"] == "needs_user_input"
 
 
-def test_action_executor_blocks_non_submit_tools_when_candidate_ready(tmp_path):
+def test_action_executor_does_not_embed_agent_specific_candidate_policy(tmp_path):
     (tmp_path / "poc.bin").write_bytes(b"candidate")
     registry = ToolRegistry().register(_EchoTool()).register(_EchoTool(name="submit_poc"))
     executor = ActionExecutor(registry)
@@ -170,9 +170,7 @@ def test_action_executor_blocks_non_submit_tools_when_candidate_ready(tmp_path):
         state=state,
     )[0]
 
-    assert blocked.status == ActionStatus.ERROR
-    assert blocked.metadata["error_category"] == "candidate_submit_ready_guard"
-    assert "submit_poc" in blocked.output["message"]
+    assert blocked.status == ActionStatus.SUCCESS
     assert allowed.status == ActionStatus.SUCCESS
 
 

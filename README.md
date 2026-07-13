@@ -18,6 +18,9 @@ QitOS core is the small framework. Product-grade applications and showcase agent
 
 ## What's New
 
+- **Readable tool evidence**: tools can now project a compact `model_summary`
+  into native tool-call history without discarding their full structured result
+  from reducers, traces, or replay.
 - **Modern CyberGym tool turns**: authoritative per-step runtime state is now folded into the final real tool result instead of creating a trailing user turn, preserving native `assistant -> tool` chains for compatible providers.
 - **qita trajectory workbench**: Run pages now open in a diagnosis-first view with a Focus Navigator, Agent Behavior Story, and right-side Inspector. Each step follows `Input -> Thought -> Action Calls -> Environment Observation`; every action is paired with its complete parameters, status, latency, and model-visible result, while canonical raw and unmatched evidence stays auditable in the Inspector. Failed calls expand by default, successful calls fold, and long content is wrapped and never available only as a truncated preview. CyberGym budget stops and `submit_poc` verification failures are promoted as review targets. Persistent light/dark themes cover board, run, replay, and compare pages.
 - **Cleaner delegate tools**: `AgentSpec.tool_name` lets multi-agent systems expose task-oriented tool names, and `DelegateTool` now delivers structured `context` payloads into child agents.
