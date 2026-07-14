@@ -512,41 +512,32 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
             pre_context = context_runtime.apply_prompt_meter(pre_context, meter_result)
             if bool(getattr(prompt_meter, "required", False)) and str(meter_result.get("status") or "") != "ready":
                 raise ContextOverflowError("required SGLang prompt meter is unavailable")
-            # CyberGym exposes a deterministic sliding-window capability.  It
-            # is invoked only after measuring the exact provider packet,
-            # including native tool schemas.  The already-assembled packet and
-            # durable history are trimmed by identical whole step IDs, then
-            # re-measured. Other agents retain QitOS's generic history policy.
+            # CyberGym exposes a deterministic sliding-window capability. It
+            # is invoked after measuring the exact provider packet, including
+            # native schemas. The soft target is deliberately below strict
+            # provider capacity, so recovery happens before a request can be
+            # rejected for context length.
             slider = getattr(history_impl, "slide_window", None)
             if callable(slider):
-                for _ in range(3):
-                    planned = meter_result.get("planned_prompt_tokens")
-                    high = int(getattr(history_impl, "high_watermark", 150_000))
-                    target = int(getattr(history_impl, "target_watermark", 130_000))
-                    if not isinstance(planned, int) or planned <= high:
-                        break
-                    window_result = slider(
-                        current_prompt_tokens=planned,
-                        target_prompt_tokens=target,
-                        reason="provider_high_watermark",
-                    )
+                def _remeasure_after_slide(
+                    window_result: Dict[str, Any], before: int
+                ) -> None:
+                    nonlocal messages, history, llm_messages, pre_context, meter_result
                     dropped_steps = {
                         int(item)
                         for item in list(window_result.get("dropped_step_ids") or [])
                     }
                     if not window_result.get("applied") or not dropped_steps:
-                        break
+                        return
                     messages = [
-                        message
-                        for message in messages
+                        message for message in messages
                         if not (
                             isinstance(message.get("_step_id"), int)
                             and int(message["_step_id"]) in dropped_steps
                         )
                     ]
                     history = [
-                        message
-                        for message in history
+                        message for message in history
                         if not (
                             isinstance(message.get("_step_id"), int)
                             and int(message["_step_id"]) in dropped_steps
@@ -578,13 +569,118 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
                         compact_events.append(
                             recorder(
                                 window_result,
-                                before_prompt_tokens=planned,
+                                before_prompt_tokens=before,
                                 after_prompt_tokens=after,
                             )
                         )
                     meter_result = next_meter
                     pre_context = context_runtime.apply_prompt_meter(
                         pre_context, meter_result
+                    )
+
+                soft_target = min(
+                    int(
+                        pre_context.soft_input_target
+                        or getattr(history_impl, "high_watermark", 150_000)
+                    ),
+                    int(getattr(history_impl, "high_watermark", 150_000)),
+                )
+                target = min(
+                    int(getattr(history_impl, "target_watermark", 130_000)),
+                    max(1, soft_target - 1_000),
+                )
+                for _ in range(3):
+                    planned = meter_result.get("planned_prompt_tokens")
+                    if not isinstance(planned, int) or planned <= soft_target:
+                        break
+                    window_result = slider(
+                        current_prompt_tokens=planned,
+                        target_prompt_tokens=target,
+                        reason="soft_input_target",
+                        recovery_stage="preemptive_slide",
+                    )
+                    if not window_result.get("applied"):
+                        break
+                    _remeasure_after_slide(window_result, planned)
+
+                # If regular eviction cannot fit the packet, clear the
+                # remaining *complete* history transactions.  The stable
+                # prompt and current Decision Context are rebuilt below, and
+                # incomplete call/result pairs are retained by the history.
+                planned = meter_result.get("planned_prompt_tokens")
+                hard = pre_context.hard_input_budget or pre_context.available_input_budget
+                if isinstance(planned, int) and isinstance(hard, int) and planned > hard:
+                    compact_events.append(
+                        {
+                            "stage": "context_history",
+                            "context": {
+                                "stage": "hard_slide",
+                                "input_tokens": planned,
+                                "hard_input_budget": hard,
+                                "reason": "soft sliding did not free enough history",
+                            },
+                        }
+                    )
+                    fresh_result = slider(
+                        current_prompt_tokens=planned,
+                        target_prompt_tokens=target,
+                        required_savings_tokens=planned,
+                        reason="hard_provider_capacity",
+                        retain_latest_complete=False,
+                        recovery_stage="fresh_history_window",
+                    )
+                    _remeasure_after_slide(fresh_result, planned)
+
+                # A very large stable prompt/Decision Context can still fit if
+                # this one request asks for fewer output tokens.  Lower only
+                # this request, never the configured model default.
+                planned = meter_result.get("planned_prompt_tokens")
+                hard = pre_context.hard_input_budget or pre_context.available_input_budget
+                if isinstance(planned, int) and isinstance(hard, int) and planned > hard:
+                    reduced = context_runtime.emergency_output_limit(
+                        llm=engine.agent.llm,
+                        input_tokens=planned,
+                        current_max_output_tokens=pre_context.max_output_tokens,
+                    )
+                    if reduced is not None and reduced < pre_context.max_output_tokens:
+                        context_runtime.apply_effective_output_limit(
+                            llm=engine.agent.llm,
+                            telemetry=pre_context,
+                            max_output_tokens=reduced,
+                        )
+                        request_options["max_tokens"] = reduced
+                        compact_events.append(
+                            {
+                                "stage": "context_history",
+                                "context": {
+                                    "stage": "output_reserve_reduced",
+                                    "before_max_output_tokens": pre_context.configured_max_output_tokens,
+                                    "after_max_output_tokens": reduced,
+                                    "input_tokens": planned,
+                                },
+                            }
+                        )
+                recovery_stages = {
+                    str((item.get("context") or {}).get("stage") or "")
+                    for item in compact_events
+                    if isinstance(item, dict) and item.get("stage") == "context_history"
+                }
+                if recovery_stages & {
+                    "preemptive_slide",
+                    "hard_slide",
+                    "fresh_history_window",
+                    "output_reserve_reduced",
+                }:
+                    compact_events.append(
+                        {
+                            "stage": "context_history",
+                            "context": {
+                                "stage": "recovered",
+                                "from": sorted(recovery_stages),
+                                "input_tokens": meter_result.get("planned_prompt_tokens"),
+                                "effective_max_output_tokens": pre_context.max_output_tokens,
+                            },
+                        }
                     )
                 history_metadata = list(
                     getattr(history_impl, "get_last_message_metadata", lambda: [])()

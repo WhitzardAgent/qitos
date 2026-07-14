@@ -62,9 +62,14 @@ class _ContextRuntime:
         fallback = int(self.config.default_context_window)
         return fallback if fallback > 0 else None
 
-    def resolve_request_budget(self, llm: Any) -> Dict[str, Any]:
+    def resolve_request_budget(
+        self, llm: Any, *, max_output_tokens: Optional[int] = None
+    ) -> Dict[str, Any]:
         window = self.context_window(llm)
-        max_output = int(getattr(llm, "max_tokens", 0) or 0)
+        configured_max_output = int(getattr(llm, "max_tokens", 0) or 0)
+        max_output = int(
+            configured_max_output if max_output_tokens is None else max_output_tokens
+        )
         reserve = 0
         if window is not None and window > 0:
             if self.config.safety_reserve_tokens is not None:
@@ -75,19 +80,30 @@ class _ContextRuntime:
                     int(self.config.min_safety_reserve_tokens),
                 )
             reserve = min(reserve, max(0, window - max_output))
-            available = max(1, window - max_output - reserve)
-            target = max(
+            hard = max(1, window - max_output - reserve)
+            utilization_target = max(
                 1,
                 int(float(window) * float(self.config.target_utilization)) - max_output,
             )
-            available = min(available, target)
+            # The soft target is for preventive history eviction only.  It
+            # must always sit below the hard provider capacity, unlike the
+            # p11 configuration where strict enforcement happened before the
+            # 150k history slider could run.
+            headroom_target = max(1, hard - int(self.config.compaction_headroom_tokens))
+            soft = min(hard, utilization_target, headroom_target)
         else:
-            available = None
+            hard = None
+            soft = None
         return {
             "context_window": window,
             "max_output_tokens": max_output,
+            "configured_max_output_tokens": configured_max_output,
             "reserve_tokens": reserve,
-            "available_input_budget": available,
+            # Keep this legacy field as the strict/hard value so consumers
+            # cannot accidentally enforce the soft compaction target.
+            "available_input_budget": hard,
+            "hard_input_budget": hard,
+            "soft_input_target": soft,
         }
 
     def count_tokens(self, payload: Any, llm: Any) -> tuple[int, str]:
@@ -116,12 +132,17 @@ class _ContextRuntime:
         telemetry = ContextTelemetry(
             context_window=budget["context_window"],
             available_input_budget=budget["available_input_budget"],
+            hard_input_budget=budget["hard_input_budget"],
+            soft_input_target=budget["soft_input_target"],
             system_prompt_tokens=system_tokens,
             prepared_tokens=prepared_tokens,
             warning_threshold_ratio=float(self.config.warning_ratio),
             counting_mode=self._merge_counting_mode([system_mode, prepared_mode]),
             reserve_tokens=int(budget["reserve_tokens"] or 0),
             max_output_tokens=int(budget["max_output_tokens"] or 0),
+            configured_max_output_tokens=int(
+                budget["configured_max_output_tokens"] or 0
+            ),
         )
         return telemetry
 
@@ -134,6 +155,52 @@ class _ContextRuntime:
             - int(telemetry.prepared_tokens)
         )
         return max(1, remaining)
+
+    def apply_effective_output_limit(
+        self,
+        *,
+        llm: Any,
+        telemetry: ContextTelemetry,
+        max_output_tokens: int,
+    ) -> ContextTelemetry:
+        """Recompute hard/soft input budgets for one recovered request."""
+        budget = self.resolve_request_budget(
+            llm, max_output_tokens=max(1, int(max_output_tokens))
+        )
+        telemetry.available_input_budget = budget["available_input_budget"]
+        telemetry.hard_input_budget = budget["hard_input_budget"]
+        telemetry.soft_input_target = budget["soft_input_target"]
+        telemetry.reserve_tokens = int(budget["reserve_tokens"] or 0)
+        telemetry.max_output_tokens = int(budget["max_output_tokens"] or 0)
+        telemetry.configured_max_output_tokens = int(
+            budget["configured_max_output_tokens"] or 0
+        )
+        telemetry.history_budget = self.history_budget(telemetry)
+        budget_value = telemetry.hard_input_budget or telemetry.available_input_budget
+        telemetry.occupancy_ratio = (
+            min(1.0, float(telemetry.input_tokens_total) / float(budget_value))
+            if isinstance(budget_value, int) and budget_value > 0
+            else 0.0
+        )
+        return telemetry
+
+    def emergency_output_limit(
+        self,
+        *,
+        llm: Any,
+        input_tokens: int,
+        current_max_output_tokens: int,
+    ) -> Optional[int]:
+        """Return a smaller valid output cap, or None when even 1k cannot fit."""
+        window = self.context_window(llm)
+        if window is None:
+            return None
+        reserve = int(self.resolve_request_budget(llm)["reserve_tokens"] or 0)
+        maximum = int(window) - reserve - int(input_tokens)
+        minimum = max(1, int(self.config.min_output_reserve_tokens))
+        if maximum < minimum:
+            return None
+        return min(int(current_max_output_tokens), maximum)
 
     def finalize_input(
         self,
@@ -325,7 +392,7 @@ class _ContextRuntime:
     def should_overflow(self, telemetry: ContextTelemetry) -> bool:
         if not self.enabled() or not self.config.strict_overflow:
             return False
-        budget = telemetry.available_input_budget
+        budget = telemetry.hard_input_budget or telemetry.available_input_budget
         if not isinstance(budget, int) or budget <= 0:
             return False
         return int(telemetry.input_tokens_total) > int(budget)
@@ -364,6 +431,8 @@ class _ContextRuntime:
         return {
             "context_window": telemetry.context_window,
             "available_input_budget": telemetry.available_input_budget,
+            "hard_input_budget": telemetry.hard_input_budget,
+            "soft_input_target": telemetry.soft_input_target,
             "system_prompt_tokens": telemetry.system_prompt_tokens,
             "history_tokens": telemetry.history_tokens,
             "prepared_tokens": telemetry.prepared_tokens,
@@ -390,6 +459,7 @@ class _ContextRuntime:
             "compact_events": list(telemetry.compact_events),
             "reserve_tokens": telemetry.reserve_tokens,
             "max_output_tokens": telemetry.max_output_tokens,
+            "configured_max_output_tokens": telemetry.configured_max_output_tokens,
             "history_budget": telemetry.history_budget,
         }
 
@@ -417,6 +487,8 @@ class _ContextRuntime:
                 "context_window": None,
                 "reserve_tokens": 0,
                 "available_input_budget": None,
+                "hard_input_budget": None,
+                "soft_input_target": None,
                 "max_output_tokens": 0,
             }
         )
@@ -424,7 +496,15 @@ class _ContextRuntime:
             "context_window": budget.get("context_window"),
             "reserve_tokens": budget.get("reserve_tokens"),
             "available_input_budget": budget.get("available_input_budget"),
+            "hard_input_budget": budget.get("hard_input_budget"),
+            "soft_input_target": budget.get("soft_input_target"),
             "max_output_tokens": budget.get("max_output_tokens"),
+            "configured_max_output_tokens": budget.get("configured_max_output_tokens"),
+            "last_effective_max_output_tokens": (
+                self.last_request.max_output_tokens
+                if self.last_request is not None
+                else budget.get("max_output_tokens")
+            ),
             "counting_mode": (
                 self.last_request.counting_mode
                 if self.last_request is not None

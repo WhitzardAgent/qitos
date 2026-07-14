@@ -47,6 +47,11 @@ class ContextConfig:
     safety_reserve_tokens: Optional[int] = None
     safety_reserve_ratio: float = 0.05
     min_safety_reserve_tokens: int = 1024
+    # Keep deterministic history recovery comfortably below the actual
+    # provider capacity.  This is intentionally distinct from the hard
+    # context-window calculation.
+    compaction_headroom_tokens: int = 8_000
+    min_output_reserve_tokens: int = 1_024
     default_context_window: int = 128000
     tool_result_max_chars: int = 50000
     tool_result_per_message_max_chars: int = 200000
@@ -74,6 +79,8 @@ class ContextBudget:
 class ContextTelemetry:
     context_window: Optional[int] = None
     available_input_budget: Optional[int] = None
+    hard_input_budget: Optional[int] = None
+    soft_input_target: Optional[int] = None
     system_prompt_tokens: int = 0
     history_tokens: int = 0
     prepared_tokens: int = 0
@@ -100,6 +107,7 @@ class ContextTelemetry:
     compact_events: List[Dict[str, Any]] = field(default_factory=list)
     reserve_tokens: int = 0
     max_output_tokens: int = 0
+    configured_max_output_tokens: int = 0
     history_budget: Optional[int] = None
 
 

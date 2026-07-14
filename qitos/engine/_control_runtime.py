@@ -351,7 +351,9 @@ class _ControlRuntime(Generic[StateT, ObservationT, ActionT]):
             engine.recovery_handler(state, phase, exc)
 
         if isinstance(exc, ContextOverflowError) or self._is_api_context_overflow(exc):
-            # Reactive compact: try compacting history and retrying before giving up
+            # Reactive recovery for provider-side context errors. CyberGym's
+            # history owns durable state outside the conversation, so it can
+            # safely evict complete transactions without a model summary.
             reactive_compact_limit = 3
             if getattr(engine.context_config, "reactive_compact", True):
                 ctx_runtime = getattr(engine, "_context_runtime", None)
@@ -367,7 +369,15 @@ class _ControlRuntime(Generic[StateT, ObservationT, ActionT]):
                             result = slider(
                                 required_savings_tokens=25_000,
                                 reason="reactive_provider_overflow",
+                                recovery_stage="provider_overflow_retry",
                             )
+                            if not result.get("applied"):
+                                result = slider(
+                                    required_savings_tokens=10**9,
+                                    reason="reactive_provider_overflow",
+                                    retain_latest_complete=False,
+                                    recovery_stage="fresh_history_window",
+                                )
                             if result.get("applied"):
                                 if ctx_runtime is not None:
                                     ctx_runtime.reactive_compact_attempts = attempts + 1
@@ -377,7 +387,10 @@ class _ControlRuntime(Generic[StateT, ObservationT, ActionT]):
                                     payload={
                                         "stage": "context_history",
                                         "context": {
-                                            "stage": "history_window_slid",
+                                            "stage": str(
+                                                result.get("recovery_stage")
+                                                or "provider_overflow_retry"
+                                            ),
                                             **dict(result),
                                         },
                                     },
@@ -419,7 +432,13 @@ class _ControlRuntime(Generic[StateT, ObservationT, ActionT]):
                         return True
                     except Exception:
                         pass
-            state.set_stop(StopReason.CONTEXT_OVERFLOW)
+            # A CyberGym fresh window with no history left means the stable
+            # prompt/schema/Decision Context itself cannot fit. That is a
+            # fixed launch/configuration defect, not an agent failure.
+            if hasattr(engine._history(), "slide_window"):
+                state.set_stop(StopReason.INFRASTRUCTURE_INVALID)
+            else:
+                state.set_stop(StopReason.CONTEXT_OVERFLOW)
             return False
 
         decision = engine.recovery_policy.handle(state, phase.value, step_id, exc)
