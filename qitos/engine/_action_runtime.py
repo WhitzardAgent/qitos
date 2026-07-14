@@ -159,70 +159,72 @@ class _ActionRuntime(Generic[StateT, ActionT]):
                     },
                 )
                 continue
-            loop_result = engine._tool_loop_detector.check_detailed(
-                normalized_action.name, normalized_action.args
-            )
-            if loop_result.level == "block":
-                loop_tool_result = ToolResult(
-                    status="error",
-                    output={
-                        "status": "blocked",
-                        "message": loop_result.message,
-                        "tool_name": normalized_action.name,
-                    },
-                    error="tool_call_loop_detected",
-                    metadata={
-                        "tool_name": normalized_action.name,
-                        "reason": loop_result.message,
-                    },
+            loop_detector = engine._tool_loop_detector
+            if loop_detector is not None:
+                loop_result = loop_detector.check_detailed(
+                    normalized_action.name, normalized_action.args
                 )
-                blocked_indices.add(i)
-                blocked_results.append((i, loop_tool_result))
-                blocked_invocations.append((i, {
-                    "tool_name": normalized_action.name,
-                    "action_id": normalized_action.action_id,
-                    "args": dict(normalized_action.args or {}),
-                    "toolset_name": None,
-                    "toolset_version": None,
-                    "source": "loop_detector",
-                    "attempts": 0,
-                    "latency_ms": 0,
-                    "status": "error",
-                    "error_category": "tool_call_loop_detected",
-                    "error": "tool_call_loop_detected",
-                }))
-                if self._history_tool_calls_enabled(record):
-                    tool_call_id = normalized_action.action_id or f"call_{record.step_id}_{i}"
-                    engine._history_append(
-                        "tool",
-                        self._serialize_for_tool_message(loop_tool_result.output, loop_tool_result.error),
-                        record.step_id,
-                        metadata={"source": "loop_detector", "tool_name": normalized_action.name},
-                        tool_call_id=tool_call_id,
-                        name=normalized_action.name,
+                if loop_result.level == "block":
+                    loop_tool_result = ToolResult(
+                        status="error",
+                        output={
+                            "status": "blocked",
+                            "message": loop_result.message,
+                            "tool_name": normalized_action.name,
+                        },
+                        error="tool_call_loop_detected",
+                        metadata={
+                            "tool_name": normalized_action.name,
+                            "reason": loop_result.message,
+                        },
                     )
-                engine._emit(
-                    record.step_id,
-                    RuntimePhase.ACT,
-                    payload={
-                        "stage": "tool_call_loop_detected",
+                    blocked_indices.add(i)
+                    blocked_results.append((i, loop_tool_result))
+                    blocked_invocations.append((i, {
                         "tool_name": normalized_action.name,
-                        "recovery_message": loop_result.message,
-                    },
-                )
-                continue
-            elif loop_result.level == "warn":
-                # Do not inject a synthetic user turn between a tool call and
-                # its result. The event remains visible to tracing/TUI only.
-                engine._emit(
-                    record.step_id,
-                    RuntimePhase.ACT,
-                    payload={
-                        "stage": "tool_call_loop_warning",
-                        "tool_name": normalized_action.name,
-                        "recovery_message": loop_result.message,
-                    },
-                )
+                        "action_id": normalized_action.action_id,
+                        "args": dict(normalized_action.args or {}),
+                        "toolset_name": None,
+                        "toolset_version": None,
+                        "source": "loop_detector",
+                        "attempts": 0,
+                        "latency_ms": 0,
+                        "status": "error",
+                        "error_category": "tool_call_loop_detected",
+                        "error": "tool_call_loop_detected",
+                    }))
+                    if self._history_tool_calls_enabled(record):
+                        tool_call_id = normalized_action.action_id or f"call_{record.step_id}_{i}"
+                        engine._history_append(
+                            "tool",
+                            self._serialize_for_tool_message(loop_tool_result.output, loop_tool_result.error),
+                            record.step_id,
+                            metadata={"source": "loop_detector", "tool_name": normalized_action.name},
+                            tool_call_id=tool_call_id,
+                            name=normalized_action.name,
+                        )
+                    engine._emit(
+                        record.step_id,
+                        RuntimePhase.ACT,
+                        payload={
+                            "stage": "tool_call_loop_detected",
+                            "tool_name": normalized_action.name,
+                            "recovery_message": loop_result.message,
+                        },
+                    )
+                    continue
+                if loop_result.level == "warn":
+                    # Do not inject a synthetic user turn between a tool call and
+                    # its result. The event remains visible to tracing/TUI only.
+                    engine._emit(
+                        record.step_id,
+                        RuntimePhase.ACT,
+                        payload={
+                            "stage": "tool_call_loop_warning",
+                            "tool_name": normalized_action.name,
+                            "recovery_message": loop_result.message,
+                        },
+                    )
 
         # If all actions were blocked, return immediately
         if len(blocked_indices) == len(actions):
@@ -398,10 +400,11 @@ class _ActionRuntime(Generic[StateT, ActionT]):
         record.action_results = results
         for item in results:
             engine._memory_append("action_result", item, record.step_id)
-        for normalized_action in executable_actions:
-            engine._tool_loop_detector.record(
-                normalized_action.name, dict(normalized_action.args or {})
-            )
+        if engine._tool_loop_detector is not None:
+            for normalized_action in executable_actions:
+                engine._tool_loop_detector.record(
+                    normalized_action.name, dict(normalized_action.args or {})
+                )
 
         if self._history_tool_calls_enabled(record):
             for idx, result in enumerate(results):

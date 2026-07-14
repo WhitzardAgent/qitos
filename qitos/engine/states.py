@@ -57,6 +57,11 @@ class ContextConfig:
     tool_result_per_message_max_chars: int = 200000
     conversation_max_rounds: int = 10
     reactive_compact: bool = True
+    # Generic QitOS applications retain repeated-call protection by default.
+    # Long-running CyberGym tasks can opt out so that a recoverable tool Card
+    # remains observable instead of turning a repeated request into a
+    # permanent runtime block.
+    tool_call_loop_detection_enabled: bool = True
     loop_max_repeats: int = 3
     max_handoffs: int = 10
     strict_overflow: bool = True

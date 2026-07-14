@@ -379,9 +379,18 @@ class Engine(Generic[StateT, ObservationT, ActionT]):
         self._token_usage: int = 0
         self._active_run_id: str = ""
         self._runtime_history: History = _EngineWindowHistory(window_size=24)
-        self._tool_loop_detector = loop_detector or ToolCallLoopDetector(
-            max_repeats=max(1, int(self.context_config.loop_max_repeats))
+        self._tool_loop_detector = (
+            loop_detector
+            if self.context_config.tool_call_loop_detection_enabled
+            else None
         )
+        if (
+            self._tool_loop_detector is None
+            and self.context_config.tool_call_loop_detection_enabled
+        ):
+            self._tool_loop_detector = ToolCallLoopDetector(
+                max_repeats=max(1, int(self.context_config.loop_max_repeats))
+            )
         self._last_system_prompt: str = ""
         self._critic_modified_prompt: Optional[str] = None
         self._critic_instruction_patch: Optional[str] = None
@@ -2182,7 +2191,8 @@ class Engine(Generic[StateT, ObservationT, ActionT]):
         self._resolved_protocol = None
         self._resolved_protocol_source = ""
         self._last_prompt_metadata = {}
-        self._tool_loop_detector.reset()
+        if self._tool_loop_detector is not None:
+            self._tool_loop_detector.reset()
         self._handoff_history = []
         self._critic_modified_prompt = None
         self._critic_instruction_patch = None

@@ -19,6 +19,7 @@ from qitos.kit.history import WindowHistory
 from qitos.kit.parser import ReActTextParser
 from qitos.core.memory import Memory, MemoryRecord
 from qitos.engine import RuntimeBudget
+from qitos.engine.states import ContextConfig
 from qitos.trace import runtime_step_to_trace
 
 
@@ -76,6 +77,105 @@ def test_engine_happy_path():
     assert result.step_summaries
     assert result.step_summaries[0].tool_name == "add"
     assert result.to_dict()["tool_calls_by_name"]["add"] == 1
+
+
+def test_tool_loop_detection_can_be_disabled_for_long_running_agents():
+    class RepeatingAgent(AgentModule[DemoState, dict[str, Any], Action]):
+        def __init__(self) -> None:
+            registry = ToolRegistry()
+            self.calls = 0
+
+            @tool(name="GLOB")
+            def glob() -> dict[str, str]:
+                self.calls += 1
+                return {
+                    "status": "no_match",
+                    "model_summary": "[GLOB:no_match]\n\nEnumeration complete: yes",
+                }
+
+            registry.register(glob)
+            super().__init__(tool_registry=registry)
+
+        def init_state(self, task: str, **kwargs: Any) -> DemoState:
+            _ = kwargs
+            return DemoState(task=task, max_steps=6)
+
+        def decide(
+            self, state: DemoState, observation: dict[str, Any]
+        ) -> Decision[Action]:
+            _ = observation
+            if state.current_step < 5:
+                return Decision.act(actions=[Action(name="GLOB", args={})])
+            return Decision.final("done")
+
+        def reduce(
+            self,
+            state: DemoState,
+            observation: dict[str, Any],
+            decision: Decision[Action],
+        ) -> DemoState:
+            _ = observation, decision
+            return state
+
+    agent = RepeatingAgent()
+    result = Engine(
+        agent=agent,
+        budget=RuntimeBudget(max_steps=6),
+        context_config=ContextConfig(tool_call_loop_detection_enabled=False),
+    ).run("repeat")
+
+    assert result.state.final_result == "done"
+    assert agent.calls == 5
+    assert all(
+        record.action_results[0].status == "success"
+        for record in result.records[:5]
+    )
+    assert not any(
+        event.payload.get("stage") == "tool_call_loop_detected"
+        for event in result.events
+    )
+
+
+def test_tool_loop_detection_remains_enabled_by_default():
+    class RepeatingAgent(AgentModule[DemoState, dict[str, Any], Action]):
+        def __init__(self) -> None:
+            registry = ToolRegistry()
+            self.calls = 0
+
+            @tool(name="GLOB")
+            def glob() -> dict[str, str]:
+                self.calls += 1
+                return {"model_summary": "[GLOB:no_match]"}
+
+            registry.register(glob)
+            super().__init__(tool_registry=registry)
+
+        def init_state(self, task: str, **kwargs: Any) -> DemoState:
+            _ = kwargs
+            return DemoState(task=task, max_steps=5)
+
+        def decide(
+            self, state: DemoState, observation: dict[str, Any]
+        ) -> Decision[Action]:
+            _ = observation
+            if state.current_step < 4:
+                return Decision.act(actions=[Action(name="GLOB", args={})])
+            return Decision.final("done")
+
+        def reduce(
+            self,
+            state: DemoState,
+            observation: dict[str, Any],
+            decision: Decision[Action],
+        ) -> DemoState:
+            _ = observation, decision
+            return state
+
+    agent = RepeatingAgent()
+    result = Engine(agent=agent, budget=RuntimeBudget(max_steps=5)).run("repeat")
+
+    assert agent.calls == 3
+    assert result.records[3].action_results[0].error == "tool_call_loop_detected"
 
 
 def test_agent_run_shortcut():
