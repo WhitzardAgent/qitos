@@ -466,9 +466,23 @@ class _ActionRuntime(Generic[StateT, ActionT]):
         return [item.to_dict() for item in results]
 
     def _serialize_for_tool_message(self, output: Any, error: str | None) -> str:
+        # ``output`` has already passed through ``_model_visible_tool_output``.
+        # When a tool supplies a model_summary, it is therefore the exact Card
+        # that provider history, TUI, and assembled messages must share.  Do
+        # not wrap that Card in {"error": ..., "output": ...}: JSON obscures
+        # the recovery instruction and made failed GREP/submit_poc calls look
+        # like an opaque error to the model.
+        if isinstance(output, str):
+            card = output.strip()
+            if card:
+                if error not in (None, "") and str(error) not in card:
+                    return f"{card}\n\nError: {error}"
+                return card
+            if error not in (None, ""):
+                return f"[TOOL:error]\n\nError: {error}"
+            return ""
+
         payload = output if error in (None, "") else {"error": str(error), "output": output}
-        if isinstance(payload, str):
-            return payload
         try:
             return json.dumps(payload, ensure_ascii=False, default=str)
         except Exception:

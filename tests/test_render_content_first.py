@@ -360,6 +360,40 @@ def test_claude_style_hook_does_not_duplicate_successful_tool_invocations() -> N
     assert "Action(" not in text
 
 
+def test_claude_style_hook_preserves_recoverable_tool_error_card() -> None:
+    """A failed tool must show its recovery Card instead of only an Error title."""
+    hook = ClaudeStyleHook(max_preview_chars=400)
+    hook.console = Console(record=True, width=140)
+    hook.on_render_event(
+        RenderEvent(
+            channel="observation",
+            node="action_results",
+            step_id=2,
+            payload={
+                "action_results": [
+                    ToolResult(
+                        status="error",
+                        error="The cursor does not match this query or its snapshot is unavailable.",
+                        output=(
+                            "[GREP:invalid_cursor]\n\n"
+                            "Code: `INVALID_CURSOR`\n"
+                            "The cursor does not match this query or its snapshot is unavailable.\n\n"
+                            "Retry: GREP(pattern=\"parse_record\", path=\"repo-vul/src\")"
+                        ),
+                        metadata={"tool_name": "GREP"},
+                    ).to_dict()
+                ]
+            },
+        )
+    )
+
+    text = hook.console.export_text()
+    assert "Error: GREP Result" in text
+    assert "[GREP:invalid_cursor]" in text
+    assert "INVALID_CURSOR" in text
+    assert "Retry: GREP" in text
+
+
 def test_claude_style_hook_prints_full_action_arguments_without_false_parallel() -> None:
     hook = ClaudeStyleHook(max_preview_chars=20)
     hook.console = Console(record=True, width=180)

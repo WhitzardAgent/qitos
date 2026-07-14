@@ -1183,6 +1183,18 @@ class ClaudeStyleHook(RenderStreamHook):
 
         if status == "error":
             self._rail("red", f"{prefix} [red][✘] Error: {title}[/red]")
+            # A failed tool call is still an observation.  In particular,
+            # CyberGym tools return model-facing recovery Cards (for example
+            # an invalid cursor retry or a missing PoC filename) in ``body``.
+            # Returning immediately used to hide that actionable Card in the
+            # TUI while the provider history retained it, creating two
+            # incompatible views of the same result.
+            body = str(obs.get("body", "")).strip()
+            if body:
+                self._rail("red", f"[red]{body}[/red]")
+            url = str(obs.get("url", "")).strip()
+            if url:
+                self._rail("red", f"[dim]URL: {url}[/dim]")
             return
 
         self._rail(

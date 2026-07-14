@@ -64,6 +64,27 @@ def test_submit_uses_its_privacy_reviewed_model_summary() -> None:
     assert "fixed_side_verdict" not in visible
 
 
+def test_failed_tool_history_keeps_recoverable_card_not_json_wrapper() -> None:
+    runtime = _ActionRuntime.__new__(_ActionRuntime)
+    payload = {
+        "model_summary": (
+            "[GREP:invalid_cursor]\n\n"
+            "Code: `INVALID_CURSOR`\n"
+            "The cursor does not match this query or its snapshot is unavailable.\n\n"
+            "Retry: GREP(pattern=\"parse_record\", path=\"repo-vul/src\")"
+        ),
+        "status": "invalid_cursor",
+    }
+    error = "The cursor does not match this query or its snapshot is unavailable."
+
+    model_output = runtime._model_visible_tool_output("GREP", payload)
+    history_content = runtime._serialize_for_tool_message(model_output, error)
+
+    assert history_content == payload["model_summary"]
+    assert not history_content.lstrip().startswith("{")
+    assert "Retry: GREP" in history_content
+
+
 @dataclass
 class _ProjectionState(StateSchema):
     pass
