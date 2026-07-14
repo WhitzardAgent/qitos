@@ -51,7 +51,12 @@ class OpenAICompatibleAdapter(ModelAdapter):
         api_key = kwargs.get("api_key")
         base_url = kwargs.get("base_url")
         context_policy = kwargs["context_policy"]
-        temperature = _coerce_float(kwargs.get("temperature"), 0.2)
+        raw_temperature = kwargs.get("temperature")
+        temperature = (
+            _coerce_float(raw_temperature, 0.2)
+            if raw_temperature is not None
+            else None
+        )
         max_tokens = _coerce_int(kwargs.get("max_tokens"), 2048)
         timeout = _coerce_int(kwargs.get("timeout"), 120)
         system_prompt = kwargs.get("system_prompt")

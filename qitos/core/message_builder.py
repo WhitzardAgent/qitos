@@ -35,8 +35,9 @@ class MessageBuildResult:
     # Optional keys: "metadata", "tool_calls", "tool_call_id", "name"
     history_entries: List[Dict[str, Any]] = field(default_factory=list)
     # Optional transient working-state payload for the current request.  The
-    # engine wraps it in <RUNTIME_CONTEXT> and delivers it according to
-    # ``runtime_context_delivery`` without persisting a synthetic history turn.
+    # engine wraps generic state in <RUNTIME_CONTEXT>; an already delimited
+    # <DECISION_CONTEXT> is delivered verbatim.  Neither form is persisted as
+    # a synthetic history turn.
     runtime_context: Optional[str] = None
     # ``merge_tool`` appends the wrapped context to the final tool result;
     # ``user`` appends a trailing user message; ``none`` leaves messages intact.

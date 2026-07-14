@@ -49,6 +49,23 @@ def _make_executor(
 
 
 class TestSpecDrivenClassification:
+
+    def test_parallel_whitelist_restricts_other_read_only_tools(self):
+        allowed = FakeTool(
+            "READ", spec=ToolSpec(name="READ", description="Read", concurrency_safe=True)
+        )
+        excluded = FakeTool(
+            "TODO_LIST", spec=ToolSpec(name="TODO_LIST", description="List", concurrency_safe=True)
+        )
+        executor = _make_executor(
+            {"READ": allowed, "TODO_LIST": excluded},
+            ActionExecutionPolicy(
+                mode="parallel", max_concurrency=8, parallel_tool_names=frozenset({"READ"})
+            ),
+        )
+        assert executor._is_concurrency_safe("READ")
+        assert not executor._is_concurrency_safe("TODO_LIST")
+
     def test_concurrency_safe_spec(self):
         spec = ToolSpec(name="safe_read", description="Read", concurrency_safe=True)
         tool = FakeTool("safe_read", spec=spec)

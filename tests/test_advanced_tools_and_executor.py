@@ -96,6 +96,15 @@ class _UnsafeSleepTool(BaseTool):
         return {"value": value}
 
 
+class _MissingResultTool(BaseTool):
+    def __init__(self) -> None:
+        super().__init__(ToolSpec(name="MISSING", description="returns nothing"))
+
+    def run(self, runtime_context=None):
+        _ = runtime_context
+        return None
+
+
 @dataclass
 class _ExecutorState(StateSchema):
     pass
@@ -148,6 +157,30 @@ def test_action_executor_applies_validation_permission_and_truncation():
     )[0]
     assert ask.status == ActionStatus.SKIPPED
     assert ask.output["status"] == "needs_user_input"
+
+
+def test_action_executor_reports_unknown_tool_without_name_repair():
+    registry = ToolRegistry().register(_EchoTool(name="GREP"))
+    executor = ActionExecutor(registry)
+
+    result = executor.execute([Action(name="Grep", args={"value": "x"})])[0]
+
+    assert result.status == ActionStatus.ERROR
+    assert result.metadata["error_category"] == "tool_not_found"
+    assert result.metadata["executed"] is False
+    assert "Unknown tool: `Grep`" in result.output
+    assert "`GREP`" in result.output
+
+
+def test_action_executor_reports_missing_result_instead_of_none():
+    executor = ActionExecutor(ToolRegistry().register(_MissingResultTool()))
+
+    result = executor.execute([Action(name="MISSING", args={})])[0]
+
+    assert result.status == ActionStatus.ERROR
+    assert result.output is not None
+    assert "TOOL_RESULT_MISSING" in result.output
+    assert result.metadata["error_category"] == "tool_result_missing"
 
 
 def test_action_executor_does_not_embed_agent_specific_candidate_policy(tmp_path):

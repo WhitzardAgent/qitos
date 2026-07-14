@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, Optional
+from typing import Any, Dict, FrozenSet, Optional
 
 
 class ActionKind(str, Enum):
@@ -67,3 +67,7 @@ class ActionExecutionPolicy:
     mode: str = "serial"  # serial | parallel
     fail_fast: bool = False
     max_concurrency: int = 4
+    # ``None`` preserves the executor's ordinary read-only/concurrency-safe
+    # classification.  A caller may restrict parallel execution to a smaller
+    # set without changing the global QitOS policy.
+    parallel_tool_names: FrozenSet[str] | None = None

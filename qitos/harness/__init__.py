@@ -56,7 +56,7 @@ def build_model_for_preset(
     base_url: str | None = None,
     protocol: Any = None,
     tool_delivery: str | None = None,
-    temperature: float = 0.2,
+    temperature: float | None = 0.2,
     max_tokens: int = 2048,
     timeout: int = 120,
     system_prompt: str | None = None,

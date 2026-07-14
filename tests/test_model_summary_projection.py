@@ -51,17 +51,16 @@ def test_env_observation_projects_model_summary() -> None:
     assert "artifact_path" not in str(visible)
 
 
-def test_submit_redaction_takes_precedence_over_model_summary() -> None:
+def test_submit_uses_its_privacy_reviewed_model_summary() -> None:
     runtime = _ActionRuntime.__new__(_ActionRuntime)
     payload = {
-        "model_summary": "do not expose this",
+        "model_summary": "[submit_poc] a.bin\n\n! VUL TRIGGERED",
         "status": "success",
         "raw_output": "safe visible result",
         "fixed_side_verdict": "private",
     }
     visible = runtime._model_visible_tool_output("submit_poc", payload)
-    assert visible["output"] == "safe visible result"
-    assert "model_summary" not in visible
+    assert visible == payload["model_summary"]
     assert "fixed_side_verdict" not in visible
 
 

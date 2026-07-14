@@ -25,7 +25,7 @@ class ToolPermissionSpec:
     permissions: ToolPermission = field(default_factory=ToolPermission)
     needs_approval: bool = False
     read_only: bool = False
-    concurrency_safe: bool = False
+    concurrency_safe: Optional[bool] = None
     required_ops: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -243,7 +243,7 @@ class ToolSpec:
     input_schema: Optional[Dict[str, Any]] = None
     output_schema: Optional[Dict[str, Any]] = None
     read_only: bool = False
-    concurrency_safe: bool = False
+    concurrency_safe: Optional[bool] = None
     needs_approval: bool = False
     requires_user_interaction: bool = False
     supports_background: bool = False
@@ -267,7 +267,7 @@ class ToolMeta:
     input_schema: Optional[Dict[str, Any]] = None
     output_schema: Optional[Dict[str, Any]] = None
     read_only: bool = False
-    concurrency_safe: bool = False
+    concurrency_safe: Optional[bool] = None
     needs_approval: bool = False
     requires_user_interaction: bool = False
     supports_background: bool = False
@@ -453,7 +453,7 @@ def tool(
     input_schema: Optional[Dict[str, Any]] = None,
     output_schema: Optional[Dict[str, Any]] = None,
     read_only: bool = False,
-    concurrency_safe: bool = False,
+    concurrency_safe: Optional[bool] = None,
     needs_approval: bool = False,
     requires_user_interaction: bool = False,
     supports_background: bool = False,

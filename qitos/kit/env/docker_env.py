@@ -69,7 +69,12 @@ class DockerFSCapability(FileSystemCapability):
 
     def write_text(self, path: str, content: str) -> None:
         inner = self._inner_path(path)
-        encoded = content.replace("\\", "\\\\").replace("'", "'\"'\"'")
+        # ``printf '%s'`` does not interpret backslashes in its argument.  The
+        # old implementation doubled every backslash before shell quoting,
+        # silently changing source files and binary-builder helpers written in
+        # a Docker environment.  Only the surrounding single-quoted shell
+        # literal needs escaping.
+        encoded = content.replace("'", "'\"'\"'")
         cmd = f"mkdir -p {shlex.quote(str(Path(inner).parent))} && printf '%s' '{encoded}' > {shlex.quote(inner)}"
         result = self.cmd.run(cmd)
         if result.get("returncode", 1) != 0:
@@ -227,10 +232,8 @@ class DockerEnv(HostEnv):
         if self.network:
             run_cmd += ["--network", self.network]
 
-        mount_src = ""
         if self.host_workspace:
             host = str(Path(self.host_workspace).resolve())
-            mount_src = host
             run_cmd += ["-v", f"{host}:{self.container_workspace}"]
 
         if self.extra_run_args:

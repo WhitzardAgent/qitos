@@ -54,8 +54,26 @@ def _escape_runtime_context_content(content: str) -> str:
     return content.replace("</RUNTIME_CONTEXT>", "&lt;/RUNTIME_CONTEXT&gt;")
 
 
+_DECISION_CONTEXT_PATTERN = re.compile(
+    r"<DECISION_CONTEXT\b[^>]*>.*?</DECISION_CONTEXT>", re.DOTALL
+)
+
+
+def _is_decision_context_packet(content: str) -> bool:
+    """Return whether content carries one authoritative Decision Context.
+
+    Decision Context already has its own semantic boundary and contract.  A
+    second RUNTIME_CONTEXT wrapper adds no authority and makes the provider
+    packet harder to read.  Other agents' generic runtime state keeps the
+    existing wrapper.
+    """
+    return len(_DECISION_CONTEXT_PATTERN.findall(str(content or ""))) == 1
+
+
 def _wrap_runtime_context(content: str) -> str:
     """Wrap runtime-state user message in semantic XML tags."""
+    if _is_decision_context_packet(content):
+        return str(content or "")
     safe_content = _escape_runtime_context_content(content)
     return (
         '<RUNTIME_CONTEXT\n'
@@ -585,9 +603,11 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
             self._strip_internal_message_keys(history)
         )
         provider_context_blocks = self._decision_context_blocks(llm_messages)
-        expects_decision_context = "<DECISION_CONTEXT" in (
-            runtime_context or str(prepared or "")
+        decision_context_source = runtime_context or str(prepared or "")
+        source_context_blocks = _DECISION_CONTEXT_PATTERN.findall(
+            decision_context_source
         )
+        expects_decision_context = bool(source_context_blocks)
         if history_context_blocks:
             raise RuntimeError(
                 "durable history contains a stale DECISION_CONTEXT block"
@@ -595,6 +615,14 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
         if expects_decision_context and len(provider_context_blocks) != 1:
             raise RuntimeError(
                 "provider packet must contain exactly one current DECISION_CONTEXT"
+            )
+        if expects_decision_context and (
+            len(source_context_blocks) != 1
+            or provider_context_blocks[0] != source_context_blocks[0]
+        ):
+            raise RuntimeError(
+                "provider Decision Context differs from the authoritative packet; "
+                "current TODO List and Plans must never be truncated or rewritten"
             )
         final_tool_calls = [
             str(call.get("id"))
@@ -996,14 +1024,15 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
     @staticmethod
     def _decision_context_blocks(messages: List[Dict[str, Any]]) -> List[str]:
         """Return actual non-system Decision Context blocks in a packet."""
-        pattern = re.compile(
-            r"<DECISION_CONTEXT\b[^>]*>.*?</DECISION_CONTEXT>", re.DOTALL
-        )
         blocks: List[str] = []
         for message in messages:
             if not isinstance(message, dict) or message.get("role") == "system":
                 continue
-            blocks.extend(pattern.findall(content_to_text(message.get("content"))))
+            blocks.extend(
+                _DECISION_CONTEXT_PATTERN.findall(
+                    content_to_text(message.get("content"))
+                )
+            )
         return blocks
 
     def _build_model_request_options(
@@ -2396,9 +2425,12 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
             if not isinstance(content, str):
                 continue
             updated = dict(message)
-            updated["content"] = (
-                f"{content.rstrip()}\n\n[{_RUNTIME_CONTEXT_IN_TOOL_NOTICE}]\n{context}"
-            )
+            if _is_decision_context_packet(context):
+                updated["content"] = f"{content.rstrip()}\n\n{context}"
+            else:
+                updated["content"] = (
+                    f"{content.rstrip()}\n\n[{_RUNTIME_CONTEXT_IN_TOOL_NOTICE}]\n{context}"
+                )
             messages[index] = updated
             tool_call_id = updated.get("tool_call_id")
             return True, str(tool_call_id) if tool_call_id is not None else None

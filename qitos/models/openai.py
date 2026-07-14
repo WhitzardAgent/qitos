@@ -519,7 +519,7 @@ class OpenAICompatibleModel(Model):
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
         system_prompt: Optional[str] = None,
-        temperature: float = 0.7,
+        temperature: float | None = 0.7,
         max_tokens: int = 2048,
         timeout: int = 120,
         context_window: Optional[int] = None,
@@ -703,12 +703,16 @@ class OpenAICompatibleModel(Model):
         last_error: Exception | None = None
         for attempt in range(3):
             try:
-                response = client.chat.completions.create(
-                    model=self.model,
-                    messages=cast(Any, _to_openai_messages(messages)),
-                    temperature=self.temperature,
-                    max_tokens=self.max_tokens,
+                request_kwargs: Dict[str, Any] = {
+                    "model": self.model,
+                    "messages": cast(Any, _to_openai_messages(messages)),
+                    "max_tokens": self.max_tokens,
                     **safe_kwargs,
+                }
+                if self.temperature is not None:
+                    request_kwargs["temperature"] = self.temperature
+                response = client.chat.completions.create(
+                    **request_kwargs,
                 )
                 break
             except Exception as exc:
@@ -749,25 +753,29 @@ class OpenAICompatibleModel(Model):
             if "stream_options" not in create_kwargs:
                 create_kwargs["stream_options"] = {"include_usage": True}
             try:
-                response = client.chat.completions.create(
-                    model=self.model,
-                    messages=cast(Any, _to_openai_messages(messages)),
-                    temperature=self.temperature,
-                    max_tokens=self.max_tokens,
-                    stream=True,
+                request_kwargs: Dict[str, Any] = {
+                    "model": self.model,
+                    "messages": cast(Any, _to_openai_messages(messages)),
+                    "max_tokens": self.max_tokens,
+                    "stream": True,
                     **create_kwargs,
-                )
+                }
+                if self.temperature is not None:
+                    request_kwargs["temperature"] = self.temperature
+                response = client.chat.completions.create(**request_kwargs)
             except (openai.BadRequestError, openai.APIError):
                 # Retry without stream_options if the API doesn't support it
                 create_kwargs.pop("stream_options", None)
-                response = client.chat.completions.create(
-                    model=self.model,
-                    messages=cast(Any, _to_openai_messages(messages)),
-                    temperature=self.temperature,
-                    max_tokens=self.max_tokens,
-                    stream=True,
+                request_kwargs = {
+                    "model": self.model,
+                    "messages": cast(Any, _to_openai_messages(messages)),
+                    "max_tokens": self.max_tokens,
+                    "stream": True,
                     **create_kwargs,
-                )
+                }
+                if self.temperature is not None:
+                    request_kwargs["temperature"] = self.temperature
+                response = client.chat.completions.create(**request_kwargs)
             accumulated_tool_calls: List[Dict[str, Any]] = []
             for chunk in response:
                 if not chunk.choices:

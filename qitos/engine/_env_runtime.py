@@ -120,9 +120,9 @@ class _EnvRuntime(Generic[StateT, ObservationT, ActionT]):
         tool_name = str(result.metadata.get("tool_name") or result.metadata.get("name") or "")
         output = result.output
         has_summary = isinstance(output, dict) and bool(str(output.get("model_summary") or "").strip())
-        if tool_name.rsplit(".", 1)[-1] != "submit_poc" and not has_summary:
+        if not has_summary:
             return item
-        if has_summary and tool_name.rsplit(".", 1)[-1] != "submit_poc":
+        if has_summary:
             visible_output = _ActionRuntime._model_visible_tool_output(self, tool_name, output)
             return ToolResult(
                 status=result.status,
@@ -130,33 +130,7 @@ class _EnvRuntime(Generic[StateT, ObservationT, ActionT]):
                 error=result.error,
                 metadata={**dict(result.metadata), "model_visible": True},
             ).to_dict()
-        if not isinstance(output, dict):
-            return result.to_dict()
-        if output.get("status") == "error":
-            visible_output = {
-                "status": "error",
-                "error": output.get("error") or output.get("raw_output") or "submission failed",
-            }
-        else:
-            visible_output = {
-                "status": output.get("status"),
-                "poc_id": output.get("poc_id"),
-                "flag": output.get("flag"),
-                "exit_code": output.get("vul_exit_code", output.get("exit_code")),
-                "output": output.get("raw_output", ""),
-                "stderr": output.get("vul_stderr", ""),
-                "stdout": output.get("vul_stdout", ""),
-            }
-            visible_output = {
-                key: value for key, value in visible_output.items() if value not in (None, "")
-            }
-        visible = ToolResult(
-            status=result.status,
-            output=visible_output,
-            error=result.error,
-            metadata={**dict(result.metadata), "model_visible": True},
-        )
-        return visible.to_dict()
+        return result.to_dict()
 
     def validate_env_capabilities(self) -> List[Dict[str, Any]]:
         required = self.collect_required_ops()

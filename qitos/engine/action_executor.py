@@ -110,13 +110,23 @@ class ActionExecutor:
         3. ToolSpec.read_only=True → safe
         4. Fallback to legacy _CONCURRENCY_SAFE_TOOLS set
         """
+        allowed = self.policy.parallel_tool_names
+        if allowed is not None and tool_name not in allowed:
+            return False
         tool = self._resolve_tool(tool_name)
         if tool is not None and hasattr(tool, "spec"):
             spec = tool.spec
             # Tools needing approval are NEVER concurrency safe
             if getattr(spec, "needs_approval", False):
                 return False
-            if getattr(spec, "concurrency_safe", False) is True:
+            concurrency_safe = getattr(spec, "concurrency_safe", None)
+            if concurrency_safe is True:
+                return True
+            if concurrency_safe is False:
+                return False
+            # A read-only tool without an explicit concurrency declaration is
+            # safe by default; an explicit False remains authoritative.
+            if getattr(spec, "read_only", False) is True:
                 return True
         # Fallback: check legacy hardcoded set
         return tool_name in _CONCURRENCY_SAFE_TOOLS
@@ -174,10 +184,21 @@ class ActionExecutor:
 
     def _error_result(self, action: Action, message: str) -> ActionResult:
         """Create an error ActionResult for a failed concurrent execution slot."""
+        card = "\n".join(
+            [
+                "[TOOL_RESULT_MISSING]",
+                "",
+                f"Tool: `{action.name}`",
+                "Code: `TOOL_RESULT_MISSING`",
+                "",
+                "The executor did not produce a result. No success was inferred.",
+                "Retry the call or choose another distinguishable action.",
+            ]
+        )
         return ActionResult(
             name=action.name,
             status=ActionStatus.ERROR,
-            output=None,
+            output=card,
             error=message,
             action_id=action.action_id,
             attempts=1,
@@ -197,6 +218,51 @@ class ActionExecutor:
         # Resolve per-tool retry_policy and on_failure from tool spec
         _retry_policy = None
         _on_failure = None
+        available = (
+            [
+                str(item)
+                for item in list(self.tool_registry.list_tools() or [])
+                if str(item)
+            ]
+            if hasattr(self.tool_registry, "list_tools")
+            else []
+        )
+        # Model-originated tool names are an exact protocol contract.  The
+        # registry may support aliases for host integrations, but execution
+        # must not silently repair casing or parse argument fragments embedded
+        # in a malformed name.
+        if available and action.name not in available:
+            card = "\n".join(
+                [
+                    "[TOOL:unknown]",
+                    "",
+                    f"Unknown tool: `{action.name}`",
+                    "",
+                    "No tool was executed.",
+                    "",
+                    "Available tools:",
+                    ", ".join(f"`{item}`" for item in available),
+                    "",
+                    "Retry using an exact tool name and its declared schema.",
+                ]
+            )
+            return self._finish_result(
+                action=action,
+                status=ActionStatus.ERROR,
+                start=start,
+                attempts=1,
+                tool_meta=tool_meta,
+                output=card,
+                error=f"Unknown tool: {action.name}",
+                extra_metadata={
+                    "error_category": "tool_not_found",
+                    "raw_tool_name": action.name,
+                    "raw_arguments": dict(action.args),
+                    "available_tools": available,
+                    "recoverable": True,
+                    "executed": False,
+                },
+            )
         tool_preview = self._resolve_tool(action.name)
         if tool_preview is not None and hasattr(tool_preview, 'spec'):
             _retry_policy = getattr(tool_preview.spec, 'retry_policy', None)
@@ -374,6 +440,35 @@ class ActionExecutor:
                 output = self._call_tool(
                     tool, action.name, effective_args, runtime_context=runtime_context
                 )
+                if output is None:
+                    card = "\n".join(
+                        [
+                            "[TOOL_RESULT_MISSING]",
+                            "",
+                            f"Tool: `{action.name}`",
+                            "Code: `TOOL_RESULT_MISSING`",
+                            "",
+                            "The tool returned no result. No success was inferred.",
+                            "Retry the same call or choose another distinguishable action.",
+                        ]
+                    )
+                    return self._finish_result(
+                        action=action,
+                        status=ActionStatus.ERROR,
+                        start=start,
+                        attempts=attempts,
+                        tool_meta=tool_meta,
+                        output=card,
+                        error="Tool returned no result",
+                        extra_metadata={
+                            "error_category": "tool_result_missing",
+                            "error_code": "TOOL_RESULT_MISSING",
+                            "raw_tool_name": action.name,
+                            "raw_arguments": dict(effective_args),
+                            "recoverable": True,
+                            "executed": True,
+                        },
+                    )
                 self._dispatch_tool_hook(
                     "on_after_tool_use", action.name, effective_args,
                     tool_result=output, permission_decision=permission.decision,
@@ -459,6 +554,19 @@ class ActionExecutor:
         error: Optional[str] = None,
         extra_metadata: Optional[Dict[str, Any]] = None,
     ) -> ActionResult:
+        if output is None:
+            code = str((extra_metadata or {}).get("error_code") or "TOOL_EXECUTION_ERROR")
+            output = "\n".join(
+                [
+                    "[TOOL:error]",
+                    "",
+                    f"Tool: `{action.name}`",
+                    f"Code: `{code}`",
+                    "",
+                    str(error or "The tool did not produce a result."),
+                    "No success was inferred.",
+                ]
+            )
         latency = (time.monotonic() - start) * 1000
         metadata = dict(tool_meta)
         metadata.update(extra_metadata or {})
@@ -489,6 +597,9 @@ class ActionExecutor:
 
         return {
             "env": env,
+            "environment_attestation": dict(
+                getattr(env, "attestation", {}) or {}
+            ) if env is not None else {},
             "state": state,
             "ops": self._resolve_ops(required_ops, env),
             "tool_registry": self.tool_registry,

@@ -893,6 +893,7 @@ def test_engine_sanitizes_submit_poc_native_tool_history_without_mutating_result
                     "fix_stderr": "hidden stderr",
                     "vul_stdout": "target stdout",
                     "fix_stdout": "hidden stdout",
+                    "model_summary": "[submit_poc] attempt.bin\n\nNo vulnerable-target trigger was observed.\nVulnerable target exit: 0\nServer: wrong number of function inputs",
                 }
 
             self.tool_registry.register(submit_poc)

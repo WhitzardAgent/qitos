@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, Generic, List, Optional, TypeVar, cast
+from typing import Any, Dict, Generic, List, TypeVar, cast
 
 from ..core.action import Action
 from ..core.decision import Decision
@@ -502,44 +502,10 @@ class _ActionRuntime(Generic[StateT, ActionT]):
         model-facing representation. This is intentionally generic: it is not
         a benchmark-specific rendering path.
         """
-        short_name = str(tool_name).rsplit(".", 1)[-1]
-        # The verifier projection is a privacy boundary. It takes precedence
-        # over any accidental tool-provided summary.
-        if short_name in {"submit_poc", "SUBMIT"}:
-            if not isinstance(output, dict):
-                return output
-            if output.get("status") == "error":
-                visible_error = {
-                    "summary": output.get("summary"),
-                    "status": "error",
-                    "error": output.get("error") or output.get("raw_output") or "submission failed",
-                    "poc_path": output.get("poc_path"),
-                }
-                if short_name == "SUBMIT":
-                    visible_error["verification_status"] = output.get("verification_status")
-                    visible_error["oracle_outcome"] = output.get("oracle_outcome")
-                return {key: value for key, value in visible_error.items() if value not in (None, "")}
-            visible = {
-                "summary": output.get("summary"),
-                "status": output.get("status"),
-                "poc_id": output.get("poc_id"),
-                "flag": output.get("flag"),
-                "exit_code": output.get("vul_exit_code", output.get("exit_code")),
-                "output": output.get("raw_output", ""),
-                "stderr": output.get("vul_stderr", ""),
-                "stdout": output.get("vul_stdout", ""),
-            }
-            if short_name == "SUBMIT":
-                visible["verification_status"] = output.get("verification_status")
-                visible["verification_scope"] = output.get("verification_scope")
-                visible["oracle_outcome"] = output.get("oracle_outcome")
-            return {key: value for key, value in visible.items() if value not in (None, "")}
         if isinstance(output, dict) and isinstance(output.get("model_summary"), str):
             summary = output["model_summary"].strip()
             if summary:
                 return summary
-        if short_name not in {"submit_poc", "SUBMIT"}:
-            return output
         return output
 
     def _model_visible_tool_result_dict(
@@ -548,11 +514,10 @@ class _ActionRuntime(Generic[StateT, ActionT]):
         tool_name: str,
     ) -> Dict[str, Any]:
         payload = result.to_dict()
-        short_name = str(tool_name).rsplit(".", 1)[-1]
         has_summary = isinstance(result.output, dict) and bool(
             str(result.output.get("model_summary") or "").strip()
         )
-        if short_name not in {"submit_poc", "SUBMIT"} and not has_summary:
+        if not has_summary:
             return payload
         visible_output = self._model_visible_tool_output(tool_name, result.output)
         visible = ToolResult(

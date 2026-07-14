@@ -68,7 +68,7 @@ class Model(ABC):
         self,
         model: str = "default",
         system_prompt: Optional[str] = None,
-        temperature: float = 0.7,
+        temperature: float | None = 0.7,
         max_tokens: int = 2048,
         context_window: Optional[int] = None,
     ):
