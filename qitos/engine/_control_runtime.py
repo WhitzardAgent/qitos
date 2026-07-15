@@ -8,7 +8,7 @@ from typing import Any, Dict, Generic, List, Optional, TypeVar
 from ..core.decision import Decision
 from ..core.errors import StopReason
 from ..core.state import StateSchema
-from ._context_runtime import ContextOverflowError
+from ._context_runtime import ContextOverflowError, DecisionContextConfigurationError
 from ._protocol import _EngineProtocol
 from .critic_result import CriticResult
 from .states import RuntimePhase, StepRecord
@@ -349,6 +349,10 @@ class _ControlRuntime(Generic[StateT, ObservationT, ActionT]):
 
         if engine.recovery_handler is not None:
             engine.recovery_handler(state, phase, exc)
+
+        if isinstance(exc, DecisionContextConfigurationError):
+            state.set_stop(StopReason.INFRASTRUCTURE_INVALID)
+            return False
 
         if isinstance(exc, ContextOverflowError) or self._is_api_context_overflow(exc):
             # Reactive recovery for provider-side context errors. CyberGym's

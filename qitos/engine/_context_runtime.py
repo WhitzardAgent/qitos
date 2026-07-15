@@ -13,6 +13,10 @@ class ContextOverflowError(RuntimeError):
     """Raised when one model request still exceeds the effective input budget."""
 
 
+class DecisionContextConfigurationError(RuntimeError):
+    """The stable controller failed to render one authoritative context."""
+
+
 class _ContextRuntime:
     def __init__(self, engine: _EngineProtocol):
         self.engine = engine

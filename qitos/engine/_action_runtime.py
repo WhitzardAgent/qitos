@@ -337,7 +337,12 @@ class _ActionRuntime(Generic[StateT, ActionT]):
                 results.append(
                     ToolResult(
                         status="error",
-                        output=None,
+                        # Executors may intentionally return a recoverable,
+                        # model-facing failure Card together with a non-success
+                        # status (unknown tools and backend failures do this).
+                        # Preserve it through provider history rather than
+                        # replacing it with ``None`` and an opaque JSON error.
+                        output=item.output,
                         error=str(item.error or "tool execution failed"),
                         metadata={
                             "tool_name": item.name,
@@ -478,8 +483,10 @@ class _ActionRuntime(Generic[StateT, ActionT]):
         if isinstance(output, str):
             card = output.strip()
             if card:
-                if error not in (None, "") and str(error) not in card:
-                    return f"{card}\n\nError: {error}"
+                # A tool-owned Card is the complete recovery contract.  Do
+                # not append a generic engine error: it makes the provider
+                # payload differ from the TUI Card and can turn a useful
+                # failure into noise merely because wording differs.
                 return card
             if error not in (None, ""):
                 return f"[TOOL:error]\n\nError: {error}"

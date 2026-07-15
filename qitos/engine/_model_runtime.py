@@ -29,7 +29,7 @@ from ..core.multimodal import (
 from ..core.observation import Observation
 from ..protocols import get_protocol, resolve_protocol_chain
 from ..core.state import StateSchema
-from ._context_runtime import ContextOverflowError
+from ._context_runtime import ContextOverflowError, DecisionContextConfigurationError
 from ._protocol import _EngineProtocol
 from .streaming import to_stream_handler
 from .parser import (
@@ -68,6 +68,25 @@ def _is_decision_context_packet(content: str) -> bool:
     existing wrapper.
     """
     return len(_DECISION_CONTEXT_PATTERN.findall(str(content or ""))) == 1
+
+
+def _strip_decision_context_content(content: Any) -> Any:
+    """Remove transient Decision Context blocks without changing other content."""
+    if isinstance(content, str):
+        return _DECISION_CONTEXT_PATTERN.sub("", content).rstrip()
+    if isinstance(content, list):
+        cleaned: list[Any] = []
+        for block in content:
+            if isinstance(block, dict) and str(block.get("type") or "") == "text":
+                updated = dict(block)
+                updated["text"] = _DECISION_CONTEXT_PATTERN.sub(
+                    "", str(updated.get("text") or "")
+                ).rstrip()
+                cleaned.append(updated)
+            else:
+                cleaned.append(block)
+        return cleaned
+    return content
 
 
 def _wrap_runtime_context(content: str) -> str:
@@ -337,6 +356,13 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
             "fallback_reason": None,
         }
         runtime_context_display: Dict[str, Any] | None = None
+        # Only agents that explicitly opt in to CyberGym's controller-owned
+        # Decision Context receive this strict packet invariant.  Generic
+        # QitOS agents may use ``prepare()`` for ordinary text and must retain
+        # their existing message-building behavior.
+        decision_context_required = bool(
+            getattr(custom_builder, "requires_decision_context", False)
+        )
         # The default builder has no separate transient context, but the
         # final sidecar uses one common schema for both builder modes.
         runtime_context = ""
@@ -489,6 +515,42 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
         }
         parity["valid"] = not parity["missing_result_ids"] and not parity["orphan_result_ids"]
         llm_messages = self._strip_internal_message_keys(messages)
+        decision_context_source = runtime_context or str(prepared or "")
+        source_context_blocks = _DECISION_CONTEXT_PATTERN.findall(
+            decision_context_source
+        )
+        # A malformed transient source is a fixed controller/configuration
+        # problem for Decision-Context-aware agents, but first give the state
+        # projector one fresh chance to render it.  Normal duplicate/stale
+        # packet recovery never reaches this branch.
+        if decision_context_required and len(source_context_blocks) != 1:
+            try:
+                decision_context_source = str(engine.agent.prepare(state) or "")
+            except Exception as exc:
+                raise DecisionContextConfigurationError(
+                    "could not render the authoritative DECISION_CONTEXT"
+                ) from exc
+            source_context_blocks = _DECISION_CONTEXT_PATTERN.findall(
+                decision_context_source
+            )
+        if decision_context_required and len(source_context_blocks) != 1:
+            raise DecisionContextConfigurationError(
+                "authoritative runtime state must contain exactly one DECISION_CONTEXT"
+            )
+        pre_rebuild_messages = list(llm_messages)
+        decision_context_recovery: Dict[str, Any] = {
+            "rebuild_required": False,
+            "reason": "",
+            "before_count": 0,
+            "after_count": 0,
+            "authoritative_context": "",
+        }
+        if decision_context_required:
+            llm_messages, decision_context_recovery = self._normalize_decision_context_packet(
+                messages=llm_messages,
+                authoritative_source=decision_context_source,
+                delivery=runtime_context_delivery,
+            )
         request_options = self._build_model_request_options(
             prompt_bundle=prompt_bundle,
             protocol=protocol,
@@ -545,6 +607,12 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
                     ]
                     messages = self._ensure_chain_consistency(messages)
                     llm_messages = self._strip_internal_message_keys(messages)
+                    if decision_context_required:
+                        llm_messages, _ = self._normalize_decision_context_packet(
+                            messages=llm_messages,
+                            authoritative_source=decision_context_source,
+                            delivery=runtime_context_delivery,
+                        )
                     pre_context = context_runtime.finalize_assembled_input(
                         llm=engine.agent.llm,
                         telemetry=pre_context,
@@ -695,30 +763,45 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
             pre_context = context_runtime.apply_prompt_meter(
                 pre_context, meter_result
             )
+        # Historical blocks are an audit signal only.  They are stripped from
+        # the projected provider packet by the normalizer and never make a
+        # long-running CyberGym task terminal.
         history_context_blocks = self._decision_context_blocks(
             self._strip_internal_message_keys(history)
         )
         provider_context_blocks = self._decision_context_blocks(llm_messages)
-        decision_context_source = runtime_context or str(prepared or "")
-        source_context_blocks = _DECISION_CONTEXT_PATTERN.findall(
-            decision_context_source
-        )
-        expects_decision_context = bool(source_context_blocks)
-        if history_context_blocks:
-            raise RuntimeError(
-                "durable history contains a stale DECISION_CONTEXT block"
-            )
+        expects_decision_context = decision_context_required
         if expects_decision_context and len(provider_context_blocks) != 1:
-            raise RuntimeError(
-                "provider packet must contain exactly one current DECISION_CONTEXT"
+            raise DecisionContextConfigurationError(
+                "packet normalization did not produce one current DECISION_CONTEXT"
             )
         if expects_decision_context and (
             len(source_context_blocks) != 1
             or provider_context_blocks[0] != source_context_blocks[0]
         ):
-            raise RuntimeError(
-                "provider Decision Context differs from the authoritative packet; "
-                "current TODO List and Plans must never be truncated or rewritten"
+            raise DecisionContextConfigurationError(
+                "packet normalization did not preserve the authoritative DECISION_CONTEXT"
+            )
+        if decision_context_recovery.get("rebuild_required"):
+            self._write_pre_rebuild_packet_sidecar(
+                state,
+                record.step_id,
+                messages=pre_rebuild_messages,
+                recovery=decision_context_recovery,
+            )
+            engine._emit(
+                record.step_id,
+                RuntimePhase.DECIDE,
+                payload={
+                    "stage": "decision_context_packet_rebuilt",
+                    "reason": decision_context_recovery.get("reason"),
+                    "before_count": decision_context_recovery.get("before_count"),
+                    "after_count": decision_context_recovery.get("after_count"),
+                    "delivery": runtime_context_delivery.get("effective"),
+                    "authoritative_context_hash": hashlib.sha256(
+                        str(decision_context_recovery.get("authoritative_context") or "").encode("utf-8")
+                    ).hexdigest(),
+                },
             )
         final_tool_calls = [
             str(call.get("id"))
@@ -779,6 +862,7 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
             runtime_context=runtime_context,
             runtime_context_delivery=runtime_context_delivery,
             context=context_runtime.telemetry_dict(pre_context),
+            decision_context_recovery=decision_context_recovery,
         )
         record.prompt_metadata = dict(prompt_metadata)
         record.prompt_metadata.update(
@@ -843,6 +927,7 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
             runtime_context=runtime_context,
             runtime_context_delivery=runtime_context_delivery,
             context=record.context,
+            decision_context_recovery=decision_context_recovery,
         )
         record.model_response = response.to_summary_dict()
         engine._last_context_telemetry = dict(record.context)
@@ -1009,6 +1094,46 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
             "sidecar_path": sidecar_path,
         }
 
+    def _write_pre_rebuild_packet_sidecar(
+        self,
+        state: StateT,
+        step_id: int,
+        *,
+        messages: List[Dict[str, Any]],
+        recovery: Dict[str, Any],
+    ) -> None:
+        """Persist a rejected packet only when Context normalization repairs it."""
+        try:
+            metadata = dict(getattr(state, "metadata", {}) or {})
+            trace_root = str(
+                metadata.get("trace_run_dir") or getattr(state, "workspace_root", "") or ""
+            ).strip()
+            if not trace_root:
+                return
+            step_dir = Path(trace_root) / "agent_steps" / f"step-{int(step_id):04d}"
+            step_dir.mkdir(parents=True, exist_ok=True)
+            (step_dir / "assembled_messages.pre_rebuild.json").write_text(
+                json.dumps(messages, ensure_ascii=False, indent=2, default=str),
+                encoding="utf-8",
+            )
+            (step_dir / "decision_context_recovery.json").write_text(
+                json.dumps(
+                    {
+                        "reason": recovery.get("reason"),
+                        "before_count": recovery.get("before_count"),
+                        "after_count": recovery.get("after_count"),
+                        "authoritative_context_hash": hashlib.sha256(
+                            str(recovery.get("authoritative_context") or "").encode("utf-8")
+                        ).hexdigest(),
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+        except Exception:
+            _logger.debug("pre-rebuild packet sidecar write failed", exc_info=True)
+
     def _write_assembled_messages_sidecar(
         self,
         state: StateT,
@@ -1073,6 +1198,7 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
         runtime_context: str = "",
         runtime_context_delivery: Dict[str, Any] | None = None,
         context: Dict[str, Any] | None = None,
+        decision_context_recovery: Dict[str, Any] | None = None,
     ) -> None:
         try:
             metadata = dict(getattr(state, "metadata", {}) or {})
@@ -1106,6 +1232,12 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
                     if len(decision_context_blocks) == 1
                     else ""
                 ),
+                "decision_context_recovery": {
+                    "rebuilt": bool((decision_context_recovery or {}).get("rebuild_required")),
+                    "reason": str((decision_context_recovery or {}).get("reason") or ""),
+                    "before_count": int((decision_context_recovery or {}).get("before_count") or 0),
+                    "after_count": int((decision_context_recovery or {}).get("after_count") or 0),
+                },
             }
             (step_dir / "model_input_bundle.json").write_text(
                 json.dumps(bundle, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -2531,6 +2663,96 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
             tool_call_id = updated.get("tool_call_id")
             return True, str(tool_call_id) if tool_call_id is not None else None
         return False, None
+
+    def _normalize_decision_context_packet(
+        self,
+        *,
+        messages: List[Dict[str, Any]],
+        authoritative_source: str,
+        delivery: Dict[str, Any],
+    ) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+        """Ensure the actual provider packet has one current Decision Context.
+
+        Decision Context is reconstructed from controller state every turn and
+        is never durable conversation history.  Old traces, a partial merge,
+        or a retry must therefore not be allowed to turn a duplicate transient
+        block into a terminal agent failure.
+        """
+        source_blocks = _DECISION_CONTEXT_PATTERN.findall(
+            str(authoritative_source or "")
+        )
+        if len(source_blocks) != 1:
+            return messages, {
+                "rebuild_required": True,
+                "reason": "authoritative_invalid",
+                "before_count": len(self._decision_context_blocks(messages)),
+                "after_count": len(self._decision_context_blocks(messages)),
+                "authoritative_context": "",
+            }
+        authoritative = source_blocks[0]
+        before_blocks = self._decision_context_blocks(messages)
+        valid = len(before_blocks) == 1 and before_blocks[0] == authoritative
+        if valid:
+            return messages, {
+                "rebuild_required": False,
+                "reason": "",
+                "before_count": 1,
+                "after_count": 1,
+                "authoritative_context": authoritative,
+            }
+
+        if not before_blocks:
+            reason = "missing"
+        elif len(before_blocks) > 1:
+            reason = "duplicate"
+        else:
+            reason = "mismatch"
+        rebuilt: List[Dict[str, Any]] = []
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            updated = dict(message)
+            # System prompt content is authored stable text.  Only transient
+            # non-system delivery is eligible for replacement.
+            if updated.get("role") != "system":
+                updated["content"] = _strip_decision_context_content(
+                    updated.get("content")
+                )
+            rebuilt.append(updated)
+
+        requested = str(delivery.get("requested") or "").strip().lower()
+        merged = False
+        if requested == "merge_tool":
+            merged, tool_call_id = self._merge_runtime_context_into_last_tool(
+                rebuilt, authoritative
+            )
+            if merged:
+                delivery.update(
+                    {
+                        "effective": "merge_tool",
+                        "target_tool_call_id": tool_call_id,
+                        "fallback_reason": None,
+                    }
+                )
+        if not merged:
+            rebuilt.append({"role": "user", "content": authoritative})
+            delivery.update(
+                {
+                    "effective": "user",
+                    "target_tool_call_id": None,
+                    "fallback_reason": (
+                        "no_text_tool_result" if requested == "merge_tool" else None
+                    ),
+                }
+            )
+        after_count = len(self._decision_context_blocks(rebuilt))
+        return rebuilt, {
+            "rebuild_required": True,
+            "reason": reason,
+            "before_count": len(before_blocks),
+            "after_count": after_count,
+            "authoritative_context": authoritative,
+        }
 
     def _ensure_chain_consistency(
         self, messages: List[Dict[str, Any]]
