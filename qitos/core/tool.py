@@ -280,13 +280,21 @@ class BaseTool:
     """Base abstraction for callable tools."""
 
     def __init__(self, spec: ToolSpec):
-        description = (
-            inspect.getdoc(self.execute)
-            or inspect.getdoc(self.run)
-            or inspect.getdoc(self.__class__)
-        )
-        if description:
-            spec.description = inspect.cleandoc(description)
+        # ``ToolSpec.description`` is an authored part of the model-facing
+        # contract.  A method docstring is only a fallback for callers that did
+        # not provide one; silently replacing an explicit description can turn
+        # a rich ACI into the inherited generic ``BaseTool.execute`` text.
+        explicit_description = str(spec.description or "").strip()
+        if explicit_description:
+            spec.description = inspect.cleandoc(explicit_description)
+        else:
+            description = (
+                inspect.getdoc(self.execute)
+                or inspect.getdoc(self.run)
+                or inspect.getdoc(self.__class__)
+            )
+            if description:
+                spec.description = inspect.cleandoc(description)
         if spec.input_schema is None:
             spec.input_schema = {
                 "type": "object",
@@ -392,7 +400,9 @@ class FunctionTool(BaseTool):
         self.meta = meta or get_tool_meta(func) or ToolMeta()
         spec = build_tool_spec(func, self.meta)
         super().__init__(spec)
-        description = inspect.getdoc(func) or self.meta.description
+        # Match ``@function_tool``: explicit metadata wins, with the callable
+        # docstring used only as a fallback.
+        description = self.meta.description or inspect.getdoc(func)
         if description:
             self.spec.description = inspect.cleandoc(description)
 
@@ -609,7 +619,7 @@ def build_tool_spec(func: Callable[..., Any], meta: ToolMeta) -> ToolSpec:
 
     # Strip :param lines from the top-level description so they don't
     # duplicate the per-parameter descriptions the model already sees.
-    desc = _strip_param_docs(raw_doc) or meta.description or ""
+    desc = meta.description or _strip_param_docs(raw_doc) or ""
     tool_name = str(meta.name or getattr(func, "__name__", "tool") or "tool")
 
     return ToolSpec(
