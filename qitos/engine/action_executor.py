@@ -830,11 +830,18 @@ class ActionExecutor:
         if not hooks:
             return
         from .hooks import ToolHookContext
+        # Native tool-calling executes through ActionExecutor instead of the
+        # regular step-hook path.  The old placeholder ``0`` therefore made
+        # every tool observation in a rollout appear to have happened at step
+        # zero.  ``current_step`` is advanced only after a step has completed,
+        # so while a tool is executing it is the authoritative step id.
+        active_state = getattr(self._engine, "_active_state", None)
+        step_id = int(getattr(active_state, "current_step", 0) or 0)
         ctx = ToolHookContext(
             task="",
-            step_id=0,
+            step_id=step_id,
             phase=RuntimePhase.ACT,
-            state=None,
+            state=active_state,
             tool_name=tool_name,
             tool_args=tool_args,
             tool_result=tool_result,

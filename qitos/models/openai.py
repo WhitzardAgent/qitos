@@ -68,7 +68,7 @@ def _wire_tool_schema(
 
 
 def _relocate_chat_template_kwargs(kwargs: Dict[str, Any]) -> Dict[str, Any]:
-    """Move ``chat_template_kwargs`` from top-level kwargs into ``extra_body``.
+    """Move provider-specific generation kwargs into ``extra_body``.
 
     The OpenAI Python SDK does not accept ``chat_template_kwargs`` as a
     top-level parameter.  vLLM-compatible serving endpoints expect it inside
@@ -76,10 +76,19 @@ def _relocate_chat_template_kwargs(kwargs: Dict[str, Any]) -> Dict[str, Any]:
     often places it at the top level, so we relocate it here.
     """
     result = dict(kwargs)
+    extra_body = dict(result.pop("extra_body", None) or {})
     ctk = result.pop("chat_template_kwargs", None)
     if isinstance(ctk, dict) and ctk:
-        extra_body = dict(result.pop("extra_body", None) or {})
         extra_body["chat_template_kwargs"] = ctk
+    # ``do_sample`` is accepted by vLLM/SGLang-style endpoints but not by the
+    # OpenAI Python SDK's typed method signature. Passing it at top level made
+    # the whole native-tool request fail with TypeError and silently fall back
+    # to a schema-less text call. Preserve provider semantics through the SDK's
+    # supported extra_body escape hatch.
+    do_sample = result.pop("do_sample", None)
+    if do_sample is not None:
+        extra_body["do_sample"] = do_sample
+    if extra_body:
         result["extra_body"] = extra_body
     return result
 

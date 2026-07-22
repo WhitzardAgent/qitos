@@ -878,29 +878,35 @@ class _ModelRuntime(Generic[StateT, ObservationT, ActionT]):
         )
         record.context = context_runtime.telemetry_dict(pre_context)
         engine._last_context_telemetry = dict(record.context)
+        model_input_event = {
+            "stage": "model_input",
+            "tool_transaction_parity": parity,
+            "prepared": str(prepared),
+            "prepared_full": prepared_full,
+            "history_message_count": len(history),
+            "history_messages_meta": history_metadata,
+            "message_count": len(llm_messages),
+            "messages_summary": [
+                {"role": m.get("role"), "content_len": len(str(m.get("content", "")))}
+                for m in llm_messages
+            ],
+            "model_input_digest": model_input_digest,
+            "tool_schema_digest": tool_schema_digest,
+            "context": dict(record.context),
+            "state_stats": self._state_stats(observation, record.context, state=state),
+            "prompt": dict(record.prompt_metadata),
+            "runtime_context_delivery": dict(runtime_context_delivery),
+            "runtime_context_display": runtime_context_display,
+        }
+        # Full requests are opt-in: generic QitOS tracing stores digests, but
+        # Dilute needs exact student-visible messages and native tool schemas.
+        if bool(getattr(engine.agent, "capture_full_model_input", False)):
+            model_input_event["messages"] = llm_messages
+            model_input_event["tool_schema"] = request_options.get("tools")
         engine._emit(
             record.step_id,
             RuntimePhase.DECIDE,
-            payload={
-                "stage": "model_input",
-                "tool_transaction_parity": parity,
-                "prepared": str(prepared),
-                "prepared_full": prepared_full,
-                "history_message_count": len(history),
-                "history_messages_meta": history_metadata,
-                "message_count": len(llm_messages),
-                "messages_summary": [
-                    {"role": m.get("role"), "content_len": len(str(m.get("content", "")))}
-                    for m in llm_messages
-                ],
-                "model_input_digest": model_input_digest,
-                "tool_schema_digest": tool_schema_digest,
-                "context": dict(record.context),
-                "state_stats": self._state_stats(observation, record.context, state=state),
-                "prompt": dict(record.prompt_metadata),
-                "runtime_context_delivery": dict(runtime_context_delivery),
-                "runtime_context_display": runtime_context_display,
-            },
+            payload=model_input_event,
         )
         history_content = str(prepared)
         if custom_builder is None:
