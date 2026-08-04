@@ -2087,6 +2087,61 @@ function renderThought(decision, events, step){{
   if(!thought) return (summary || '<div class="muted">No explicit thought.</div>');
   return '<div style="white-space:pre-wrap;line-height:1.6;background:var(--surface-2);border:1px solid var(--line);border-radius:var(--radius-md);padding:10px;color:var(--txt)">'+esc(thought)+'</div>' + summary;
 }}
+function modelInputPayloads(events){{
+  const out = [];
+  const es = Array.isArray(events) ? events : [];
+  for(const e of es){{
+    const payload = e && typeof e.payload === 'object' ? e.payload : null;
+    if(payload && String(payload.stage || '') === 'model_input') out.push(payload);
+  }}
+  return out;
+}}
+function renderModelMessagePreview(messages){{
+  const msgs = Array.isArray(messages) ? messages : [];
+  if(!msgs.length) return '<div class="muted">No message list recorded.</div>';
+  const blocks = [];
+  for(let i=0;i<msgs.length;i+=1){{
+    const msg = msgs[i] && typeof msgs[i] === 'object' ? msgs[i] : {{}};
+    const role = msg.role !== undefined ? String(msg.role) : 'message';
+    const content = msg.content !== undefined ? msg.content : '';
+    blocks.push(
+      '<details class="raw">' +
+      '<summary class="muted">message ' + i + ' · ' + esc(role) + '</summary>' +
+      '<pre>' + esc(typeof content === 'string' ? content : JSON.stringify(content, null, 2)) + '</pre>' +
+      '</details>'
+    );
+  }}
+  return blocks.join('');
+}}
+function renderModelInput(events){{
+  const inputs = modelInputPayloads(events);
+  if(!inputs.length){{
+    return '<div class="muted">No model input recorded for this step. This usually means the step was handled by the harness or a tool path without calling the model.</div>';
+  }}
+  const blocks = [];
+  for(let i=0;i<inputs.length;i+=1){{
+    const payload = inputs[i] || {{}};
+    const ctx = payload.context && typeof payload.context === 'object' ? payload.context : {{}};
+    const rows = [];
+    rows.push(kvRow('model input event', i + 1));
+    if(payload.history_message_count !== undefined) rows.push(kvRow('history messages', payload.history_message_count));
+    if(Array.isArray(payload.messages)) rows.push(kvRow('messages sent', payload.messages.length));
+    if(ctx.input_tokens_total !== undefined) rows.push(kvRow('input tokens', ctx.input_tokens_total));
+    if(ctx.prepared_tokens !== undefined) rows.push(kvRow('prepared tokens', ctx.prepared_tokens));
+    if(ctx.history_tokens !== undefined) rows.push(kvRow('history tokens', ctx.history_tokens));
+    if(ctx.occupancy_ratio !== undefined) rows.push(kvRow('context used', ((Number(ctx.occupancy_ratio) || 0) * 100).toFixed(1) + '%'));
+    const prepared = payload.prepared_full || payload.prepared || '';
+    const preparedBlock = prepared
+      ? '<div style="margin-top:8px"><div class="muted" style="margin-bottom:4px">prepared text from agent.prepare(state)</div><pre>' + esc(String(prepared)) + '</pre></div>'
+      : '<div class="muted" style="margin-top:8px">No prepared text recorded.</div>';
+    const messagesBlock =
+      '<details class="raw" style="margin-top:8px"><summary class="muted">Actual messages sent to model</summary>' +
+      renderModelMessagePreview(payload.messages) +
+      '</details>';
+    blocks.push('<div class="item">' + kvBlock(rows) + preparedBlock + messagesBlock + '</div>');
+  }}
+  return '<div class="list">' + blocks.join('') + '</div>';
+}}
 function renderAction(actions){{
   if(!Array.isArray(actions) || !actions.length) return '<div class="muted">No action.</div>';
   const first = actions[0] || {{}};
@@ -2855,6 +2910,7 @@ function render(){{
     if(maHtml) h += '<div style="margin-bottom:8px">' + maHtml + '</div>';
     if(showObs) h += sectionHtml('State', renderState(obsInput), obsInput, 'state', collapsedAll);
     h += sectionHtml('Prompt', renderPromptMetadata(it.step.prompt_metadata || {{}}), it.step.prompt_metadata || {{}}, 'prompt', collapsedAll);
+    h += sectionHtml('Model Input', renderModelInput(it.events), modelInputPayloads(it.events), 'model_input', collapsedAll);
     h += sectionHtml('Visual Assets', renderVisualAssets(it.step), {{visual_assets: it.step.visual_assets || [], observation_modalities: it.step.observation_modalities || [], model_input_modalities: it.step.model_input_modalities || [], model_input_visual_count: it.step.model_input_visual_count || 0}}, 'visual_assets', collapsedAll);
     h += sectionHtml('Thought', renderThought(d, it.events, it.step), d, 'thought', collapsedAll);
     h += sectionHtml('Parser Diagnostics', renderParserDiagnostics(it.step.parser_diagnostics || {{}}), it.step.parser_diagnostics || {{}}, 'parser', collapsedAll);

@@ -100,6 +100,7 @@ def _make_run(root: Path, run_id: str) -> Path:
     )
     (run / "events.jsonl").write_text(
         '{"step_id":0,"phase":"INIT","ok":true,"ts":"x"}\n'
+        '{"step_id":0,"phase":"DECIDE","ok":true,"ts":"x1","payload":{"stage":"model_input","prepared":"Task: inspect the run","prepared_full":"Task: inspect the run\\nStep: 0","history_message_count":1,"messages":[{"role":"system","content":"You are an agent."},{"role":"user","content":"Task: inspect the run"}],"context":{"input_tokens_total":22,"prepared_tokens":6,"history_tokens":8,"occupancy_ratio":0.12}}}\n'
         '{"step_id":0,"phase":"DECIDE","ok":true,"ts":"y","payload":{"stage":"model_output","raw_output":"Thought: inspect the run","model_response":{"text":"Thought: inspect the run","usage":{"prompt_tokens":10,"completion_tokens":4,"total_tokens":14},"finish_reason":"stop","tool_calls":[{"id":"call_1","type":"function","function":{"name":"visit_url","arguments":"{\\"url\\":\\"https://example.com\\"}"}}],"model_name":"demo-model","provider":"demo-provider","metadata":{}},"context":{"input_tokens_total":3200,"occupancy_ratio":0.74}}}\n',
         encoding="utf-8",
     )
@@ -410,6 +411,9 @@ def test_render_pages(tmp_path: Path):
     assert "decision_source" in view
     assert "native_tool_call_used" in view
     assert "tool_delivery" in view
+    assert "Model Input" in view
+    assert "prepared text from agent.prepare(state)" in view
+    assert "Actual messages sent to model" in view
     assert "Visual Assets" in view
     assert "grounding metadata" in view
     assert "critic retries" in view
